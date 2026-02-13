@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { boardState, senteHand, goteHand, selectedPieceKind, selectedColor } from "./stores";
-  import { PIECE_KANJI, HAND_PIECE_KINDS } from "./types";
+  import { boardState, senteHand, goteHand, selectedPieceKind, selectedColor, remainingPieces } from "./stores";
+  import { PIECE_KANJI, HAND_PIECE_KINDS, unpromoted } from "./types";
   import type { Piece, PieceKind, Color, HandState } from "./types";
 
   // 盤面クリック時の処理
@@ -17,7 +17,10 @@
         // 同じ駒をクリック → 除去
         board[file][rank] = null;
       } else {
-        // 駒を配置
+        // 駒数上限チェック（このマスを上書きする場合は現在のマスを除外してカウント）
+        const baseKind = unpromoted(kind);
+        const remaining = remainingPieces(baseKind, { file, rank });
+        if (remaining <= 0) return board; // 上限に達している
         board[file][rank] = { color, kind };
       }
       return board;
@@ -36,7 +39,9 @@
           if (h.get(kind) === 0) h.delete(kind);
         }
       } else {
-        // 増やす
+        // 駒数上限チェック
+        const remaining = remainingPieces(kind);
+        if (remaining <= 0) return h; // 上限に達している
         h.set(kind, current + 1);
       }
       return h;
@@ -75,7 +80,7 @@
         class="hand-add-btn"
         on:click={() => {
           if ($selectedPieceKind && $selectedPieceKind !== "king") {
-            onHandClick("gote", $selectedPieceKind);
+            onHandClick("gote", unpromoted($selectedPieceKind));
           }
         }}
         title="選択中の駒を後手持ち駒に追加"
@@ -144,7 +149,7 @@
         class="hand-add-btn"
         on:click={() => {
           if ($selectedPieceKind && $selectedPieceKind !== "king") {
-            onHandClick("sente", $selectedPieceKind);
+            onHandClick("sente", unpromoted($selectedPieceKind));
           }
         }}
         title="選択中の駒を先手持ち駒に追加"

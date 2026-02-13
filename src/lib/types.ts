@@ -104,6 +104,31 @@ export const PIECE_KANJI: Record<PieceKind, string> = {
   promoted_pawn: "と",
 };
 
+/** 駒種ごとの最大枚数（将棋のルール） */
+export const MAX_PIECE_COUNT: Record<string, number> = {
+  king: 2,
+  rook: 2,
+  bishop: 2,
+  gold: 4,
+  silver: 4,
+  knight: 4,
+  lance: 4,
+  pawn: 18,
+};
+
+/** 成駒を元の駒種に変換（非成駒はそのまま返す） */
+export function unpromoted(kind: PieceKind): PieceKind {
+  const map: Partial<Record<PieceKind, PieceKind>> = {
+    promoted_rook: "rook",
+    promoted_bishop: "bishop",
+    promoted_silver: "silver",
+    promoted_knight: "knight",
+    promoted_lance: "lance",
+    promoted_pawn: "pawn",
+  };
+  return map[kind] ?? kind;
+}
+
 /** 持ち駒にできる駒種 */
 export const HAND_PIECE_KINDS: PieceKind[] = [
   "rook",

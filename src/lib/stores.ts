@@ -1,5 +1,6 @@
-import { writable } from "svelte/store";
+import { writable, get } from "svelte/store";
 import type { Piece, PieceKind, Color, SolutionData } from "./types";
+import { unpromoted, MAX_PIECE_COUNT } from "./types";
 
 /** 盤面の型: 9x9 配列 (board[file][rank], 0-indexed) */
 export type BoardState = (Piece | null)[][];
@@ -43,6 +44,42 @@ export const errorMessage = writable<string>("");
 
 /** 最大探索手数 */
 export const maxDepth = writable<number>(7);
+
+/**
+ * 盤面+両方の持ち駒における、指定した基本駒種（unpromoted）の現在の合計枚数を返す。
+ * excludeSquare を指定すると、そのマスの駒はカウントから除外する（上書き配置時用）。
+ */
+export function countPieceBase(
+  baseKind: PieceKind,
+  excludeSquare?: { file: number; rank: number },
+): number {
+  const board = get(boardState);
+  const sHand = get(senteHand);
+  const gHand = get(goteHand);
+
+  let count = 0;
+
+  // 盤面上の駒を数える
+  for (let f = 0; f < 9; f++) {
+    for (let r = 0; r < 9; r++) {
+      if (excludeSquare && excludeSquare.file === f && excludeSquare.rank === r) continue;
+      const p = board[f][r];
+      if (p && unpromoted(p.kind) === baseKind) count++;
+    }
+  }
+
+  // 持ち駒を数える（持ち駒は常に非成駒なので直接比較）
+  if (sHand.has(baseKind)) count += sHand.get(baseKind)!;
+  if (gHand.has(baseKind)) count += gHand.get(baseKind)!;
+
+  return count;
+}
+
+/** 指定した駒種をあと何枚配置できるか */
+export function remainingPieces(baseKind: PieceKind, excludeSquare?: { file: number; rank: number }): number {
+  const max = MAX_PIECE_COUNT[baseKind] ?? 0;
+  return max - countPieceBase(baseKind, excludeSquare);
+}
 
 /** 盤面をクリア */
 export function clearBoard() {
