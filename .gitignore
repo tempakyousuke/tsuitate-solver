@@ -1,0 +1,48 @@
+# Dependencies
+node_modules
+
+# Build outputs
+dist
+build
+
+# Tauri / Rust
+src-tauri/target
+src-tauri/gen
+
+# Svelte
+.svelte-kit
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE / Editor
+.idea
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+*.swp
+*.swo
+*~
+.claude
+
+# Cache
+.cache
+.vite
+
+# Test / Coverage
+coverage
+*.lcov
