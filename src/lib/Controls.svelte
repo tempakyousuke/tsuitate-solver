@@ -10,8 +10,13 @@
     maxDepth,
     clearBoard,
   } from "./stores";
-  import type { PositionData, HandPieceData, SolutionData } from "./types";
   import type { BoardState, HandState } from "./stores";
+  import type { PositionData, HandPieceData, SolutionData, PieceKind, Color } from "./types";
+  import { ALL_PIECE_KINDS, HAND_PIECE_KINDS } from "./types";
+
+  /** JSON インポート/エクスポート用のテキスト */
+  let jsonText = "";
+  let jsonVisible = false;
 
   function buildPositionData(
     board: BoardState,
@@ -41,6 +46,79 @@
       sente_hand: senteHandData,
       gote_hand: goteHandData,
     };
+  }
+
+  /** 盤面を JSON にエクスポート */
+  function handleExport() {
+    // 盤面上の駒だけを簡潔に表現
+    const pieces: { file: number; rank: number; color: Color; kind: PieceKind }[] = [];
+    for (let f = 0; f < 9; f++) {
+      for (let r = 0; r < 9; r++) {
+        const p = $boardState[f][r];
+        if (p) {
+          pieces.push({ file: f + 1, rank: r + 1, color: p.color, kind: p.kind });
+        }
+      }
+    }
+
+    const senteHandArr: { kind: PieceKind; count: number }[] = [];
+    $senteHand.forEach((count, kind) => {
+      if (count > 0) senteHandArr.push({ kind, count });
+    });
+
+    const data = {
+      board: pieces,
+      sente_hand: senteHandArr,
+    };
+
+    jsonText = JSON.stringify(data, null, 2);
+    jsonVisible = true;
+  }
+
+  /** JSON から盤面をインポート */
+  function handleImport() {
+    try {
+      const data = JSON.parse(jsonText);
+
+      // バリデーション
+      if (!data.board || !Array.isArray(data.board)) {
+        throw new Error("board フィールドが必要です");
+      }
+
+      // 盤面をクリアしてから復元
+      clearBoard();
+
+      boardState.update((board) => {
+        for (const p of data.board) {
+          const f = (p.file as number) - 1;
+          const r = (p.rank as number) - 1;
+          if (f < 0 || f >= 9 || r < 0 || r >= 9) continue;
+          const color = p.color as Color;
+          const kind = p.kind as PieceKind;
+          if (!["sente", "gote"].includes(color)) continue;
+          if (!ALL_PIECE_KINDS.includes(kind)) continue;
+          board[f][r] = { color, kind };
+        }
+        return board;
+      });
+
+      if (data.sente_hand && Array.isArray(data.sente_hand)) {
+        senteHand.update((h) => {
+          for (const hp of data.sente_hand) {
+            const kind = hp.kind as PieceKind;
+            const count = hp.count as number;
+            if (!HAND_PIECE_KINDS.includes(kind)) continue;
+            if (count > 0) h.set(kind, count);
+          }
+          return h;
+        });
+      }
+
+      errorMessage.set("");
+      jsonVisible = false;
+    } catch (e) {
+      errorMessage.set(`JSON読み込みエラー: ${e}`);
+    }
   }
 
   async function handleSolve() {
@@ -102,6 +180,26 @@
       クリア
     </button>
   </div>
+
+  <div class="io-buttons">
+    <button class="io-btn" on:click={handleExport} disabled={$solving}>
+      JSONエクスポート
+    </button>
+    <button class="io-btn" on:click={() => { jsonVisible = !jsonVisible; }} disabled={$solving}>
+      JSONインポート
+    </button>
+  </div>
+
+  {#if jsonVisible}
+    <div class="json-area">
+      <textarea
+        bind:value={jsonText}
+        rows="8"
+        placeholder="JSONを貼り付けてください"
+      ></textarea>
+      <button class="import-btn" on:click={handleImport}>読み込み</button>
+    </div>
+  {/if}
 
   {#if $errorMessage}
     <div class="error">{$errorMessage}</div>
@@ -178,6 +276,62 @@
 
   .clear-btn:disabled {
     cursor: not-allowed;
+  }
+
+  .io-buttons {
+    display: flex;
+    gap: 8px;
+  }
+
+  .io-btn {
+    flex: 1;
+    padding: 6px 12px;
+    background: #fff;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  .io-btn:hover:not(:disabled) {
+    background: #f0f0f0;
+  }
+
+  .io-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
+  .json-area {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .json-area textarea {
+    width: 100%;
+    font-family: monospace;
+    font-size: 12px;
+    padding: 8px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    resize: vertical;
+    box-sizing: border-box;
+  }
+
+  .import-btn {
+    align-self: flex-end;
+    padding: 6px 16px;
+    background: #5cb85c;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  .import-btn:hover {
+    background: #4cae4c;
   }
 
   .error {

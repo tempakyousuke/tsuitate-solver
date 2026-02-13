@@ -116,6 +116,11 @@ export const MAX_PIECE_COUNT: Record<string, number> = {
   pawn: 18,
 };
 
+/** 成駒かどうか */
+export function isPromoted(kind: PieceKind): boolean {
+  return kind.startsWith("promoted_");
+}
+
 /** 成駒を元の駒種に変換（非成駒はそのまま返す） */
 export function unpromoted(kind: PieceKind): PieceKind {
   const map: Partial<Record<PieceKind, PieceKind>> = {

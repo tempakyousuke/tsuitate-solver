@@ -1,7 +1,7 @@
 <script lang="ts">
   import { boardState, senteHand, goteHand, selectedPieceKind, selectedColor, remainingPieces } from "./stores";
   import type { HandState } from "./stores";
-  import { PIECE_KANJI, HAND_PIECE_KINDS, unpromoted } from "./types";
+  import { PIECE_KANJI, HAND_PIECE_KINDS, unpromoted, isPromoted } from "./types";
   import type { Piece, PieceKind } from "./types";
 
   // 盤面クリック時の処理
@@ -103,7 +103,7 @@
               on:click={() => onCellClick(file, rank)}
             >
               {#if piece}
-                <span class="piece-text" class:gote={piece.color === "gote"}>
+                <span class="piece-text" class:gote={piece.color === "gote"} class:promoted={isPromoted(piece.kind)}>
                   {pieceText(piece)}
                 </span>
               {/if}
@@ -266,9 +266,12 @@
     user-select: none;
   }
 
+  .piece-text.promoted {
+    color: #cc3333;
+  }
+
   .piece-text.gote {
     transform: rotate(180deg);
-    color: #cc3333;
   }
 
   .rank-labels {
