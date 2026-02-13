@@ -1,7 +1,14 @@
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+
 use tsuitate_resolver_lib::shogi::position::Position;
 use tsuitate_resolver_lib::shogi::types::*;
 use tsuitate_resolver_lib::solver::metaposition::MetaPosition;
 use tsuitate_resolver_lib::solver::solver::TsuitateSolver;
+
+fn no_cancel() -> Arc<AtomicBool> {
+    Arc::new(AtomicBool::new(false))
+}
 
 /// 1手詰め: 頭金
 /// 後手玉: 1一、先手: 金を持ち駒で、2一に金を打って詰み
@@ -24,7 +31,7 @@ fn test_solve_1te_headgold() {
     pos.side_to_move = Color::Sente;
 
     let meta = MetaPosition::new(pos);
-    let mut solver = TsuitateSolver::new(1);
+    let mut solver = TsuitateSolver::new(1, no_cancel());
     let result = solver.solve(&meta);
 
     assert!(result.found, "1手詰めが見つかるはず: {}", result.message);
@@ -90,7 +97,7 @@ fn test_no_checkmate() {
     pos.side_to_move = Color::Sente;
 
     let meta = MetaPosition::new(pos);
-    let mut solver = TsuitateSolver::new(1);
+    let mut solver = TsuitateSolver::new(1, no_cancel());
     let result = solver.solve(&meta);
 
     // 歩1枚では1手で詰まない
@@ -122,7 +129,7 @@ fn test_solve_3te() {
     pos.side_to_move = Color::Sente;
 
     let meta = MetaPosition::new(pos);
-    let mut solver = TsuitateSolver::new(3);
+    let mut solver = TsuitateSolver::new(3, no_cancel());
     let result = solver.solve(&meta);
 
     // 3手以内の詰みがあるかチェック（局面によっては存在しない場合もある）
@@ -160,7 +167,7 @@ fn test_solve_tsuitate_3te_with_illegal_probe() {
     pos.side_to_move = Color::Sente;
 
     let meta = MetaPosition::new(pos);
-    let mut solver = TsuitateSolver::new(3);
+    let mut solver = TsuitateSolver::new(3, no_cancel());
     let result = solver.solve(&meta);
 
     println!(
@@ -203,7 +210,7 @@ fn test_solve_tsuitate_illegal_probe_default_depth() {
     pos.side_to_move = Color::Sente;
 
     let meta = MetaPosition::new(pos);
-    let mut solver = TsuitateSolver::new(7); // アプリのデフォルト
+    let mut solver = TsuitateSolver::new(7, no_cancel()); // アプリのデフォルト
     let start = std::time::Instant::now();
     let result = solver.solve(&meta);
     let elapsed = start.elapsed();
@@ -252,7 +259,7 @@ fn test_solve_question_json() {
     pos.side_to_move = Color::Sente;
 
     let meta = MetaPosition::new(pos);
-    let mut solver = TsuitateSolver::new(7);
+    let mut solver = TsuitateSolver::new(7, no_cancel());
     let start = std::time::Instant::now();
     let result = solver.solve(&meta);
     let elapsed = start.elapsed();

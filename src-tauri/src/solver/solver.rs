@@ -1,4 +1,6 @@
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use super::metaposition::MetaPosition;
 use super::solution::*;
@@ -15,14 +17,17 @@ pub struct TsuitateSolver {
     pub nodes_searched: u64,
     /// 探索ログ
     pub trace: Vec<String>,
+    /// キャンセルフラグ
+    cancelled: Arc<AtomicBool>,
 }
 
 impl TsuitateSolver {
-    pub fn new(max_depth: u32) -> Self {
+    pub fn new(max_depth: u32, cancelled: Arc<AtomicBool>) -> Self {
         Self {
             max_depth,
             nodes_searched: 0,
             trace: Vec::new(),
+            cancelled,
         }
     }
 
@@ -89,6 +94,9 @@ impl TsuitateSolver {
         self.log(0, format!("探索深さ系列: {:?}", depths));
 
         for &search_depth in &depths {
+            if self.is_cancelled() {
+                break;
+            }
             self.log(0, format!("--- 深さ{}手で探索開始 ---", search_depth));
 
             if let Some(tree) = self.solve_attack(meta, search_depth, 0) {
@@ -107,6 +115,20 @@ impl TsuitateSolver {
             }
         }
 
+        if self.is_cancelled() {
+            let msg = format!(
+                "探索を中止しました (探索ノード数: {})",
+                self.nodes_searched
+            );
+            self.log(0, format!("結果: {}", msg));
+            return SolutionData {
+                found: false,
+                tree: None,
+                message: msg,
+                trace: std::mem::take(&mut self.trace),
+            };
+        }
+
         let msg = format!(
             "{}手以内の詰みは見つかりませんでした (探索ノード数: {})",
             max_search_depth, self.nodes_searched
@@ -120,6 +142,10 @@ impl TsuitateSolver {
         }
     }
 
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Relaxed)
+    }
+
     /// 攻め方のターン（ORノード）
     /// 少なくとも1つの手が全てのメタポジションで詰みに導く
     fn solve_attack(
@@ -129,6 +155,10 @@ impl TsuitateSolver {
         current_depth: u32,
     ) -> Option<SolutionNode> {
         self.nodes_searched += 1;
+
+        if self.is_cancelled() {
+            return None;
+        }
 
         if meta.is_empty() {
             self.log(current_depth, "空のメタポジション → 失敗".to_string());

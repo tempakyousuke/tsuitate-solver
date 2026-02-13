@@ -1,3 +1,5 @@
+use std::sync::atomic::Ordering;
+
 use serde::{Deserialize, Serialize};
 
 use crate::shogi::position::Position;
@@ -5,6 +7,7 @@ use crate::shogi::types::*;
 use crate::solver::metaposition::MetaPosition;
 use crate::solver::solution::SolutionData;
 use crate::solver::solver::TsuitateSolver;
+use crate::CancelFlag;
 
 /// フロントエンドから受け取る盤面データ
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,7 +121,11 @@ pub fn validate_position(position: PositionData) -> Result<bool, String> {
 
 /// 衝立詰将棋を解く
 #[tauri::command]
-pub async fn solve(position: PositionData, max_depth: Option<u32>) -> Result<SolutionData, String> {
+pub async fn solve(
+    position: PositionData,
+    max_depth: Option<u32>,
+    cancel_flag: tauri::State<'_, CancelFlag>,
+) -> Result<SolutionData, String> {
     let pos = position_from_data(&position)?;
 
     // 後手の玉があるか確認
@@ -128,11 +135,15 @@ pub async fn solve(position: PositionData, max_depth: Option<u32>) -> Result<Sol
 
     let max_depth = max_depth.unwrap_or(7); // デフォルト7手詰めまで
 
+    // キャンセルフラグをリセット
+    cancel_flag.store(false, Ordering::Relaxed);
+    let cancelled = cancel_flag.inner().clone();
+
     // ブロッキング処理を別スレッドで実行
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let meta = MetaPosition::new(pos);
-        let mut solver = TsuitateSolver::new(max_depth);
+        let mut solver = TsuitateSolver::new(max_depth, cancelled);
         let result = solver.solve(&meta);
         let _ = tx.send(result);
     });
@@ -140,4 +151,10 @@ pub async fn solve(position: PositionData, max_depth: Option<u32>) -> Result<Sol
     let result = rx.recv().map_err(|e| format!("Solver error: {}", e))?;
 
     Ok(result)
+}
+
+/// 探索を中止する
+#[tauri::command]
+pub fn cancel_solve(cancel_flag: tauri::State<'_, CancelFlag>) {
+    cancel_flag.store(true, Ordering::Relaxed);
 }

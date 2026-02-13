@@ -146,6 +146,10 @@
     }
   }
 
+  async function handleCancel() {
+    await invoke("cancel_solve");
+  }
+
   function handleClear() {
     clearBoard();
   }
@@ -165,17 +169,15 @@
   </div>
 
   <div class="buttons">
-    <button
-      class="solve-btn"
-      on:click={handleSolve}
-      disabled={$solving}
-    >
-      {#if $solving}
-        求解中...
-      {:else}
+    {#if $solving}
+      <button class="cancel-btn" on:click={handleCancel}>
+        中止
+      </button>
+    {:else}
+      <button class="solve-btn" on:click={handleSolve}>
         解く
-      {/if}
-    </button>
+      </button>
+    {/if}
     <button class="clear-btn" on:click={handleClear} disabled={$solving}>
       クリア
     </button>
@@ -256,9 +258,20 @@
     background: #357abd;
   }
 
-  .solve-btn:disabled {
-    background: #a0c4e8;
-    cursor: not-allowed;
+  .cancel-btn {
+    flex: 1;
+    padding: 10px 20px;
+    background: #d9534f;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-size: 16px;
+    font-weight: bold;
+    cursor: pointer;
+  }
+
+  .cancel-btn:hover {
+    background: #c9302c;
   }
 
   .clear-btn {
