@@ -134,7 +134,6 @@ fn test_solve_3te() {
 }
 
 /// 衝立詰将棋: 反則（情報収集）を利用した3手詰め
-/// issue-question.json の問題
 /// 正解手順: ▲７四角成 → 玉方応手 → ▲７六角(反則で情報収集) → ▲６五角打(詰み)
 #[test]
 fn test_solve_tsuitate_3te_with_illegal_probe() {
@@ -222,6 +221,51 @@ fn test_solve_tsuitate_illegal_probe_default_depth() {
         "{}秒以内に解けるはず (実際: {:?})",
         time_limit, elapsed
     );
+}
+
+/// question.json の問題を解く（探索ログ分析用）
+/// 盤面: 1二後手飛, 1三後手歩, 2一後手金, 2二後手玉, 2五先手歩, 3四先手歩, 4一後手銀, 4三後手歩
+/// 先手持ち駒: 銀, 桂
+/// 後手持ち駒: 残り全て
+#[test]
+fn test_solve_question_json() {
+    let mut pos = Position::new();
+    pos.set_piece(Square::new(1, 2), Piece::new(Color::Gote, PieceKind::Rook));
+    pos.set_piece(Square::new(1, 3), Piece::new(Color::Gote, PieceKind::Pawn));
+    pos.set_piece(Square::new(2, 1), Piece::new(Color::Gote, PieceKind::Gold));
+    pos.set_piece(Square::new(2, 2), Piece::new(Color::Gote, PieceKind::King));
+    pos.set_piece(Square::new(2, 5), Piece::new(Color::Sente, PieceKind::Pawn));
+    pos.set_piece(Square::new(3, 4), Piece::new(Color::Sente, PieceKind::Pawn));
+    pos.set_piece(Square::new(4, 1), Piece::new(Color::Gote, PieceKind::Silver));
+    pos.set_piece(Square::new(4, 3), Piece::new(Color::Gote, PieceKind::Pawn));
+    // 先手持ち駒: 銀, 桂
+    pos.sente_hand.add(PieceKind::Silver);
+    pos.sente_hand.add(PieceKind::Knight);
+    // 後手持ち駒: 残り全て（詰将棋ルール）
+    // 飛x1(2-1=1), 角x2, 金x3(4-1=3), 銀x2(4-1-1=2), 桂x3(4-1=3), 香x4, 歩x14(18-4=14)
+    for _ in 0..1 { pos.gote_hand.add(PieceKind::Rook); }
+    for _ in 0..2 { pos.gote_hand.add(PieceKind::Bishop); }
+    for _ in 0..3 { pos.gote_hand.add(PieceKind::Gold); }
+    for _ in 0..2 { pos.gote_hand.add(PieceKind::Silver); }
+    for _ in 0..3 { pos.gote_hand.add(PieceKind::Knight); }
+    for _ in 0..4 { pos.gote_hand.add(PieceKind::Lance); }
+    for _ in 0..14 { pos.gote_hand.add(PieceKind::Pawn); }
+    pos.side_to_move = Color::Sente;
+
+    let meta = MetaPosition::new(pos);
+    let mut solver = TsuitateSolver::new(7);
+    let start = std::time::Instant::now();
+    let result = solver.solve(&meta);
+    let elapsed = start.elapsed();
+
+    println!(
+        "question.json: found={}, time={:?}, nodes={}, message={}",
+        result.found, elapsed, solver.nodes_searched, result.message
+    );
+    // トレースをファイルに出力
+    let trace_content = result.trace.join("\n");
+    std::fs::write("/tmp/question_trace.log", &trace_content).unwrap();
+    println!("トレース出力: /tmp/question_trace.log ({} 行)", result.trace.len());
 }
 
 /// expand_defense_moves テスト

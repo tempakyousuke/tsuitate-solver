@@ -4,6 +4,9 @@ use super::metaposition::MetaPosition;
 use super::solution::*;
 use crate::shogi::types::*;
 
+/// メタポジションのサイズ上限（これを超える分岐は枝刈り）
+const MAX_META_POSITIONS: usize = 5000;
+
 /// 衝立詰将棋ソルバー
 pub struct TsuitateSolver {
     /// 最大探索深さ
@@ -178,61 +181,81 @@ impl TsuitateSolver {
                 }
             }
 
-            // 合法分岐の処理: 玉方の応手を展開し、観測結果で分類
-            let branches = legal_meta.expand_defense_moves(mv);
-            self.log(current_depth, format!(
-                "  合法分岐: 観測パターン数={}",
-                branches.len()
-            ));
-            for (obs, bm) in &branches {
+            // 最適化: remaining_depth==1 では expand_defense_moves を呼ばず、
+            // 全盤面が実質的に詰みかどうかだけを高速チェックする
+            if remaining_depth == 1 {
+                if legal_meta.all_effectively_checkmate() {
+                    self.log(current_depth, "  合法分岐: 全盤面で実質詰み！".to_string());
+                    solution_branches.push(SolutionBranch {
+                        observation: Observation::Checkmate,
+                        continuation: Box::new(SolutionNode::Checkmate {
+                            depth: current_depth + 1,
+                        }),
+                    });
+                } else {
+                    self.log(current_depth, "  合法分岐: 残り深さ1で詰みでない → 次の候補へ".to_string());
+                    all_solved = false;
+                    continue;
+                }
+            } else {
+                // 合法分岐の処理: 玉方の応手を展開し、観測結果で分類
+                let branches = legal_meta.expand_defense_moves(mv);
                 self.log(current_depth, format!(
-                    "    {:?}: {}盤面", obs, bm.positions.len()
+                    "  合法分岐: 観測パターン数={}",
+                    branches.len()
                 ));
-            }
+                for (obs, bm) in &branches {
+                    self.log(current_depth, format!(
+                        "    {:?}: {}盤面", obs, bm.positions.len()
+                    ));
+                }
 
-            for (observation, branch_meta) in &branches {
-                match observation {
-                    Observation::Checkmate => {
-                        self.log(current_depth, "  → 詰み分岐: 成功".to_string());
-                        solution_branches.push(SolutionBranch {
-                            observation: observation.clone(),
-                            continuation: Box::new(SolutionNode::Checkmate {
-                                depth: current_depth + 1,
-                            }),
-                        });
-                    }
-                    Observation::Captured | Observation::NoCapture => {
-                        if remaining_depth < 2 {
-                            self.log(current_depth, format!(
-                                "  → {:?}分岐: 深さ不足で探索不可", observation
-                            ));
-                            all_solved = false;
-                            break;
-                        }
-                        self.log(current_depth, format!(
-                            "  → {:?}分岐: {}盤面を深さ{}で探索",
-                            observation, branch_meta.positions.len(), remaining_depth - 2
-                        ));
-                        if let Some(continuation) =
-                            self.solve_attack(branch_meta, remaining_depth - 2, current_depth + 2)
-                        {
-                            self.log(current_depth, format!(
-                                "  → {:?}分岐: 解決！", observation
-                            ));
+                for (observation, branch_meta) in &branches {
+                    match observation {
+                        Observation::Checkmate => {
+                            self.log(current_depth, "  → 詰み分岐: 成功".to_string());
                             solution_branches.push(SolutionBranch {
                                 observation: observation.clone(),
-                                continuation: Box::new(continuation),
+                                continuation: Box::new(SolutionNode::Checkmate {
+                                    depth: current_depth + 1,
+                                }),
                             });
-                        } else {
-                            self.log(current_depth, format!(
-                                "  → {:?}分岐: 解決できず → 次の候補へ", observation
-                            ));
-                            all_solved = false;
-                            break;
                         }
-                    }
-                    Observation::Illegal => {
-                        // expand_defense_moves からは Illegal は来ない
+                        Observation::Captured | Observation::NoCapture => {
+                            // メタポジションが大きすぎる場合は枝刈り
+                            if branch_meta.positions.len() > MAX_META_POSITIONS {
+                                self.log(current_depth, format!(
+                                    "  → {:?}分岐: {}盤面 > 上限{} → 枝刈り",
+                                    observation, branch_meta.positions.len(), MAX_META_POSITIONS
+                                ));
+                                all_solved = false;
+                                break;
+                            }
+                            self.log(current_depth, format!(
+                                "  → {:?}分岐: {}盤面を深さ{}で探索",
+                                observation, branch_meta.positions.len(), remaining_depth - 2
+                            ));
+                            if let Some(continuation) =
+                                self.solve_attack(branch_meta, remaining_depth - 2, current_depth + 2)
+                            {
+                                self.log(current_depth, format!(
+                                    "  → {:?}分岐: 解決！", observation
+                                ));
+                                solution_branches.push(SolutionBranch {
+                                    observation: observation.clone(),
+                                    continuation: Box::new(continuation),
+                                });
+                            } else {
+                                self.log(current_depth, format!(
+                                    "  → {:?}分岐: 解決できず → 次の候補へ", observation
+                                ));
+                                all_solved = false;
+                                break;
+                            }
+                        }
+                        Observation::Illegal => {
+                            // expand_defense_moves からは Illegal は来ない
+                        }
                     }
                 }
             }
@@ -312,6 +335,24 @@ impl TsuitateSolver {
                 probe_moves.push(*mv);
             }
         }
+
+        // 候補手のソート（安定した手順で探索するため）
+        // ヒューリスティック: 打ち駒 > 盤上の駒移動、玉に近い手 > 遠い手
+        let king_sq = meta.positions[0].find_king(Color::Gote);
+        let sort_key = |mv: &Move| -> (u8, u8) {
+            // 第1キー: 打ち駒を優先（0=打ち, 1=移動）
+            let is_drop = if mv.drop_piece.is_some() { 0u8 } else { 1u8 };
+            // 第2キー: 玉との距離（小さいほど優先）
+            let dist = if let Some(ksq) = king_sq {
+                let df = (mv.to.file as i8 - ksq.file as i8).unsigned_abs();
+                let dr = (mv.to.rank as i8 - ksq.rank as i8).unsigned_abs();
+                df.max(dr)
+            } else {
+                0
+            };
+            (is_drop, dist)
+        };
+        check_moves.sort_by_key(|mv| sort_key(mv));
 
         check_moves.extend(probe_moves);
         (check_moves, legal_move_sets)

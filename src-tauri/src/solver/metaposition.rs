@@ -30,6 +30,44 @@ impl MetaPosition {
         !self.positions.is_empty() && self.positions.iter().all(|pos| pos.is_checkmate())
     }
 
+    /// 全ての盤面で実質的に詰んでいるか（詰みまたは全応手が無駄合い）
+    /// expand_defense_moves より高速: 非詰み局面が見つかった時点で即座にfalseを返す
+    pub fn all_effectively_checkmate(&self) -> bool {
+        if self.positions.is_empty() {
+            return false;
+        }
+        for pos in &self.positions {
+            let defender_color = pos.side_to_move;
+            if !pos.is_in_check(defender_color) {
+                return false; // 王手でなければ詰みではない
+            }
+            let legal_moves = pos.generate_legal_moves();
+            if legal_moves.is_empty() {
+                continue; // 合法手なし = 詰み
+            }
+            // 合法手がある場合、全てが無駄合いかチェック（早期打ち切り）
+            let mut futile_squares: HashSet<Square> = HashSet::new();
+            for def_mv in &legal_moves {
+                let is_king_move = if let Some(from) = def_mv.from {
+                    pos.piece_at(from).map_or(false, |p| p.kind == PieceKind::King)
+                } else {
+                    false
+                };
+                if is_king_move {
+                    return false; // 玉が逃げられる = 詰みではない
+                }
+                if futile_squares.contains(&def_mv.to) {
+                    continue; // キャッシュヒット
+                }
+                if !pos.is_futile_interposition(def_mv) {
+                    return false; // 有効な応手がある = 詰みではない
+                }
+                futile_squares.insert(def_mv.to);
+            }
+        }
+        true
+    }
+
     /// 攻め方の手を指す（全盤面に適用）
     /// 返り値: 手を指した後のメタポジション
     /// 不正な手（その盤面で指せない手）の盤面は除外される
