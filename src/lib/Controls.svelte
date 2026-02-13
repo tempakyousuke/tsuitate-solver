@@ -8,6 +8,7 @@
     solving,
     errorMessage,
     maxDepth,
+    findSecondSolution,
     clearBoard,
   } from "./stores";
   import type { BoardState, HandState } from "./stores";
@@ -136,6 +137,7 @@
       const result = await invoke<SolutionData>("solve", {
         position: posData,
         maxDepth: $maxDepth,
+        findSecondSolution: $findSecondSolution,
       });
 
       solution.set(result);
@@ -166,6 +168,13 @@
       <option value={9}>9手</option>
       <option value={11}>11手</option>
     </select>
+  </div>
+
+  <div class="option-control">
+    <label>
+      <input type="checkbox" bind:checked={$findSecondSolution} disabled={$solving} />
+      2つ目の解を探す（余詰めチェック）
+    </label>
   </div>
 
   <div class="buttons">
@@ -235,6 +244,14 @@
     border-radius: 4px;
     border: 1px solid #ccc;
     font-size: 14px;
+  }
+
+  .option-control label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 14px;
+    cursor: pointer;
   }
 
   .buttons {

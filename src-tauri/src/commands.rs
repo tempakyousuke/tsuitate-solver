@@ -124,6 +124,7 @@ pub fn validate_position(position: PositionData) -> Result<bool, String> {
 pub async fn solve(
     position: PositionData,
     max_depth: Option<u32>,
+    find_second_solution: Option<bool>,
     cancel_flag: tauri::State<'_, CancelFlag>,
 ) -> Result<SolutionData, String> {
     let pos = position_from_data(&position)?;
@@ -135,6 +136,8 @@ pub async fn solve(
 
     let max_depth = max_depth.unwrap_or(7); // デフォルト7手詰めまで
 
+    let find_second = find_second_solution.unwrap_or(false);
+
     // キャンセルフラグをリセット
     cancel_flag.store(false, Ordering::Relaxed);
     let cancelled = cancel_flag.inner().clone();
@@ -144,6 +147,7 @@ pub async fn solve(
     std::thread::spawn(move || {
         let meta = MetaPosition::new(pos);
         let mut solver = TsuitateSolver::new(max_depth, cancelled);
+        solver.set_find_second_solution(find_second);
         let result = solver.solve(&meta);
         let _ = tx.send(result);
     });

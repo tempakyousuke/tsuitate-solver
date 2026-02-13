@@ -19,6 +19,10 @@ pub struct TsuitateSolver {
     pub trace: Vec<String>,
     /// キャンセルフラグ
     cancelled: Arc<AtomicBool>,
+    /// 2つ目の解を探すかどうか
+    find_second_solution: bool,
+    /// 直前の探索で見つかったルートレベルの手（除外用）
+    last_root_move: Option<Move>,
 }
 
 impl TsuitateSolver {
@@ -28,7 +32,13 @@ impl TsuitateSolver {
             nodes_searched: 0,
             trace: Vec::new(),
             cancelled,
+            find_second_solution: false,
+            last_root_move: None,
         }
+    }
+
+    pub fn set_find_second_solution(&mut self, find: bool) {
+        self.find_second_solution = find;
     }
 
     fn log(&mut self, depth: u32, msg: String) {
@@ -72,48 +82,11 @@ impl TsuitateSolver {
             }
         }
 
-        // max_depthが偶数の場合、奇数に調整（詰将棋は奇数手で詰む）
-        let max_search_depth = if self.max_depth % 2 == 0 {
-            self.max_depth - 1
-        } else {
-            self.max_depth
-        };
-
-        // 指数的反復深化: 1, 3, 7, 15, ... (next = 2*current + 1)
-        // 短い詰みを素早く発見しつつ、中間深さの無駄な探索を回避
-        let mut depths = Vec::new();
-        let mut d = 1u32;
-        while d < max_search_depth {
-            depths.push(d);
-            d = d * 2 + 1;
-        }
-        depths.push(max_search_depth);
-        // 重複を除去（max_search_depthが既に含まれている場合）
-        depths.dedup();
-
+        let depths = self.build_depth_sequence();
         self.log(0, format!("探索深さ系列: {:?}", depths));
 
-        for &search_depth in &depths {
-            if self.is_cancelled() {
-                break;
-            }
-            self.log(0, format!("--- 深さ{}手で探索開始 ---", search_depth));
-
-            if let Some(tree) = self.solve_attack(meta, search_depth, 0) {
-                let actual_depth = tree.max_moves();
-                let msg = format!(
-                    "{}手詰めが見つかりました (探索ノード数: {})",
-                    actual_depth, self.nodes_searched
-                );
-                self.log(0, format!("結果: {}", msg));
-                return SolutionData {
-                    found: true,
-                    tree: Some(tree),
-                    message: msg,
-                    trace: std::mem::take(&mut self.trace),
-                };
-            }
-        }
+        // 第1フェーズ: 最初の解を探す
+        let first_tree = self.solve_iterative(meta, &depths, &[]);
 
         if self.is_cancelled() {
             let msg = format!(
@@ -124,22 +97,135 @@ impl TsuitateSolver {
             return SolutionData {
                 found: false,
                 tree: None,
+                second_tree: None,
                 message: msg,
                 trace: std::mem::take(&mut self.trace),
             };
         }
 
+        let Some(tree) = first_tree else {
+            let max_search_depth = *depths.last().unwrap_or(&1);
+            let msg = format!(
+                "{}手以内の詰みは見つかりませんでした (探索ノード数: {})",
+                max_search_depth, self.nodes_searched
+            );
+            self.log(0, format!("結果: {}", msg));
+            return SolutionData {
+                found: false,
+                tree: None,
+                second_tree: None,
+                message: msg,
+                trace: std::mem::take(&mut self.trace),
+            };
+        };
+
+        let actual_depth = tree.max_moves();
+
+        // 第2フェーズ: 2つ目の解を探す（オプション）
+        if self.find_second_solution {
+            if let Some(first_mv) = self.last_root_move {
+                self.log(0, format!(
+                    "--- 2つ目の解を探索（初手 {} を除外）---",
+                    first_mv.to_japanese(Color::Sente)
+                ));
+                let second_tree = self.solve_iterative(meta, &depths, &[first_mv]);
+
+                if self.is_cancelled() {
+                    let msg = format!(
+                        "{}手詰めが見つかりました（余詰めチェック中に中止、探索ノード数: {}）",
+                        actual_depth, self.nodes_searched
+                    );
+                    self.log(0, format!("結果: {}", msg));
+                    return SolutionData {
+                        found: true,
+                        tree: Some(tree),
+                        second_tree: None,
+                        message: msg,
+                        trace: std::mem::take(&mut self.trace),
+                    };
+                }
+
+                if let Some(second) = second_tree {
+                    let second_depth = second.max_moves();
+                    let msg = format!(
+                        "余詰めあり: {}手詰めと{}手詰めが見つかりました (探索ノード数: {})",
+                        actual_depth, second_depth, self.nodes_searched
+                    );
+                    self.log(0, format!("結果: {}", msg));
+                    return SolutionData {
+                        found: true,
+                        tree: Some(tree),
+                        second_tree: Some(second),
+                        message: msg,
+                        trace: std::mem::take(&mut self.trace),
+                    };
+                } else {
+                    let msg = format!(
+                        "完全作: {}手詰め、余詰めなし (探索ノード数: {})",
+                        actual_depth, self.nodes_searched
+                    );
+                    self.log(0, format!("結果: {}", msg));
+                    return SolutionData {
+                        found: true,
+                        tree: Some(tree),
+                        second_tree: None,
+                        message: msg,
+                        trace: std::mem::take(&mut self.trace),
+                    };
+                }
+            }
+        }
+
         let msg = format!(
-            "{}手以内の詰みは見つかりませんでした (探索ノード数: {})",
-            max_search_depth, self.nodes_searched
+            "{}手詰めが見つかりました (探索ノード数: {})",
+            actual_depth, self.nodes_searched
         );
         self.log(0, format!("結果: {}", msg));
         SolutionData {
-            found: false,
-            tree: None,
+            found: true,
+            tree: Some(tree),
+            second_tree: None,
             message: msg,
             trace: std::mem::take(&mut self.trace),
         }
+    }
+
+    /// 探索深さの系列を構築
+    fn build_depth_sequence(&self) -> Vec<u32> {
+        let max_search_depth = if self.max_depth % 2 == 0 {
+            self.max_depth - 1
+        } else {
+            self.max_depth
+        };
+        let mut depths = Vec::new();
+        let mut d = 1u32;
+        while d < max_search_depth {
+            depths.push(d);
+            d = d * 2 + 1;
+        }
+        depths.push(max_search_depth);
+        depths.dedup();
+        depths
+    }
+
+    /// 反復深化で解を探す（excluded_first_movesに含まれる初手は除外）
+    fn solve_iterative(
+        &mut self,
+        meta: &MetaPosition,
+        depths: &[u32],
+        excluded_first_moves: &[Move],
+    ) -> Option<SolutionNode> {
+        for &search_depth in depths {
+            if self.is_cancelled() {
+                return None;
+            }
+            self.log(0, format!("--- 深さ{}手で探索開始 ---", search_depth));
+
+            if let Some(tree) = self.solve_attack(meta, search_depth, 0, excluded_first_moves) {
+                return Some(tree);
+            }
+        }
+        None
     }
 
     fn is_cancelled(&self) -> bool {
@@ -153,6 +239,7 @@ impl TsuitateSolver {
         meta: &MetaPosition,
         remaining_depth: u32,
         current_depth: u32,
+        excluded_first_moves: &[Move],
     ) -> Option<SolutionNode> {
         self.nodes_searched += 1;
 
@@ -183,7 +270,13 @@ impl TsuitateSolver {
         }
 
         // 候補手を列挙（王手の手 + 情報収集用の手）
-        let (candidate_moves, legal_move_sets) = self.generate_attack_candidates(meta);
+        let (mut candidate_moves, legal_move_sets) = self.generate_attack_candidates(meta);
+
+        // ルートレベルで除外指定された初手をフィルタ
+        if current_depth == 0 && !excluded_first_moves.is_empty() {
+            candidate_moves.retain(|mv| !excluded_first_moves.contains(mv));
+        }
+
         self.log(current_depth, format!(
             "攻め方ターン: 残り深さ={}, メタポジション数={}, 候補手数={}",
             remaining_depth, meta.positions.len(), candidate_moves.len()
@@ -217,7 +310,7 @@ impl TsuitateSolver {
                     illegal_meta.positions.len()
                 ));
                 if let Some(continuation) =
-                    self.solve_attack(&illegal_meta, remaining_depth, current_depth)
+                    self.solve_attack(&illegal_meta, remaining_depth, current_depth, &[])
                 {
                     self.log(current_depth, "  反則分岐: 解決！".to_string());
                     solution_branches.push(SolutionBranch {
@@ -284,7 +377,7 @@ impl TsuitateSolver {
                                 observation, branch_meta.positions.len(), remaining_depth - 2
                             ));
                             if let Some(continuation) =
-                                self.solve_attack(branch_meta, remaining_depth - 2, current_depth + 2)
+                                self.solve_attack(branch_meta, remaining_depth - 2, current_depth + 2, &[])
                             {
                                 self.log(current_depth, format!(
                                     "  → {:?}分岐: 解決！", observation
@@ -312,6 +405,9 @@ impl TsuitateSolver {
                 self.log(current_depth, format!(
                     "成功: {} で全分岐解決！", mv.to_japanese(Color::Sente)
                 ));
+                if current_depth == 0 {
+                    self.last_root_move = Some(mv);
+                }
                 return Some(SolutionNode::AttackMove {
                     mv: MoveData::from_move(mv, Color::Sente),
                     branches: solution_branches,

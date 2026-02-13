@@ -33,31 +33,39 @@
       {$solution.message}
     </p>
 
+    {#snippet nodeDisplay(node: SolutionNode, indent: number)}
+      {#if isCheckmate(node)}
+        <div class="node checkmate" style="margin-left: {indent * 20}px">
+          詰み
+        </div>
+      {:else if isAttackMove(node)}
+        <div class="node attack" style="margin-left: {indent * 20}px">
+          <span class="move">{node.AttackMove.mv.notation}</span>
+          {#each node.AttackMove.branches as branch}
+            <div class="branch" style="margin-left: 20px">
+              <span class="observation">[{observationLabel(branch.observation)}]</span>
+              {#if branch.observation === "Checkmate"}
+                <span class="checkmate-inline"> → 詰み</span>
+              {:else}
+                {@render nodeDisplay(branch.continuation, indent + 1)}
+              {/if}
+            </div>
+          {/each}
+        </div>
+      {/if}
+    {/snippet}
+
     {#if $solution.tree}
       <div class="tree">
         <h4>解の手順</h4>
-        {#snippet nodeDisplay(node: SolutionNode, indent: number)}
-          {#if isCheckmate(node)}
-            <div class="node checkmate" style="margin-left: {indent * 20}px">
-              詰み
-            </div>
-          {:else if isAttackMove(node)}
-            <div class="node attack" style="margin-left: {indent * 20}px">
-              <span class="move">{node.AttackMove.mv.notation}</span>
-              {#each node.AttackMove.branches as branch}
-                <div class="branch" style="margin-left: 20px">
-                  <span class="observation">[{observationLabel(branch.observation)}]</span>
-                  {#if branch.observation === "Checkmate"}
-                    <span class="checkmate-inline"> → 詰み</span>
-                  {:else}
-                    {@render nodeDisplay(branch.continuation, indent + 1)}
-                  {/if}
-                </div>
-              {/each}
-            </div>
-          {/if}
-        {/snippet}
         {@render nodeDisplay($solution.tree, 0)}
+      </div>
+    {/if}
+
+    {#if $solution.second_tree}
+      <div class="tree second-solution">
+        <h4>2つ目の解（余詰め）</h4>
+        {@render nodeDisplay($solution.second_tree, 0)}
       </div>
     {/if}
 
@@ -137,6 +145,16 @@
 
   .branch {
     margin: 2px 0;
+  }
+
+  .second-solution {
+    margin-top: 12px;
+    padding-top: 8px;
+    border-top: 1px solid #ddd;
+  }
+
+  .second-solution h4 {
+    color: #c33;
   }
 
   .trace-section {

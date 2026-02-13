@@ -100,6 +100,9 @@ pub struct SolutionData {
     pub found: bool,
     /// 解の手順木
     pub tree: Option<SolutionNode>,
+    /// 2つ目の解の手順木（余詰めチェック用）
+    #[serde(default)]
+    pub second_tree: Option<SolutionNode>,
     /// メッセージ
     pub message: String,
     /// 探索ログ

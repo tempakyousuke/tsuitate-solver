@@ -51,6 +51,7 @@ export interface HandPieceData {
 export interface SolutionData {
   found: boolean;
   tree: SolutionNode | null;
+  second_tree: SolutionNode | null;
   message: string;
   trace: string[];
 }
