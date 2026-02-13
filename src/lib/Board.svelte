@@ -22,6 +22,16 @@
         const baseKind = unpromoted(kind);
         const remaining = remainingPieces(baseKind, { file, rank });
         if (remaining <= 0) return board; // 上限に達している
+
+        // 二歩チェック: 同じ筋に同じ色の歩が既にある場合は配置不可
+        if (kind === "pawn") {
+          for (let r = 0; r < 9; r++) {
+            if (r === rank) continue;
+            const p = board[file][r];
+            if (p && p.color === color && p.kind === "pawn") return board;
+          }
+        }
+
         board[file][rank] = { color, kind };
       }
       return board;
