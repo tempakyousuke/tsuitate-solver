@@ -28,22 +28,25 @@
     });
   }
 
-  // 先手の持ち駒を増減
-  function onSenteHandClick(kind: PieceKind) {
+  // 先手の持ち駒を減らす（既存の持ち駒をクリック）
+  function removeSenteHand(kind: PieceKind) {
     senteHand.update((h: HandState) => {
       const current = h.get(kind) || 0;
-      if ($selectedColor === "sente" && $selectedPieceKind === kind) {
-        // 同じ駒種を選択中にクリック → 減らす
-        if (current > 0) {
-          h.set(kind, current - 1);
-          if (h.get(kind) === 0) h.delete(kind);
-        }
-      } else {
-        // 駒数上限チェック
-        const remaining = remainingPieces(kind);
-        if (remaining <= 0) return h;
-        h.set(kind, current + 1);
+      if (current > 0) {
+        h.set(kind, current - 1);
+        if (h.get(kind) === 0) h.delete(kind);
       }
+      return h;
+    });
+  }
+
+  // 先手の持ち駒を増やす（＋ボタン）
+  function addSenteHand(kind: PieceKind) {
+    senteHand.update((h: HandState) => {
+      const remaining = remainingPieces(kind);
+      if (remaining <= 0) return h;
+      const current = h.get(kind) || 0;
+      h.set(kind, current + 1);
       return h;
     });
   }
@@ -127,7 +130,7 @@
         {#if count > 0}
           <button
             class="hand-piece"
-            on:click={() => onSenteHandClick(kind)}
+            on:click={() => removeSenteHand(kind)}
           >
             {PIECE_KANJI[kind]}{count > 1 ? count : ""}
           </button>
@@ -137,7 +140,7 @@
         class="hand-add-btn"
         on:click={() => {
           if ($selectedPieceKind && $selectedPieceKind !== "king") {
-            onSenteHandClick(unpromoted($selectedPieceKind));
+            addSenteHand(unpromoted($selectedPieceKind));
           }
         }}
         title="選択中の駒を先手持ち駒に追加"
