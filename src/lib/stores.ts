@@ -1,6 +1,6 @@
-import { writable, get } from "svelte/store";
+import { writable, derived, get } from "svelte/store";
 import type { Piece, PieceKind, Color, SolutionData } from "./types";
-import { unpromoted, MAX_PIECE_COUNT } from "./types";
+import { unpromoted, MAX_PIECE_COUNT, HAND_PIECE_KINDS } from "./types";
 
 /** 盤面の型: 9x9 配列 (board[file][rank], 0-indexed) */
 export type BoardState = (Piece | null)[][];
@@ -24,8 +24,39 @@ export const boardState = writable<BoardState>(createEmptyBoard());
 /** 先手の持ち駒 */
 export const senteHand = writable<HandState>(createEmptyHand());
 
-/** 後手の持ち駒 */
-export const goteHand = writable<HandState>(createEmptyHand());
+/**
+ * 後手の持ち駒（自動計算）
+ * 詰将棋のルール: 盤上と先手の持ち駒にない駒は全て後手の持ち駒（玉を除く）
+ */
+export const goteHand = derived(
+  [boardState, senteHand],
+  ([$board, $sHand]) => {
+    const hand: HandState = new Map();
+
+    for (const baseKind of HAND_PIECE_KINDS) {
+      const max = MAX_PIECE_COUNT[baseKind] ?? 0;
+      let used = 0;
+
+      // 盤面上の駒を数える（両方の色、成駒も含む）
+      for (let f = 0; f < 9; f++) {
+        for (let r = 0; r < 9; r++) {
+          const p = $board[f][r];
+          if (p && unpromoted(p.kind) === baseKind) used++;
+        }
+      }
+
+      // 先手の持ち駒を数える
+      if ($sHand.has(baseKind)) used += $sHand.get(baseKind)!;
+
+      const remaining = max - used;
+      if (remaining > 0) {
+        hand.set(baseKind, remaining);
+      }
+    }
+
+    return hand;
+  },
+);
 
 /** 選択中の駒種 */
 export const selectedPieceKind = writable<PieceKind | null>(null);
@@ -46,16 +77,15 @@ export const errorMessage = writable<string>("");
 export const maxDepth = writable<number>(7);
 
 /**
- * 盤面+両方の持ち駒における、指定した基本駒種（unpromoted）の現在の合計枚数を返す。
+ * 盤面＋先手持ち駒における、指定した基本駒種（unpromoted）の使用数を返す。
  * excludeSquare を指定すると、そのマスの駒はカウントから除外する（上書き配置時用）。
  */
-export function countPieceBase(
+function countUsedPieces(
   baseKind: PieceKind,
   excludeSquare?: { file: number; rank: number },
 ): number {
   const board = get(boardState);
   const sHand = get(senteHand);
-  const gHand = get(goteHand);
 
   let count = 0;
 
@@ -68,24 +98,22 @@ export function countPieceBase(
     }
   }
 
-  // 持ち駒を数える（持ち駒は常に非成駒なので直接比較）
+  // 先手の持ち駒を数える
   if (sHand.has(baseKind)) count += sHand.get(baseKind)!;
-  if (gHand.has(baseKind)) count += gHand.get(baseKind)!;
 
   return count;
 }
 
-/** 指定した駒種をあと何枚配置できるか */
+/** 指定した駒種をあと何枚配置できるか（盤面＋先手持ち駒の合計が上限未満か） */
 export function remainingPieces(baseKind: PieceKind, excludeSquare?: { file: number; rank: number }): number {
   const max = MAX_PIECE_COUNT[baseKind] ?? 0;
-  return max - countPieceBase(baseKind, excludeSquare);
+  return max - countUsedPieces(baseKind, excludeSquare);
 }
 
 /** 盤面をクリア */
 export function clearBoard() {
   boardState.set(createEmptyBoard());
   senteHand.set(createEmptyHand());
-  goteHand.set(createEmptyHand());
   solution.set(null);
   errorMessage.set("");
 }

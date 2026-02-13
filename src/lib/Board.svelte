@@ -1,7 +1,8 @@
 <script lang="ts">
   import { boardState, senteHand, goteHand, selectedPieceKind, selectedColor, remainingPieces } from "./stores";
+  import type { HandState } from "./stores";
   import { PIECE_KANJI, HAND_PIECE_KINDS, unpromoted } from "./types";
-  import type { Piece, PieceKind, Color, HandState } from "./types";
+  import type { Piece, PieceKind } from "./types";
 
   // 盤面クリック時の処理
   function onCellClick(file: number, rank: number) {
@@ -27,13 +28,12 @@
     });
   }
 
-  // 持ち駒クリック
-  function onHandClick(color: Color, kind: PieceKind) {
-    const hand = color === "sente" ? senteHand : goteHand;
-    hand.update((h: HandState) => {
+  // 先手の持ち駒を増減
+  function onSenteHandClick(kind: PieceKind) {
+    senteHand.update((h: HandState) => {
       const current = h.get(kind) || 0;
-      if ($selectedColor === color && $selectedPieceKind === kind) {
-        // 減らす
+      if ($selectedColor === "sente" && $selectedPieceKind === kind) {
+        // 同じ駒種を選択中にクリック → 減らす
         if (current > 0) {
           h.set(kind, current - 1);
           if (h.get(kind) === 0) h.delete(kind);
@@ -41,7 +41,7 @@
       } else {
         // 駒数上限チェック
         const remaining = remainingPieces(kind);
-        if (remaining <= 0) return h; // 上限に達している
+        if (remaining <= 0) return h;
         h.set(kind, current + 1);
       }
       return h;
@@ -61,30 +61,18 @@
 </script>
 
 <div class="board-container">
-  <!-- 後手の持ち駒 -->
+  <!-- 後手の持ち駒（自動計算・読み取り専用） -->
   <div class="hand gote-hand">
-    <div class="hand-label">△後手 持ち駒</div>
+    <div class="hand-label">△後手 持ち駒（残り全て）</div>
     <div class="hand-pieces">
       {#each HAND_PIECE_KINDS as kind}
         {@const count = $goteHand.get(kind) || 0}
         {#if count > 0}
-          <button
-            class="hand-piece"
-            on:click={() => onHandClick("gote", kind)}
-          >
+          <span class="hand-piece readonly">
             {PIECE_KANJI[kind]}{count > 1 ? count : ""}
-          </button>
+          </span>
         {/if}
       {/each}
-      <button
-        class="hand-add-btn"
-        on:click={() => {
-          if ($selectedPieceKind && $selectedPieceKind !== "king") {
-            onHandClick("gote", unpromoted($selectedPieceKind));
-          }
-        }}
-        title="選択中の駒を後手持ち駒に追加"
-      >＋</button>
     </div>
   </div>
 
@@ -139,7 +127,7 @@
         {#if count > 0}
           <button
             class="hand-piece"
-            on:click={() => onHandClick("sente", kind)}
+            on:click={() => onSenteHandClick(kind)}
           >
             {PIECE_KANJI[kind]}{count > 1 ? count : ""}
           </button>
@@ -149,7 +137,7 @@
         class="hand-add-btn"
         on:click={() => {
           if ($selectedPieceKind && $selectedPieceKind !== "king") {
-            onHandClick("sente", unpromoted($selectedPieceKind));
+            onSenteHandClick(unpromoted($selectedPieceKind));
           }
         }}
         title="選択中の駒を先手持ち駒に追加"
@@ -197,8 +185,13 @@
     font-family: serif;
   }
 
-  .hand-piece:hover {
+  .hand-piece:hover:not(.readonly) {
     background: #ffe0a0;
+  }
+
+  .hand-piece.readonly {
+    cursor: default;
+    opacity: 0.8;
   }
 
   .hand-add-btn {
