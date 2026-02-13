@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::shogi::position::Position;
 use crate::shogi::types::*;
 
@@ -73,6 +75,33 @@ impl MetaPosition {
         )
     }
 
+    /// 攻め方の手を指す（合法/不正に分割、事前計算された合法手セットを使用）
+    /// generate_attack_candidates で既に計算された合法手セットを再利用し、
+    /// 重複する generate_legal_moves 呼び出しを回避する
+    pub fn apply_attack_move_split_with_sets(
+        &self,
+        mv: Move,
+        legal_move_sets: &[HashSet<Move>],
+    ) -> (MetaPosition, MetaPosition) {
+        let mut legal_positions = Vec::new();
+        let mut illegal_positions = Vec::new();
+
+        for (i, pos) in self.positions.iter().enumerate() {
+            if legal_move_sets[i].contains(&mv) {
+                let mut new_pos = pos.clone();
+                new_pos.make_move(mv);
+                legal_positions.push(new_pos);
+            } else {
+                illegal_positions.push(pos.clone());
+            }
+        }
+
+        (
+            MetaPosition { positions: legal_positions },
+            MetaPosition { positions: illegal_positions },
+        )
+    }
+
     /// 玉方の全応手を展開し、観測結果で分類する
     /// 攻め方が指した手のmvの結果について、各盤面で玉方の応手を列挙し、
     /// 駒が取られたか/取られなかったかで分類する
@@ -96,7 +125,42 @@ impl MetaPosition {
                 continue;
             }
 
+            // 王手されている場合のみ無駄合い判定が必要
+            let defender_color = pos.side_to_move;
+            let in_check = pos.is_in_check(defender_color);
+
+            // 無駄合い判定のキャッシュ（マス目ごと：同じマスへの合駒は同様に無駄）
+            let mut futile_squares: HashSet<Square> = HashSet::new();
+
             for def_mv in &legal_moves {
+                // 無駄合い判定（最適化済み）
+                let is_futile = if !in_check {
+                    false // 王手でなければ合駒ではない
+                } else {
+                    // 玉の移動は合駒ではない
+                    let is_king_move = if let Some(from) = def_mv.from {
+                        pos.piece_at(from).map_or(false, |p| p.kind == PieceKind::King)
+                    } else {
+                        false
+                    };
+
+                    if is_king_move {
+                        false
+                    } else if futile_squares.contains(&def_mv.to) {
+                        true // キャッシュヒット: このマスへの合駒は無駄
+                    } else {
+                        let result = pos.is_futile_interposition(def_mv);
+                        if result {
+                            futile_squares.insert(def_mv.to);
+                        }
+                        result
+                    }
+                };
+
+                if is_futile {
+                    continue;
+                }
+
                 let mut new_pos = pos.clone();
                 new_pos.make_move(*def_mv);
 

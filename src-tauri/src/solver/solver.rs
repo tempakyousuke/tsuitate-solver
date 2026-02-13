@@ -130,7 +130,7 @@ impl TsuitateSolver {
         }
 
         // 候補手を列挙（王手の手 + 情報収集用の手）
-        let candidate_moves = self.generate_attack_candidates(meta);
+        let (candidate_moves, legal_move_sets) = self.generate_attack_candidates(meta);
         self.log(current_depth, format!(
             "攻め方ターン: 残り深さ={}, メタポジション数={}, 候補手数={}",
             remaining_depth, meta.positions.len(), candidate_moves.len()
@@ -140,8 +140,8 @@ impl TsuitateSolver {
         }
 
         for mv in candidate_moves {
-            // 全盤面にこの手を適用し、合法/不正に分割
-            let (legal_meta, illegal_meta) = meta.apply_attack_move_split(mv);
+            // 全盤面にこの手を適用し、合法/不正に分割（事前計算済みの合法手セットを再利用）
+            let (legal_meta, illegal_meta) = meta.apply_attack_move_split_with_sets(mv, &legal_move_sets);
 
             if legal_meta.is_empty() {
                 continue; // この手はどの盤面でも指せない
@@ -254,9 +254,10 @@ impl TsuitateSolver {
 
     /// 攻め方の候補手を生成
     /// 全盤面から王手の手を収集し、さらに情報収集用のプローブ手を追加
-    fn generate_attack_candidates(&self, meta: &MetaPosition) -> Vec<Move> {
+    /// 返り値: (候補手リスト, 各盤面の合法手セット) - 合法手セットは再利用可能
+    fn generate_attack_candidates(&self, meta: &MetaPosition) -> (Vec<Move>, Vec<HashSet<Move>>) {
         if meta.positions.is_empty() {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         }
 
         let n = meta.positions.len();
@@ -289,7 +290,7 @@ impl TsuitateSolver {
 
         // メタポジションが1つの場合、プローブは不要
         if n <= 1 {
-            return check_moves;
+            return (check_moves, legal_move_sets);
         }
 
         // プローブ手: 一部の盤面でのみ合法な手（メタポジションを分割する手）
@@ -313,6 +314,6 @@ impl TsuitateSolver {
         }
 
         check_moves.extend(probe_moves);
-        check_moves
+        (check_moves, legal_move_sets)
     }
 }

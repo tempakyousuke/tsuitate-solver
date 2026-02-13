@@ -207,6 +207,81 @@ impl Position {
         self.is_in_check(color) && self.generate_legal_moves().is_empty()
     }
 
+    /// 無駄合い判定（詰将棋ルール）
+    /// 王手に対する合駒（玉以外の応手）が無駄かどうかを判定する。
+    /// 合駒を取り返して再び王手＋詰みになる場合、無駄合いとみなす。
+    /// 再帰的に判定し、連続合駒も正しく処理する。
+    pub fn is_futile_interposition(&self, def_mv: &Move) -> bool {
+        self.is_futile_interposition_impl(def_mv, 3)
+    }
+
+    fn is_futile_interposition_impl(&self, def_mv: &Move, remaining_depth: u32) -> bool {
+        if remaining_depth == 0 {
+            return false;
+        }
+
+        // 玉の移動は合駒ではない
+        if let Some(from) = def_mv.from {
+            if let Some(piece) = self.piece_at(from) {
+                if piece.kind == PieceKind::King {
+                    return false;
+                }
+            }
+        }
+
+        let mut pos_after = self.clone();
+        pos_after.make_move(*def_mv);
+
+        let capture_sq = def_mv.to;
+        let attacker_color = pos_after.side_to_move;
+
+        // 高速プリチェック: 攻め方の駒がそのマスに利いていなければ無駄合いではない
+        if !pos_after.is_attacked(capture_sq, attacker_color) {
+            return false;
+        }
+
+        // 全合法手の代わりに擬似合法手を生成し、取り返しマスのみフィルタして
+        // 合法性を個別チェック（全合法手生成より大幅に高速）
+        let pseudo_moves = movegen::generate_pseudo_legal_moves(&pos_after, attacker_color);
+
+        for cap_mv in &pseudo_moves {
+            if cap_mv.to != capture_sq {
+                continue;
+            }
+
+            let mut pos_captured = pos_after.clone();
+            pos_captured.make_move(*cap_mv);
+
+            // 合法性チェック: 自玉が王手されていないか
+            if pos_captured.is_in_check(attacker_color) {
+                continue;
+            }
+
+            // 取り返した後に王手でなければ無駄合いではない
+            let defender_color = pos_captured.side_to_move;
+            if !pos_captured.is_in_check(defender_color) {
+                continue;
+            }
+
+            // 取り返し後に即詰みなら無駄合い
+            if pos_captured.is_checkmate() {
+                return true;
+            }
+
+            // 取り返し後の全応手も無駄合いなら、元の合駒も無駄合い
+            let responses = pos_captured.generate_legal_moves();
+            if !responses.is_empty()
+                && responses
+                    .iter()
+                    .all(|dm| pos_captured.is_futile_interposition_impl(dm, remaining_depth - 1))
+            {
+                return true;
+            }
+        }
+
+        false
+    }
+
     /// 同じ筋に同じ色の歩があるか（二歩判定用）
     pub fn has_pawn_on_file(&self, color: Color, file: u8) -> bool {
         for rank in 1..=9 {

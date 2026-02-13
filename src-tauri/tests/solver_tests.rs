@@ -150,6 +150,14 @@ fn test_solve_tsuitate_3te_with_illegal_probe() {
     pos.set_piece(Square::new(9, 6), Piece::new(Color::Sente, PieceKind::Pawn));
     // 先手持ち駒: 角
     pos.sente_hand.add(PieceKind::Bishop);
+    // 後手持ち駒: 盤上にない残り全て（詰将棋ルール）
+    // 飛x2, 金x4, 銀x3(4-1), 桂x4, 香x4, 歩x13(18-5)
+    for _ in 0..2 { pos.gote_hand.add(PieceKind::Rook); }
+    for _ in 0..4 { pos.gote_hand.add(PieceKind::Gold); }
+    for _ in 0..3 { pos.gote_hand.add(PieceKind::Silver); }
+    for _ in 0..4 { pos.gote_hand.add(PieceKind::Knight); }
+    for _ in 0..4 { pos.gote_hand.add(PieceKind::Lance); }
+    for _ in 0..13 { pos.gote_hand.add(PieceKind::Pawn); }
     pos.side_to_move = Color::Sente;
 
     let meta = MetaPosition::new(pos);
@@ -162,6 +170,9 @@ fn test_solve_tsuitate_3te_with_illegal_probe() {
     );
     if let Some(ref tree) = result.tree {
         println!("解の手順木: {:?}", tree);
+    }
+    for line in &result.trace {
+        println!("{}", line);
     }
 
     assert!(
@@ -184,6 +195,12 @@ fn test_solve_tsuitate_illegal_probe_default_depth() {
     pos.set_piece(Square::new(9, 3), Piece::new(Color::Gote, PieceKind::Pawn));
     pos.set_piece(Square::new(9, 6), Piece::new(Color::Sente, PieceKind::Pawn));
     pos.sente_hand.add(PieceKind::Bishop);
+    for _ in 0..2 { pos.gote_hand.add(PieceKind::Rook); }
+    for _ in 0..4 { pos.gote_hand.add(PieceKind::Gold); }
+    for _ in 0..3 { pos.gote_hand.add(PieceKind::Silver); }
+    for _ in 0..4 { pos.gote_hand.add(PieceKind::Knight); }
+    for _ in 0..4 { pos.gote_hand.add(PieceKind::Lance); }
+    for _ in 0..13 { pos.gote_hand.add(PieceKind::Pawn); }
     pos.side_to_move = Color::Sente;
 
     let meta = MetaPosition::new(pos);
@@ -198,10 +215,12 @@ fn test_solve_tsuitate_illegal_probe_default_depth() {
     );
 
     assert!(result.found);
+    // リリースビルドでは10秒以内、デバッグビルドでは30秒以内
+    let time_limit = if cfg!(debug_assertions) { 30 } else { 10 };
     assert!(
-        elapsed.as_secs() < 10,
-        "10秒以内に解けるはず (実際: {:?})",
-        elapsed
+        elapsed.as_secs() < time_limit,
+        "{}秒以内に解けるはず (実際: {:?})",
+        time_limit, elapsed
     );
 }
 
