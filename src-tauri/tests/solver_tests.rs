@@ -223,7 +223,6 @@ fn test_solve_tsuitate_illegal_probe_default_depth() {
     );
 }
 
-/// question.json の問題を解く（探索ログ分析用）
 /// 盤面: 1二後手飛, 1三後手歩, 2一後手金, 2二後手玉, 2五先手歩, 3四先手歩, 4一後手銀, 4三後手歩
 /// 先手持ち駒: 銀, 桂
 /// 後手持ち駒: 残り全て

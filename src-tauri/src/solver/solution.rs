@@ -68,6 +68,31 @@ impl MoveData {
     }
 }
 
+impl SolutionNode {
+    /// 解の最大手数を計算（攻め方と玉方の手数を含む）
+    pub fn max_moves(&self) -> u32 {
+        match self {
+            SolutionNode::Checkmate { .. } => 0,
+            SolutionNode::AttackMove { branches, .. } => {
+                branches
+                    .iter()
+                    .map(|b| match b.observation {
+                        // 攻め方の手が有効 → 即詰み: 1手
+                        Observation::Checkmate => 1,
+                        // 反則: 攻め方の手は実行されていない → サブ解法の手数のみ
+                        Observation::Illegal => b.continuation.max_moves(),
+                        // 攻め方の手(1手) + 玉方の応手(1手) + 続きの手数
+                        Observation::Captured | Observation::NoCapture => {
+                            2 + b.continuation.max_moves()
+                        }
+                    })
+                    .max()
+                    .unwrap_or(0)
+            }
+        }
+    }
+}
+
 /// 解のデータ（フロントエンドへの送信用）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SolutionData {

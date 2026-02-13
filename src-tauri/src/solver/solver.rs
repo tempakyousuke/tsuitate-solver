@@ -31,7 +31,7 @@ impl TsuitateSolver {
         self.trace.push(format!("{}{}", indent, msg));
     }
 
-    /// 衝立詰将棋を解く（反復深化）
+    /// 衝立詰将棋を解く（指数的反復深化: 1, 3, 7, 15, ...）
     pub fn solve(&mut self, meta: &MetaPosition) -> SolutionData {
         self.log(0, format!("開始: メタポジション数={}", meta.positions.len()));
 
@@ -67,15 +67,35 @@ impl TsuitateSolver {
             }
         }
 
-        for depth in (1..=self.max_depth).step_by(2) {
-            // 詰将棋は奇数手で詰む
-            self.nodes_searched = 0;
-            self.log(0, format!("=== 反復深化: {}手探索 ===", depth));
+        // max_depthが偶数の場合、奇数に調整（詰将棋は奇数手で詰む）
+        let max_search_depth = if self.max_depth % 2 == 0 {
+            self.max_depth - 1
+        } else {
+            self.max_depth
+        };
 
-            if let Some(tree) = self.solve_attack(meta, depth, 0) {
+        // 指数的反復深化: 1, 3, 7, 15, ... (next = 2*current + 1)
+        // 短い詰みを素早く発見しつつ、中間深さの無駄な探索を回避
+        let mut depths = Vec::new();
+        let mut d = 1u32;
+        while d < max_search_depth {
+            depths.push(d);
+            d = d * 2 + 1;
+        }
+        depths.push(max_search_depth);
+        // 重複を除去（max_search_depthが既に含まれている場合）
+        depths.dedup();
+
+        self.log(0, format!("探索深さ系列: {:?}", depths));
+
+        for &search_depth in &depths {
+            self.log(0, format!("--- 深さ{}手で探索開始 ---", search_depth));
+
+            if let Some(tree) = self.solve_attack(meta, search_depth, 0) {
+                let actual_depth = tree.max_moves();
                 let msg = format!(
                     "{}手詰めが見つかりました (探索ノード数: {})",
-                    depth, self.nodes_searched
+                    actual_depth, self.nodes_searched
                 );
                 self.log(0, format!("結果: {}", msg));
                 return SolutionData {
@@ -89,7 +109,7 @@ impl TsuitateSolver {
 
         let msg = format!(
             "{}手以内の詰みは見つかりませんでした (探索ノード数: {})",
-            self.max_depth, self.nodes_searched
+            max_search_depth, self.nodes_searched
         );
         self.log(0, format!("結果: {}", msg));
         SolutionData {
@@ -176,7 +196,6 @@ impl TsuitateSolver {
                     });
                 } else {
                     self.log(current_depth, "  反則分岐: 解決できず → 次の候補へ".to_string());
-                    all_solved = false;
                     continue;
                 }
             }
@@ -194,7 +213,6 @@ impl TsuitateSolver {
                     });
                 } else {
                     self.log(current_depth, "  合法分岐: 残り深さ1で詰みでない → 次の候補へ".to_string());
-                    all_solved = false;
                     continue;
                 }
             } else {
