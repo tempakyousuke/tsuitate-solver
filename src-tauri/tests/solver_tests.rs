@@ -133,6 +133,78 @@ fn test_solve_3te() {
     );
 }
 
+/// 衝立詰将棋: 反則（情報収集）を利用した3手詰め
+/// issue-question.json の問題
+/// 正解手順: ▲７四角成 → 玉方応手 → ▲７六角(反則で情報収集) → ▲６五角打(詰み)
+#[test]
+fn test_solve_tsuitate_3te_with_illegal_probe() {
+    let mut pos = Position::new();
+    // 盤面の駒 (file, rank は 1-indexed)
+    pos.set_piece(Square::new(6, 7), Piece::new(Color::Sente, PieceKind::Pawn));
+    pos.set_piece(Square::new(6, 8), Piece::new(Color::Sente, PieceKind::Silver));
+    pos.set_piece(Square::new(7, 5), Piece::new(Color::Sente, PieceKind::Pawn));
+    pos.set_piece(Square::new(8, 3), Piece::new(Color::Sente, PieceKind::Bishop));
+    pos.set_piece(Square::new(8, 5), Piece::new(Color::Gote, PieceKind::King));
+    pos.set_piece(Square::new(8, 7), Piece::new(Color::Sente, PieceKind::Pawn));
+    pos.set_piece(Square::new(9, 3), Piece::new(Color::Gote, PieceKind::Pawn));
+    pos.set_piece(Square::new(9, 6), Piece::new(Color::Sente, PieceKind::Pawn));
+    // 先手持ち駒: 角
+    pos.sente_hand.add(PieceKind::Bishop);
+    pos.side_to_move = Color::Sente;
+
+    let meta = MetaPosition::new(pos);
+    let mut solver = TsuitateSolver::new(3);
+    let result = solver.solve(&meta);
+
+    println!(
+        "反則利用3手詰めテスト: found={}, message={}",
+        result.found, result.message
+    );
+    if let Some(ref tree) = result.tree {
+        println!("解の手順木: {:?}", tree);
+    }
+
+    assert!(
+        result.found,
+        "反則を利用した3手詰めが見つかるはず: {}",
+        result.message
+    );
+}
+
+/// 反則問題をmax_depth=7で解く（アプリのデフォルト設定をシミュレート）
+#[test]
+fn test_solve_tsuitate_illegal_probe_default_depth() {
+    let mut pos = Position::new();
+    pos.set_piece(Square::new(6, 7), Piece::new(Color::Sente, PieceKind::Pawn));
+    pos.set_piece(Square::new(6, 8), Piece::new(Color::Sente, PieceKind::Silver));
+    pos.set_piece(Square::new(7, 5), Piece::new(Color::Sente, PieceKind::Pawn));
+    pos.set_piece(Square::new(8, 3), Piece::new(Color::Sente, PieceKind::Bishop));
+    pos.set_piece(Square::new(8, 5), Piece::new(Color::Gote, PieceKind::King));
+    pos.set_piece(Square::new(8, 7), Piece::new(Color::Sente, PieceKind::Pawn));
+    pos.set_piece(Square::new(9, 3), Piece::new(Color::Gote, PieceKind::Pawn));
+    pos.set_piece(Square::new(9, 6), Piece::new(Color::Sente, PieceKind::Pawn));
+    pos.sente_hand.add(PieceKind::Bishop);
+    pos.side_to_move = Color::Sente;
+
+    let meta = MetaPosition::new(pos);
+    let mut solver = TsuitateSolver::new(7); // アプリのデフォルト
+    let start = std::time::Instant::now();
+    let result = solver.solve(&meta);
+    let elapsed = start.elapsed();
+
+    println!(
+        "max_depth=7テスト: found={}, time={:?}, message={}",
+        result.found, elapsed, result.message
+    );
+
+    assert!(result.found);
+    assert!(
+        elapsed.as_secs() < 10,
+        "10秒以内に解けるはず (実際: {:?})",
+        elapsed
+    );
+}
+
 /// expand_defense_moves テスト
 #[test]
 fn test_expand_defense_moves() {

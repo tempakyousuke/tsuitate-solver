@@ -49,6 +49,30 @@ impl MetaPosition {
         }
     }
 
+    /// 攻め方の手を指す（合法/不正に分割）
+    /// 返り値: (合法な盤面(手を指した後), 不正な盤面(手を指す前の状態))
+    /// 衝立詰将棋では、不正な手(反則)も情報を持つため分割して返す
+    pub fn apply_attack_move_split(&self, mv: Move) -> (MetaPosition, MetaPosition) {
+        let mut legal_positions = Vec::new();
+        let mut illegal_positions = Vec::new();
+
+        for pos in &self.positions {
+            let legal_moves = pos.generate_legal_moves();
+            if legal_moves.contains(&mv) {
+                let mut new_pos = pos.clone();
+                new_pos.make_move(mv);
+                legal_positions.push(new_pos);
+            } else {
+                illegal_positions.push(pos.clone());
+            }
+        }
+
+        (
+            MetaPosition { positions: legal_positions },
+            MetaPosition { positions: illegal_positions },
+        )
+    }
+
     /// 玉方の全応手を展開し、観測結果で分類する
     /// 攻め方が指した手のmvの結果について、各盤面で玉方の応手を列挙し、
     /// 駒が取られたか/取られなかったかで分類する

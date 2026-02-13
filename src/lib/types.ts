@@ -52,6 +52,7 @@ export interface SolutionData {
   found: boolean;
   tree: SolutionNode | null;
   message: string;
+  trace: string[];
 }
 
 export type SolutionNode = CheckmateNode | AttackMoveNode;

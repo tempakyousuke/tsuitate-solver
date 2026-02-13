@@ -77,4 +77,7 @@ pub struct SolutionData {
     pub tree: Option<SolutionNode>,
     /// メッセージ
     pub message: String,
+    /// 探索ログ
+    #[serde(default)]
+    pub trace: Vec<String>,
 }

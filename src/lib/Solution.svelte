@@ -60,6 +60,13 @@
         {@render nodeDisplay($solution.tree, 0)}
       </div>
     {/if}
+
+    {#if $solution.trace && $solution.trace.length > 0}
+      <details class="trace-section">
+        <summary>探索ログ ({$solution.trace.length}行)</summary>
+        <pre class="trace-log">{$solution.trace.join("\n")}</pre>
+      </details>
+    {/if}
   </div>
 {/if}
 
@@ -130,5 +137,31 @@
 
   .branch {
     margin: 2px 0;
+  }
+
+  .trace-section {
+    margin-top: 12px;
+    border-top: 1px solid #ddd;
+    padding-top: 8px;
+  }
+
+  .trace-section summary {
+    cursor: pointer;
+    font-size: 13px;
+    color: #666;
+    user-select: none;
+  }
+
+  .trace-log {
+    margin-top: 4px;
+    padding: 8px;
+    background: #1e1e1e;
+    color: #d4d4d4;
+    border-radius: 4px;
+    font-size: 11px;
+    line-height: 1.4;
+    max-height: 400px;
+    overflow: auto;
+    white-space: pre;
   }
 </style>
