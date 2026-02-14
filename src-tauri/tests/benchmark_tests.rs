@@ -491,9 +491,13 @@ fn bench_question_40() {
 fn bench_all_questions() {
     let dir = sample_questions_dir();
     let time_limit_secs: u64 = 120;
-    let max_depth: u32 = 15;
+    let default_max_depth: u32 = 15;
 
-    println!("=== 全問ベンチマーク (max_depth={}, time_limit={}s) ===\n", max_depth, time_limit_secs);
+    // 問題ごとの最大探索深さ（デフォルトより深い探索が必要な問題）
+    let custom_depths: std::collections::HashMap<u32, u32> =
+        [(34, 17)].into_iter().collect();
+
+    println!("=== 全問ベンチマーク (default_max_depth={}, time_limit={}s) ===\n", default_max_depth, time_limit_secs);
 
     struct Result {
         number: u32,
@@ -512,6 +516,7 @@ fn bench_all_questions() {
             continue;
         }
 
+        let max_depth = custom_depths.get(&number).copied().unwrap_or(default_max_depth);
         let pos = load_question(&path);
         let meta = MetaPosition::new(pos);
         let cancel = cancel_after(time_limit_secs);
@@ -575,7 +580,7 @@ fn bench_all_questions() {
     let mut md = String::new();
     md.push_str(&format!("# ベンチマーク結果\n\n"));
     md.push_str(&format!("- 実行日時: {}\n", now.format("%Y-%m-%d %H:%M:%S")));
-    md.push_str(&format!("- 最大探索深さ: {}\n", max_depth));
+    md.push_str(&format!("- 最大探索深さ: {}\n", default_max_depth));
     md.push_str(&format!("- 制限時間: {}秒/問\n", time_limit_secs));
     md.push_str(&format!("- 解けた問題: {}/{}\n", solved, total));
     md.push_str(&format!("- 合計時間: {:.3}秒\n", total_time));
