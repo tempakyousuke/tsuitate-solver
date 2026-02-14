@@ -164,7 +164,48 @@ impl MetaPosition {
         let mut no_capture_positions = Vec::new();
 
         for pos in &self.positions {
-            // posは既に攻め方の手を指した後の状態（玉方手番、王手されている）
+            // posは既に攻め方の手を指した後の状態（玉方手番）
+            let defender_color = pos.side_to_move;
+            let in_check = pos.is_in_check(defender_color);
+
+            if !in_check {
+                // 王手でない場合（プローブ手など）: 全合法手を展開すると爆発するため、
+                // Captured/NoCapture の代表局面を1つずつ生成する。
+                // 王手でないなら詰みに近づいていないので、玉方の具体的な応手は重要でなく、
+                // 「駒を取ったかどうか」の観測情報のみが重要。
+                let legal_moves = pos.generate_legal_moves();
+                if legal_moves.is_empty() {
+                    // 合法手がない（ステイルメイト - 将棋では通常起きないが安全のため）
+                    checkmate_positions.push(pos.clone());
+                    continue;
+                }
+
+                let mut found_capture = false;
+                let mut found_no_capture = false;
+                for def_mv in &legal_moves {
+                    if found_capture && found_no_capture {
+                        break;
+                    }
+                    let captured = def_mv.to == attack_move.to;
+                    if captured && !found_capture {
+                        let mut new_pos = pos.clone();
+                        new_pos.make_move(*def_mv);
+                        if capture_seen.insert(new_pos.clone()) {
+                            capture_positions.push(new_pos);
+                        }
+                        found_capture = true;
+                    } else if !captured && !found_no_capture {
+                        let mut new_pos = pos.clone();
+                        new_pos.make_move(*def_mv);
+                        if no_capture_seen.insert(new_pos.clone()) {
+                            no_capture_positions.push(new_pos);
+                        }
+                        found_no_capture = true;
+                    }
+                }
+                continue;
+            }
+
             // 王手回避専用ジェネレータで高速に合法手を生成
             let legal_moves = pos.generate_check_evasions();
 
@@ -173,10 +214,6 @@ impl MetaPosition {
                 checkmate_positions.push(pos.clone());
                 continue;
             }
-
-            // 王手されている場合のみ無駄合い判定が必要
-            let defender_color = pos.side_to_move;
-            let in_check = pos.is_in_check(defender_color);
 
             // 無駄合い判定のキャッシュ（マス目ごと：同じマスへの合駒は同様に無駄）
             let mut futile_squares: HashSet<Square> = HashSet::new();
@@ -196,28 +233,23 @@ impl MetaPosition {
                     }
                 }
 
-                // 無駄合い判定（最適化済み）
-                let is_futile = if !in_check {
-                    false // 王手でなければ合駒ではない
+                // 無駄合い判定
+                let is_king_move = if let Some(from) = def_mv.from {
+                    pos.piece_at(from).map_or(false, |p| p.kind == PieceKind::King)
                 } else {
-                    // 玉の移動は合駒ではない
-                    let is_king_move = if let Some(from) = def_mv.from {
-                        pos.piece_at(from).map_or(false, |p| p.kind == PieceKind::King)
-                    } else {
-                        false
-                    };
+                    false
+                };
 
-                    if is_king_move {
-                        false
-                    } else if futile_squares.contains(&def_mv.to) {
-                        true // キャッシュヒット: このマスへの合駒は無駄
-                    } else {
-                        let result = pos.is_futile_interposition(def_mv);
-                        if result {
-                            futile_squares.insert(def_mv.to);
-                        }
-                        result
+                let is_futile = if is_king_move {
+                    false
+                } else if futile_squares.contains(&def_mv.to) {
+                    true // キャッシュヒット: このマスへの合駒は無駄
+                } else {
+                    let result = pos.is_futile_interposition(def_mv);
+                    if result {
+                        futile_squares.insert(def_mv.to);
                     }
+                    result
                 };
 
                 if is_futile {

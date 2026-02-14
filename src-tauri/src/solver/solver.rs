@@ -357,8 +357,10 @@ impl TsuitateSolver {
         });
 
         // 候補手数の上限（ソート順で上位候補に絞る）
-        // TODO: 最適値を調整
-        let max_candidates: usize = if remaining_depth >= 7 {
+        // メタポジションが小さい場合はプローブ手を多く試す必要がある
+        let max_candidates: usize = if meta.positions.len() <= 5 {
+            if remaining_depth >= 7 { 30 } else if remaining_depth >= 5 { 25 } else { 20 }
+        } else if remaining_depth >= 7 {
             20
         } else if remaining_depth >= 5 {
             15
