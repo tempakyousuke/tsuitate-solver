@@ -11,6 +11,13 @@ fn position_hash(pos: &Position) -> u64 {
     h.finish()
 }
 
+/// 攻め方の持ち駒のハッシュ（攻め方は自分の持ち駒を観測できる）
+fn sente_hand_hash(pos: &Position) -> u64 {
+    let mut h = DefaultHasher::new();
+    pos.hand(Color::Sente).hash(&mut h);
+    h.finish()
+}
+
 /// メタポジション: 観測情報と矛盾しない盤面状態の集合
 /// 衝立詰将棋では、攻め方が相手の応手を直接観察できないため、
 /// 可能性のある全局面を保持する
@@ -159,27 +166,34 @@ impl MetaPosition {
     /// 攻め方が指した手のmvの結果について、各盤面で玉方の応手を列挙し、
     /// 駒が取られたか/取られなかったかで分類する
     ///
+    /// 攻め方は自分の持ち駒を観測できるため、攻め方の持ち駒が異なる盤面は
+    /// 同じ観測結果でも区別される（別のメタポジションとして分離する）。
+    /// これにより、攻め方の手で異なる駒を取った場合に正確な情報分割が行われる。
+    ///
     /// 返り値: (observation, MetaPosition) のリスト
     ///   - 「駒取りあり」グループ: 攻め方の駒が取られた応手群
     ///   - 「駒取りなし」グループ: 攻め方の駒が取られなかった応手群
     ///   - 「詰み」: 玉方に合法手がない
     pub fn expand_defense_moves(&self, _attack_move: Move) -> Vec<(Observation, MetaPosition)> {
         let mut checkmate_positions = Vec::new();
-        // 地点ごとの駒取りグループ: Square → (重複排除用ハッシュ集合, 局面リスト)
-        let mut capture_groups: HashMap<Square, (HashSet<u64>, Vec<Position>)> = HashMap::new();
-        let mut no_capture_seen: HashSet<u64> = HashSet::new();
-        let mut no_capture_positions = Vec::new();
+        // グループキー: (地点, 攻め方持ち駒ハッシュ) → (重複排除用ハッシュ集合, 局面リスト)
+        // 攻め方の持ち駒が異なる盤面は同じ観測でも区別する
+        let mut capture_groups: HashMap<(Square, u64), (HashSet<u64>, Vec<Position>)> = HashMap::new();
+        // NoCapture グループ: 攻め方持ち駒ハッシュ → (重複排除用ハッシュ集合, 局面リスト)
+        let mut no_capture_groups: HashMap<u64, (HashSet<u64>, Vec<Position>)> = HashMap::new();
 
         for pos in &self.positions {
             // posは既に攻め方の手を指した後の状態（玉方手番）
             let defender_color = pos.side_to_move;
             let in_check = pos.is_in_check(defender_color);
+            // 攻め方の持ち駒ハッシュ（玉方の応手では攻め方の持ち駒は変わらない）
+            let hand_hash = sente_hand_hash(pos);
 
             if !in_check {
-                // 王手でない場合（プローブ手など）: 全合法手を展開すると爆発するため、
-                // 各地点のCaptured/NoCapture の代表局面を1つずつ生成する。
-                // 王手でないなら詰みに近づいていないので、玉方の具体的な応手は重要でなく、
-                // 「駒を取ったかどうか（どの地点か）」の観測情報のみが重要。
+                // 王手でない場合（プローブ手など）: 玉方の全合法手を展開する。
+                // 異なる応手は異なる盤面状態を生み出し、将来の手の合法性に影響するため、
+                // 全応手を展開して正確なメタポジションを維持する必要がある。
+                // （重複排除はハッシュで行い、同一局面は自動的に除外される）
                 let legal_moves = pos.generate_legal_moves();
                 if legal_moves.is_empty() {
                     // 合法手がない（ステイルメイト - 将棋では通常起きないが安全のため）
@@ -188,29 +202,27 @@ impl MetaPosition {
                 }
 
                 let attacker_color = defender_color.opponent();
-                let mut found_capture_squares: HashSet<Square> = HashSet::new();
-                let mut found_no_capture = false;
                 for def_mv in &legal_moves {
-                    // 攻め方のどの駒でも取られたらCaptured観測
                     let captured = pos.piece_at(def_mv.to)
                         .map_or(false, |p| p.color == attacker_color);
-                    if captured && !found_capture_squares.contains(&def_mv.to) {
+                    if captured {
                         let mut new_pos = pos.clone();
                         new_pos.make_move(*def_mv);
                         let (seen, positions) = capture_groups
-                            .entry(def_mv.to)
+                            .entry((def_mv.to, hand_hash))
                             .or_insert_with(|| (HashSet::new(), Vec::new()));
                         if seen.insert(position_hash(&new_pos)) {
                             positions.push(new_pos);
                         }
-                        found_capture_squares.insert(def_mv.to);
-                    } else if !captured && !found_no_capture {
+                    } else {
                         let mut new_pos = pos.clone();
                         new_pos.make_move(*def_mv);
-                        if no_capture_seen.insert(position_hash(&new_pos)) {
-                            no_capture_positions.push(new_pos);
+                        let (seen, positions) = no_capture_groups
+                            .entry(hand_hash)
+                            .or_insert_with(|| (HashSet::new(), Vec::new()));
+                        if seen.insert(position_hash(&new_pos)) {
+                            positions.push(new_pos);
                         }
-                        found_no_capture = true;
                     }
                 }
                 continue;
@@ -262,14 +274,17 @@ impl MetaPosition {
 
                 if captured {
                     let (seen, positions) = capture_groups
-                        .entry(def_mv.to)
+                        .entry((def_mv.to, hand_hash))
                         .or_insert_with(|| (HashSet::new(), Vec::new()));
                     if seen.insert(position_hash(&new_pos)) {
                         positions.push(new_pos);
                     }
                 } else {
-                    if no_capture_seen.insert(position_hash(&new_pos)) {
-                        no_capture_positions.push(new_pos);
+                    let (seen, positions) = no_capture_groups
+                        .entry(hand_hash)
+                        .or_insert_with(|| (HashSet::new(), Vec::new()));
+                    if seen.insert(position_hash(&new_pos)) {
+                        positions.push(new_pos);
                     }
                 }
             }
@@ -286,11 +301,12 @@ impl MetaPosition {
             ));
         }
 
-        // 地点ごとにCaptured分岐を追加
-        let mut capture_squares: Vec<Square> = capture_groups.keys().copied().collect();
-        capture_squares.sort_by_key(|sq| (sq.file, sq.rank));
-        for sq in capture_squares {
-            if let Some((_, positions)) = capture_groups.remove(&sq) {
+        // 地点 + 持ち駒ハッシュごとにCaptured分岐を追加
+        let mut capture_keys: Vec<(Square, u64)> = capture_groups.keys().copied().collect();
+        capture_keys.sort_by_key(|&(sq, hh)| (sq.file, sq.rank, hh));
+        for key in capture_keys {
+            if let Some((_, positions)) = capture_groups.remove(&key) {
+                let sq = key.0;
                 result.push((
                     Observation::Captured { file: sq.file, rank: sq.rank },
                     MetaPosition { positions },
@@ -298,13 +314,16 @@ impl MetaPosition {
             }
         }
 
-        if !no_capture_positions.is_empty() {
-            result.push((
-                Observation::NoCapture,
-                MetaPosition {
-                    positions: no_capture_positions,
-                },
-            ));
+        // 持ち駒ハッシュごとにNoCapture分岐を追加
+        let mut nc_keys: Vec<u64> = no_capture_groups.keys().copied().collect();
+        nc_keys.sort();
+        for key in nc_keys {
+            if let Some((_, positions)) = no_capture_groups.remove(&key) {
+                result.push((
+                    Observation::NoCapture,
+                    MetaPosition { positions },
+                ));
+            }
         }
 
         result
