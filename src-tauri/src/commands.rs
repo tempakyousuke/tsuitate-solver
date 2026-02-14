@@ -148,6 +148,7 @@ pub async fn solve(
     std::thread::spawn(move || {
         let meta = MetaPosition::new(pos);
         let mut solver = TsuitateSolver::new(max_depth, cancelled);
+        solver.set_trace_enabled(false); // 大量のトレースを抑制（depth<=2のみログ）
         solver.set_find_second_solution(find_second);
         let result = solver.solve(&meta);
         let _ = tx.send(result);
