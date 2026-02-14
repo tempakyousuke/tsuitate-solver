@@ -8,7 +8,6 @@
     solution,
     solving,
     errorMessage,
-    maxDepth,
     findSecondSolution,
     clearBoard,
   } from "./stores";
@@ -152,7 +151,6 @@
       // 解く
       const result = await invoke<SolutionData>("solve", {
         position: posData,
-        maxDepth: $maxDepth,
         findSecondSolution: $findSecondSolution,
       });
 
@@ -186,26 +184,6 @@
 </script>
 
 <div class="controls">
-  <div class="depth-control">
-    <label for="max-depth">最大手数:</label>
-    <select id="max-depth" bind:value={$maxDepth}>
-      <option value={1}>1手</option>
-      <option value={3}>3手</option>
-      <option value={5}>5手</option>
-      <option value={7}>7手</option>
-      <option value={9}>9手</option>
-      <option value={11}>11手</option>
-      <option value={13}>13手</option>
-      <option value={15}>15手</option>
-      <option value={17}>17手</option>
-      <option value={19}>19手</option>
-      <option value={21}>21手</option>
-      <option value={23}>23手</option>
-      <option value={25}>25手</option>
-      <option value={27}>27手</option>
-    </select>
-  </div>
-
   <div class="option-control">
     <label>
       <input type="checkbox" bind:checked={$findSecondSolution} disabled={$solving} />
@@ -276,24 +254,6 @@
     background: #f8f8f8;
     border-radius: 8px;
     border: 1px solid #ddd;
-  }
-
-  .depth-control {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .depth-control label {
-    font-size: 14px;
-    font-weight: bold;
-  }
-
-  .depth-control select {
-    padding: 4px 8px;
-    border-radius: 4px;
-    border: 1px solid #ccc;
-    font-size: 14px;
   }
 
   .option-control label {

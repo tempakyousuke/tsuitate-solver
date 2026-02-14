@@ -73,9 +73,6 @@ export const solving = writable<boolean>(false);
 /** エラーメッセージ */
 export const errorMessage = writable<string>("");
 
-/** 最大探索手数 */
-export const maxDepth = writable<number>(7);
-
 /** 2つ目の解を探すかどうか（余詰めチェック） */
 export const findSecondSolution = writable<boolean>(false);
 

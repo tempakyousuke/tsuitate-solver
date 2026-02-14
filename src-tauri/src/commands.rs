@@ -124,7 +124,6 @@ pub fn validate_position(position: PositionData) -> Result<bool, String> {
 #[tauri::command]
 pub async fn solve(
     position: PositionData,
-    max_depth: Option<u32>,
     find_second_solution: Option<bool>,
     cancel_flag: tauri::State<'_, CancelFlag>,
 ) -> Result<SolutionData, String> {
@@ -135,7 +134,6 @@ pub async fn solve(
         return Err("後手の玉が配置されていません".to_string());
     }
 
-    let _max_depth = max_depth.unwrap_or(7); // df-pnではノード上限で制御
     let find_second = find_second_solution.unwrap_or(false);
 
     // キャンセルフラグをリセット
