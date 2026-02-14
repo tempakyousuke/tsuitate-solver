@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -41,9 +41,9 @@ pub struct TsuitateSolver {
     find_second_solution: bool,
     /// 直前の探索で見つかったルートレベルの手（除外用）
     last_root_move: Option<Move>,
-    /// 転置表: 失敗したメタポジション（ハッシュ, remaining_depth）→ 失敗済み
-    /// 同じメタポジションを同じ深さ以下で再探索しても失敗することが保証される
-    fail_table: HashSet<(u64, u32)>,
+    /// 転置表: 失敗したメタポジションのハッシュ → 失敗した最大remaining_depth
+    /// remaining_depth ≤ stored_depth なら再探索不要
+    fail_table: HashMap<u64, u32>,
 }
 
 impl TsuitateSolver {
@@ -56,7 +56,7 @@ impl TsuitateSolver {
             cancelled,
             find_second_solution: false,
             last_root_move: None,
-            fail_table: HashSet::new(),
+            fail_table: HashMap::new(),
         }
     }
 
@@ -225,7 +225,7 @@ impl TsuitateSolver {
         }
     }
 
-    /// 探索深さの系列を構築
+    /// 探索深さの系列を構築（奇数のみ線形増加: 1, 3, 5, 7, 9, ...）
     fn build_depth_sequence(&self) -> Vec<u32> {
         let max_search_depth = if self.max_depth % 2 == 0 {
             self.max_depth - 1
@@ -234,12 +234,10 @@ impl TsuitateSolver {
         };
         let mut depths = Vec::new();
         let mut d = 1u32;
-        while d < max_search_depth {
+        while d <= max_search_depth {
             depths.push(d);
-            d = d * 2 + 1;
+            d += 2;
         }
-        depths.push(max_search_depth);
-        depths.dedup();
         depths
     }
 
@@ -306,13 +304,15 @@ impl TsuitateSolver {
             return None;
         }
 
-        // 転置表チェック: 同じメタポジションを同じ深さ以下で失敗済みならスキップ
+        // 転置表チェック: 同じメタポジションがremaining_depth以上の深さで失敗済みならスキップ
         let meta_hash = meta_position_hash(meta);
-        if self.fail_table.contains(&(meta_hash, remaining_depth)) {
-            self.log(current_depth, format!(
-                "転置表ヒット: 深さ{}で失敗済み", remaining_depth
-            ));
-            return None;
+        if let Some(&max_failed_depth) = self.fail_table.get(&meta_hash) {
+            if remaining_depth <= max_failed_depth {
+                self.log(current_depth, format!(
+                    "転置表ヒット: 深さ{}で失敗済み（記録深さ={}）", remaining_depth, max_failed_depth
+                ));
+                return None;
+            }
         }
 
         // 候補手を列挙（王手の手 + 情報収集用の手）
@@ -531,7 +531,10 @@ impl TsuitateSolver {
         self.log(current_depth, "全候補手で失敗".to_string());
         // 転置表に失敗を記録（キャンセルによる中断は記録しない）
         if !self.is_cancelled() {
-            self.fail_table.insert((meta_hash, remaining_depth));
+            let entry = self.fail_table.entry(meta_hash).or_insert(0);
+            if remaining_depth > *entry {
+                *entry = remaining_depth;
+            }
         }
         None
     }
