@@ -7,6 +7,7 @@ use serde::Deserialize;
 use tsuitate_resolver_lib::shogi::position::Position;
 use tsuitate_resolver_lib::shogi::types::*;
 use tsuitate_resolver_lib::solver::metaposition::MetaPosition;
+use tsuitate_resolver_lib::solver::solution::SolutionNode;
 use tsuitate_resolver_lib::solver::tsuitate_dfpn::{TsuitateDfpnResult, TsuitateDfpnSolver};
 
 /// sample-questions の JSON 形式
@@ -306,7 +307,14 @@ fn tsuitate_dfpn_simple_1te() {
     let result = solver.solve(&meta);
 
     assert_eq!(result, TsuitateDfpnResult::Proven, "1手詰みが証明されるはず");
+
+    // 証明木の抽出
+    let tree = solver.extract_solution(&meta);
+    assert!(tree.is_some(), "証明木が抽出できるはず");
+    let tree = tree.unwrap();
     println!("1手詰み: nodes={}", solver.nodes_searched);
+    print_solution_tree(&tree, 0);
+    assert_eq!(tree.max_moves(), 1, "1手詰みの手数は1");
 }
 
 /// 詰まない局面（単一局面、駒なし）
@@ -329,4 +337,98 @@ fn tsuitate_dfpn_no_checkmate() {
         "先手に駒がないので詰まないはず"
     );
     println!("詰まない（駒なし）: nodes={}", solver.nodes_searched);
+}
+
+/// 問題1: solve_to_solution で手順木を取得
+#[test]
+#[ignore]
+fn tsuitate_dfpn_question_01_solution() {
+    let path = sample_questions_dir().join("1.json");
+    let pos = load_question(&path);
+    let meta = MetaPosition::new(pos);
+
+    let cancel = cancel_after(60);
+    let mut solver = TsuitateDfpnSolver::new(10_000_000, cancel);
+
+    let start = Instant::now();
+    let solution = solver.solve_to_solution(&meta);
+    let elapsed = start.elapsed();
+
+    println!("問題1: found={}, time={:.3}s", solution.found, elapsed.as_secs_f64());
+    println!("message: {}", solution.message);
+
+    assert!(solution.found, "問題1の解が見つかるはず");
+    assert!(solution.tree.is_some(), "手順木が得られるはず");
+
+    if let Some(tree) = &solution.tree {
+        println!("\n=== 手順木 ===");
+        print_solution_tree(tree, 0);
+        println!("手数: {}", tree.max_moves());
+    }
+}
+
+/// 全問の手順木抽出テスト
+#[test]
+#[ignore]
+fn tsuitate_dfpn_solutions_batch() {
+    let questions: Vec<u32> = (1..=41).collect();
+    let time_limit = 120;
+    let node_limit = 50_000_000;
+
+    println!("=== 衝立df-pn 手順木抽出テスト ===\n");
+    println!("{:<6} {:<10} {:<10} {:<10} {:<10}", "問題", "結果", "手数", "ノード", "時間(s)");
+    println!("{}", "-".repeat(50));
+
+    for &q in &questions {
+        let path = sample_questions_dir().join(format!("{}.json", q));
+        if !path.exists() {
+            continue;
+        }
+
+        let pos = load_question(&path);
+        let meta = MetaPosition::new(pos);
+
+        let cancel = cancel_after(time_limit);
+        let mut solver = TsuitateDfpnSolver::new(node_limit, cancel);
+
+        let start = Instant::now();
+        let solution = solver.solve_to_solution(&meta);
+        let elapsed = start.elapsed();
+
+        let moves = solution
+            .tree
+            .as_ref()
+            .map(|t| t.max_moves())
+            .unwrap_or(0);
+        let result_str = if solution.found { "Proven" } else { "---" };
+
+        println!(
+            "{:<6} {:<10} {:<10} {:<10} {:<10.3}",
+            q, result_str, moves, solver.nodes_searched, elapsed.as_secs_f64(),
+        );
+
+        if solution.found {
+            assert!(
+                solution.tree.is_some(),
+                "問題{}: Proven なのに手順木がない",
+                q
+            );
+        }
+    }
+}
+
+fn print_solution_tree(node: &SolutionNode, indent: usize) {
+    let pad = "  ".repeat(indent);
+    match node {
+        SolutionNode::Checkmate { depth } => {
+            println!("{}詰み (depth={})", pad, depth);
+        }
+        SolutionNode::AttackMove { mv, branches } => {
+            println!("{}{}", pad, mv.notation);
+            for branch in branches {
+                println!("{}  [{:?}]", pad, branch.observation);
+                print_solution_tree(&branch.continuation, indent + 2);
+            }
+        }
+    }
 }

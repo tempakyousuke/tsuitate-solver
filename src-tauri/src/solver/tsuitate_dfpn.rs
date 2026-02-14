@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use super::metaposition::MetaPosition;
-use super::solution::Observation;
+use super::solution::*;
 use crate::shogi::types::*;
 
 /// 証明数/反証数の上限（sum時のオーバーフロー防止）
@@ -568,5 +568,186 @@ impl TsuitateDfpnSolver {
 
         check_moves.extend(probe_moves);
         (check_moves, legal_move_sets)
+    }
+
+    // ========================================================================
+    // 証明木の抽出
+    // ========================================================================
+
+    /// 探索して SolutionData を返す（既存ソルバーと同じインターフェース）
+    pub fn solve_to_solution(&mut self, meta: &MetaPosition) -> SolutionData {
+        let result = self.solve(meta);
+        match result {
+            TsuitateDfpnResult::Proven => {
+                let tree = self.extract_solution(meta);
+                let depth = tree.as_ref().map(|t| t.max_moves()).unwrap_or(0);
+                SolutionData {
+                    found: true,
+                    tree,
+                    second_tree: None,
+                    message: format!(
+                        "{}手詰めが見つかりました (探索ノード数: {})",
+                        depth, self.nodes_searched
+                    ),
+                    trace: Vec::new(),
+                }
+            }
+            TsuitateDfpnResult::Disproven => SolutionData {
+                found: false,
+                tree: None,
+                second_tree: None,
+                message: format!(
+                    "詰みは存在しません (探索ノード数: {})",
+                    self.nodes_searched
+                ),
+                trace: Vec::new(),
+            },
+            TsuitateDfpnResult::Unknown => SolutionData {
+                found: false,
+                tree: None,
+                second_tree: None,
+                message: format!(
+                    "探索を打ち切りました (探索ノード数: {})",
+                    self.nodes_searched
+                ),
+                trace: Vec::new(),
+            },
+        }
+    }
+
+    /// 証明木を抽出する（solve() で Proven になった後に呼ぶ）
+    pub fn extract_solution(&self, meta: &MetaPosition) -> Option<SolutionNode> {
+        self.extract_or(meta, 0)
+    }
+
+    /// OR ノードから証明木を抽出する
+    fn extract_or(&self, meta: &MetaPosition, depth: u32) -> Option<SolutionNode> {
+        if meta.is_empty() {
+            return None;
+        }
+        if meta.all_effectively_checkmate() {
+            return Some(SolutionNode::Checkmate { depth });
+        }
+
+        let hash = meta_position_hash(meta);
+        let entry = self.or_table.get(&hash)?;
+        if entry.pn != 0 {
+            return None; // 証明されていない
+        }
+
+        // 全盤面の合法手を収集
+        let legal_move_sets: Vec<HashSet<Move>> = meta
+            .positions
+            .iter()
+            .map(|pos| pos.generate_legal_moves().into_iter().collect())
+            .collect();
+
+        let mut seen = HashSet::new();
+        let mut all_moves = Vec::new();
+        for set in &legal_move_sets {
+            for mv in set {
+                if seen.insert(*mv) {
+                    all_moves.push(*mv);
+                }
+            }
+        }
+
+        // 候補手をソート（解の見た目を良くするため）
+        let king_sq = meta.positions[0].find_king(Color::Gote);
+        all_moves.sort_by_key(|mv| {
+            let is_drop = if mv.drop_piece.is_some() { 0u8 } else { 1u8 };
+            let dist = if let Some(ksq) = king_sq {
+                let df = (mv.to.file as i8 - ksq.file as i8).unsigned_abs();
+                let dr = (mv.to.rank as i8 - ksq.rank as i8).unsigned_abs();
+                df.max(dr)
+            } else {
+                0
+            };
+            (is_drop, dist, mv.to.file, mv.to.rank)
+        });
+
+        // AND テーブルで pn=0 の手を探す
+        for mv in &all_moves {
+            let ak = Self::and_key(hash, mv);
+            if let Some(and_entry) = self.and_table.get(&ak) {
+                if and_entry.pn == 0 {
+                    if let Some(branches) =
+                        self.extract_and(meta, *mv, &legal_move_sets, depth)
+                    {
+                        return Some(SolutionNode::AttackMove {
+                            mv: MoveData::from_move(*mv, Color::Sente),
+                            branches,
+                        });
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// AND ノード（観測分岐）から証明木を抽出する
+    fn extract_and(
+        &self,
+        meta: &MetaPosition,
+        mv: Move,
+        legal_move_sets: &[HashSet<Move>],
+        depth: u32,
+    ) -> Option<Vec<SolutionBranch>> {
+        let (legal_meta, illegal_meta) =
+            meta.apply_attack_move_split_with_sets(mv, legal_move_sets);
+
+        let mut branches = Vec::new();
+
+        // Illegal 分岐
+        if !illegal_meta.is_empty() {
+            let continuation = self.extract_or(&illegal_meta, depth)?;
+            branches.push(SolutionBranch {
+                observation: Observation::Illegal,
+                continuation: Box::new(continuation),
+            });
+        }
+
+        if legal_meta.is_empty() {
+            return if branches.is_empty() {
+                None
+            } else {
+                Some(branches)
+            };
+        }
+
+        // 全合法盤面で実質詰み
+        if legal_meta.all_effectively_checkmate() {
+            branches.push(SolutionBranch {
+                observation: Observation::Checkmate,
+                continuation: Box::new(SolutionNode::Checkmate { depth: depth + 1 }),
+            });
+            return Some(branches);
+        }
+
+        // 玉方の応手を展開
+        let obs_branches = legal_meta.expand_defense_moves(mv);
+        for (obs, branch_meta) in obs_branches {
+            match obs {
+                Observation::Checkmate => {
+                    branches.push(SolutionBranch {
+                        observation: Observation::Checkmate,
+                        continuation: Box::new(SolutionNode::Checkmate {
+                            depth: depth + 1,
+                        }),
+                    });
+                }
+                Observation::Captured | Observation::NoCapture => {
+                    // depth + 2: 攻め方の手(+1) + 玉方の応手(+1)
+                    let continuation = self.extract_or(&branch_meta, depth + 2)?;
+                    branches.push(SolutionBranch {
+                        observation: obs,
+                        continuation: Box::new(continuation),
+                    });
+                }
+                Observation::Illegal => {}
+            }
+        }
+
+        Some(branches)
     }
 }
