@@ -106,3 +106,22 @@ npx vite build
 # アプリ起動
 npm run tauri dev
 ```
+
+## ベンチマークテスト
+
+`src-tauri/tests/benchmark_tests.rs` に、`sample-questions/` 配下の問題ファイル（1.json〜20.json）を使ったベンチマークテストがある。全テストに `#[ignore]` が付いているため `--ignored` フラグが必要。性能測定のため `--release` ビルドを推奨。
+
+```bash
+# 個別の問題を実行（例: 問題1）
+cd src-tauri && cargo test --release --test benchmark_tests bench_question_01 -- --ignored --nocapture
+
+# 全問一括ベンチマーク（サマリー表付き）
+cd src-tauri && cargo test --release --test benchmark_tests bench_all_questions -- --ignored --nocapture
+
+# 全ベンチマークテストを実行
+cd src-tauri && cargo test --release --test benchmark_tests -- --ignored --nocapture
+```
+
+- 各問題の制限時間: 60秒（全問一括は120秒/問）
+- 最大探索深さ: 15手
+- `--nocapture` を付けると盤面表示・解の手順木・サマリー表が出力される
