@@ -136,7 +136,7 @@ pub async fn solve(
     }
 
     let _max_depth = max_depth.unwrap_or(7); // df-pnではノード上限で制御
-    let _find_second = find_second_solution.unwrap_or(false); // df-pnでは未対応
+    let find_second = find_second_solution.unwrap_or(false);
 
     // キャンセルフラグをリセット
     cancel_flag.store(false, Ordering::Relaxed);
@@ -148,7 +148,11 @@ pub async fn solve(
         let meta = MetaPosition::new(pos);
         let node_limit = 50_000_000; // df-pnのノード上限
         let mut solver = TsuitateDfpnSolver::new(node_limit, cancelled);
-        let result = solver.solve_to_solution(&meta);
+        let result = if find_second {
+            solver.solve_to_solution_with_second(&meta)
+        } else {
+            solver.solve_to_solution(&meta)
+        };
         let _ = tx.send(result);
     });
 

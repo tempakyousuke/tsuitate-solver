@@ -417,6 +417,37 @@ fn tsuitate_dfpn_solutions_batch() {
     }
 }
 
+/// 問題1: 余詰めチェック
+#[test]
+#[ignore]
+fn tsuitate_dfpn_question_01_second_solution() {
+    let path = sample_questions_dir().join("1.json");
+    let pos = load_question(&path);
+    let meta = MetaPosition::new(pos);
+
+    let cancel = cancel_after(120);
+    let mut solver = TsuitateDfpnSolver::new(10_000_000, cancel);
+
+    let start = Instant::now();
+    let solution = solver.solve_to_solution_with_second(&meta);
+    let elapsed = start.elapsed();
+
+    println!("問題1 余詰めチェック: time={:.3}s", elapsed.as_secs_f64());
+    println!("message: {}", solution.message);
+
+    assert!(solution.found, "問題1の解が見つかるはず");
+    if let Some(tree) = &solution.tree {
+        println!("\n=== 1つ目の解 ===");
+        print_solution_tree(tree, 0);
+    }
+    if let Some(second) = &solution.second_tree {
+        println!("\n=== 2つ目の解（余詰め）===");
+        print_solution_tree(second, 0);
+    } else {
+        println!("余詰めなし");
+    }
+}
+
 fn print_solution_tree(node: &SolutionNode, indent: usize) {
     let pad = "  ".repeat(indent);
     match node {

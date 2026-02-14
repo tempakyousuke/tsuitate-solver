@@ -61,6 +61,10 @@ pub struct TsuitateDfpnSolver {
     node_limit: u64,
     /// キャンセルフラグ
     cancelled: Arc<AtomicBool>,
+    /// ルートで除外する手（余詰めチェック用）
+    excluded_root_moves: Vec<Move>,
+    /// ルートのメタポジションハッシュ（除外判定用）
+    root_hash: Option<u64>,
 }
 
 impl TsuitateDfpnSolver {
@@ -71,12 +75,15 @@ impl TsuitateDfpnSolver {
             nodes_searched: 0,
             node_limit,
             cancelled,
+            excluded_root_moves: Vec::new(),
+            root_hash: None,
         }
     }
 
     /// メタポジションが詰むかどうかを判定する
     pub fn solve(&mut self, meta: &MetaPosition) -> TsuitateDfpnResult {
         let hash = meta_position_hash(meta);
+        self.root_hash = Some(hash);
         let mut path = vec![hash];
 
         self.mid_or(meta, INF, INF, &mut path);
@@ -134,10 +141,23 @@ impl TsuitateDfpnSolver {
         }
 
         // 候補手を生成
-        let (candidates, legal_move_sets) = self.generate_attack_candidates(meta);
+        let (mut candidates, legal_move_sets) = self.generate_attack_candidates(meta);
         if self.should_stop() {
             return;
         }
+
+        // ルートノードでは除外手をフィルタ
+        if self.root_hash == Some(hash) && !self.excluded_root_moves.is_empty() {
+            candidates.retain(|mv| {
+                !self.excluded_root_moves.iter().any(|exc| {
+                    exc.from == mv.from
+                        && exc.to == mv.to
+                        && exc.promotion == mv.promotion
+                        && exc.drop_piece == mv.drop_piece
+                })
+            });
+        }
+
         if candidates.is_empty() {
             self.or_table.insert(hash, PnDn { pn: INF, dn: 0 });
             return;
@@ -576,19 +596,62 @@ impl TsuitateDfpnSolver {
 
     /// 探索して SolutionData を返す（既存ソルバーと同じインターフェース）
     pub fn solve_to_solution(&mut self, meta: &MetaPosition) -> SolutionData {
+        self.solve_to_solution_inner(meta, false)
+    }
+
+    /// 余詰めチェック付きで探索して SolutionData を返す
+    pub fn solve_to_solution_with_second(
+        &mut self,
+        meta: &MetaPosition,
+    ) -> SolutionData {
+        self.solve_to_solution_inner(meta, true)
+    }
+
+    fn solve_to_solution_inner(
+        &mut self,
+        meta: &MetaPosition,
+        find_second: bool,
+    ) -> SolutionData {
         let result = self.solve(meta);
         match result {
             TsuitateDfpnResult::Proven => {
                 let tree = self.extract_solution(meta);
                 let depth = tree.as_ref().map(|t| t.max_moves()).unwrap_or(0);
+
+                // 余詰めチェック
+                let (second_tree, total_nodes, second_msg) = if find_second {
+                    if let Some(ref t) = tree {
+                        self.find_second_solution(meta, t)
+                    } else {
+                        (None, self.nodes_searched, String::new())
+                    }
+                } else {
+                    (None, self.nodes_searched, String::new())
+                };
+
+                let message = if second_tree.is_some() {
+                    let second_depth = second_tree.as_ref().map(|t| t.max_moves()).unwrap_or(0);
+                    format!(
+                        "余詰めあり: {}手詰めと{}手詰めが見つかりました (探索ノード数: {})",
+                        depth, second_depth, total_nodes
+                    )
+                } else if find_second && !second_msg.is_empty() {
+                    format!(
+                        "{}手詰めが見つかりました（余詰めなし、探索ノード数: {}）",
+                        depth, total_nodes
+                    )
+                } else {
+                    format!(
+                        "{}手詰めが見つかりました (探索ノード数: {})",
+                        depth, total_nodes
+                    )
+                };
+
                 SolutionData {
                     found: true,
                     tree,
-                    second_tree: None,
-                    message: format!(
-                        "{}手詰めが見つかりました (探索ノード数: {})",
-                        depth, self.nodes_searched
-                    ),
+                    second_tree,
+                    message,
                     trace: Vec::new(),
                 }
             }
@@ -612,6 +675,76 @@ impl TsuitateDfpnSolver {
                 ),
                 trace: Vec::new(),
             },
+        }
+    }
+
+    /// 1つ目の解の初手を除外して2つ目の解を探す
+    fn find_second_solution(
+        &mut self,
+        meta: &MetaPosition,
+        first_tree: &SolutionNode,
+    ) -> (Option<SolutionNode>, u64, String) {
+        // 1つ目の解の初手を取得
+        let first_mv = match first_tree {
+            SolutionNode::AttackMove { mv, .. } => {
+                let to = Square::new(mv.to_file, mv.to_rank);
+                let from = match (mv.from_file, mv.from_rank) {
+                    (Some(f), Some(r)) => Some(Square::new(f, r)),
+                    _ => None,
+                };
+                let drop_piece = mv.drop_piece.as_ref().and_then(|s| {
+                    match s.as_str() {
+                        "飛" => Some(PieceKind::Rook),
+                        "角" => Some(PieceKind::Bishop),
+                        "金" => Some(PieceKind::Gold),
+                        "銀" => Some(PieceKind::Silver),
+                        "桂" => Some(PieceKind::Knight),
+                        "香" => Some(PieceKind::Lance),
+                        "歩" => Some(PieceKind::Pawn),
+                        _ => None,
+                    }
+                });
+                Move {
+                    from,
+                    to,
+                    promotion: mv.promotion,
+                    drop_piece,
+                    moved_piece_kind: None,
+                }
+            }
+            SolutionNode::Checkmate { .. } => {
+                return (None, self.nodes_searched, String::new());
+            }
+        };
+
+        // 初手と成/不成のバリエーションを除外リストに追加
+        let mut excluded = vec![first_mv];
+        if first_mv.from.is_some() {
+            let mut counterpart = first_mv;
+            counterpart.promotion = !counterpart.promotion;
+            excluded.push(counterpart);
+        }
+
+        let first_phase_nodes = self.nodes_searched;
+
+        // 転置表をクリアして再探索
+        self.or_table.clear();
+        self.and_table.clear();
+        self.nodes_searched = 0;
+        self.excluded_root_moves = excluded;
+
+        let result = self.solve(meta);
+        let second_phase_nodes = self.nodes_searched;
+        let total_nodes = first_phase_nodes + second_phase_nodes;
+
+        self.excluded_root_moves.clear();
+
+        match result {
+            TsuitateDfpnResult::Proven => {
+                let second_tree = self.extract_solution(meta);
+                (second_tree, total_nodes, "found".to_string())
+            }
+            _ => (None, total_nodes, "not_found".to_string()),
         }
     }
 
