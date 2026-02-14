@@ -1,0 +1,50 @@
+{
+  "board": [
+    {
+      "file": 1,
+      "rank": 1,
+      "color": "gote",
+      "kind": "lance"
+    },
+    {
+      "file": 1,
+      "rank": 2,
+      "color": "gote",
+      "kind": "gold"
+    },
+    {
+      "file": 1,
+      "rank": 3,
+      "color": "gote",
+      "kind": "pawn"
+    },
+    {
+      "file": 2,
+      "rank": 2,
+      "color": "gote",
+      "kind": "king"
+    },
+    {
+      "file": 4,
+      "rank": 1,
+      "color": "gote",
+      "kind": "rook"
+    },
+    {
+      "file": 4,
+      "rank": 3,
+      "color": "sente",
+      "kind": "bishop"
+    }
+  ],
+  "sente_hand": [
+    {
+      "kind": "lance",
+      "count": 1
+    },
+    {
+      "kind": "rook",
+      "count": 1
+    }
+  ]
+}

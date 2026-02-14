@@ -1,0 +1,28 @@
+{
+  "board": [
+    {
+      "file": 4,
+      "rank": 1,
+      "color": "sente",
+      "kind": "promoted_pawn"
+    },
+    {
+      "file": 5,
+      "rank": 2,
+      "color": "gote",
+      "kind": "king"
+    },
+    {
+      "file": 5,
+      "rank": 4,
+      "color": "sente",
+      "kind": "pawn"
+    }
+  ],
+  "sente_hand": [
+    {
+      "kind": "gold",
+      "count": 2
+    }
+  ]
+}
