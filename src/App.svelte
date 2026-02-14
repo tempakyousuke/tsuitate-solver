@@ -14,14 +14,13 @@
     <div class="sidebar">
       <PieceSelector />
       <Controls />
-      <Solution />
     </div>
   </div>
+  <Solution />
 </main>
 
 <style>
   main {
-    max-width: 900px;
     margin: 0 auto;
     padding: 16px;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
