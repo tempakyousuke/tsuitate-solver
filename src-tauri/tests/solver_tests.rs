@@ -210,7 +210,17 @@ fn test_solve_tsuitate_illegal_probe_default_depth() {
     pos.side_to_move = Color::Sente;
 
     let meta = MetaPosition::new(pos);
-    let mut solver = TsuitateSolver::new(7, no_cancel()); // アプリのデフォルト
+
+    // タイムアウト付きキャンセルフラグ（release: 10秒, debug: 30秒）
+    let time_limit_secs = if cfg!(debug_assertions) { 30 } else { 10 };
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_clone = cancel.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(time_limit_secs));
+        cancel_clone.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+
+    let mut solver = TsuitateSolver::new(7, cancel);
     let start = std::time::Instant::now();
     let result = solver.solve(&meta);
     let elapsed = start.elapsed();
@@ -220,46 +230,61 @@ fn test_solve_tsuitate_illegal_probe_default_depth() {
         result.found, elapsed, result.message
     );
 
-    assert!(result.found);
-    // リリースビルドでは10秒以内、デバッグビルドでは30秒以内
-    let time_limit = if cfg!(debug_assertions) { 30 } else { 10 };
     assert!(
-        elapsed.as_secs() < time_limit,
-        "{}秒以内に解けるはず (実際: {:?})",
-        time_limit, elapsed
+        result.found,
+        "{}秒以内に解けるはず (経過: {:?}): {}",
+        time_limit_secs, elapsed, result.message
     );
 }
 
-/// 盤面: 1二後手飛, 1三後手歩, 2一後手金, 2二後手玉, 2五先手歩, 3四先手歩, 4一後手銀, 4三後手歩
-/// 先手持ち駒: 銀, 桂
+/// question.json: 1二後手香, 1三後手歩, 2三後手玉, 3五後手歩, 3六後手金,
+/// 4三先手と金, 5七先手歩, 6四後手角
+/// 先手持ち駒: 飛x2, 金x1
 /// 後手持ち駒: 残り全て
+///
+/// 注意: この問題は通常詰将棋では7手詰めだが、衝立詰将棋では
+/// Captured分岐単独で7手必要（全体で9手以上）かつ
+/// NoCapture分岐のメタポジションが深くまで解けないため、
+/// 現在の探索深さ・時間では解が見つからない。
+/// ベンチマーク用テスト（解の発見は assert しない）。
 #[test]
+#[ignore] // 長時間実行: cargo test --release -- --ignored test_solve_question_json
 fn test_solve_question_json() {
     let mut pos = Position::new();
-    pos.set_piece(Square::new(1, 2), Piece::new(Color::Gote, PieceKind::Rook));
+    pos.set_piece(Square::new(1, 2), Piece::new(Color::Gote, PieceKind::Lance));
     pos.set_piece(Square::new(1, 3), Piece::new(Color::Gote, PieceKind::Pawn));
-    pos.set_piece(Square::new(2, 1), Piece::new(Color::Gote, PieceKind::Gold));
-    pos.set_piece(Square::new(2, 2), Piece::new(Color::Gote, PieceKind::King));
-    pos.set_piece(Square::new(2, 5), Piece::new(Color::Sente, PieceKind::Pawn));
-    pos.set_piece(Square::new(3, 4), Piece::new(Color::Sente, PieceKind::Pawn));
-    pos.set_piece(Square::new(4, 1), Piece::new(Color::Gote, PieceKind::Silver));
-    pos.set_piece(Square::new(4, 3), Piece::new(Color::Gote, PieceKind::Pawn));
-    // 先手持ち駒: 銀, 桂
-    pos.sente_hand.add(PieceKind::Silver);
-    pos.sente_hand.add(PieceKind::Knight);
+    pos.set_piece(Square::new(2, 3), Piece::new(Color::Gote, PieceKind::King));
+    pos.set_piece(Square::new(3, 5), Piece::new(Color::Gote, PieceKind::Pawn));
+    pos.set_piece(Square::new(3, 6), Piece::new(Color::Gote, PieceKind::Gold));
+    pos.set_piece(Square::new(4, 3), Piece::new(Color::Sente, PieceKind::PromotedPawn));
+    pos.set_piece(Square::new(5, 7), Piece::new(Color::Sente, PieceKind::Pawn));
+    pos.set_piece(Square::new(6, 4), Piece::new(Color::Gote, PieceKind::Bishop));
+    // 先手持ち駒: 飛x2, 金x1
+    for _ in 0..2 { pos.sente_hand.add(PieceKind::Rook); }
+    pos.sente_hand.add(PieceKind::Gold);
     // 後手持ち駒: 残り全て（詰将棋ルール）
-    // 飛x1(2-1=1), 角x2, 金x3(4-1=3), 銀x2(4-1-1=2), 桂x3(4-1=3), 香x4, 歩x14(18-4=14)
-    for _ in 0..1 { pos.gote_hand.add(PieceKind::Rook); }
-    for _ in 0..2 { pos.gote_hand.add(PieceKind::Bishop); }
-    for _ in 0..3 { pos.gote_hand.add(PieceKind::Gold); }
-    for _ in 0..2 { pos.gote_hand.add(PieceKind::Silver); }
-    for _ in 0..3 { pos.gote_hand.add(PieceKind::Knight); }
-    for _ in 0..4 { pos.gote_hand.add(PieceKind::Lance); }
+    // 角x1(2-1=1), 金x2(4-1-1=2), 銀x4, 桂x4, 香x3(4-1=3), 歩x14(18-4=14)
+    pos.gote_hand.add(PieceKind::Bishop);
+    for _ in 0..2 { pos.gote_hand.add(PieceKind::Gold); }
+    for _ in 0..4 { pos.gote_hand.add(PieceKind::Silver); }
+    for _ in 0..4 { pos.gote_hand.add(PieceKind::Knight); }
+    for _ in 0..3 { pos.gote_hand.add(PieceKind::Lance); }
     for _ in 0..14 { pos.gote_hand.add(PieceKind::Pawn); }
     pos.side_to_move = Color::Sente;
 
     let meta = MetaPosition::new(pos);
-    let mut solver = TsuitateSolver::new(7, no_cancel());
+
+    // タイムアウト付きキャンセルフラグ（release: 120秒, debug: 300秒）
+    let time_limit_secs = if cfg!(debug_assertions) { 300 } else { 120 };
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_clone = cancel.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(time_limit_secs));
+        cancel_clone.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+
+    let mut solver = TsuitateSolver::new(11, cancel);
+    solver.set_trace_enabled(false);
     let start = std::time::Instant::now();
     let result = solver.solve(&meta);
     let elapsed = start.elapsed();
@@ -268,10 +293,234 @@ fn test_solve_question_json() {
         "question.json: found={}, time={:?}, nodes={}, message={}",
         result.found, elapsed, solver.nodes_searched, result.message
     );
-    // トレースをファイルに出力
-    let trace_content = result.trace.join("\n");
-    std::fs::write("/tmp/question_trace.log", &trace_content).unwrap();
-    println!("トレース出力: /tmp/question_trace.log ({} 行)", result.trace.len());
+    for line in &result.trace {
+        println!("{}", line);
+    }
+}
+
+/// check evasion generator の正しさを検証
+/// generate_check_evasions と generate_legal_moves の結果を比較
+#[test]
+fn test_check_evasion_correctness() {
+    // question.json のセットアップ
+    let mut pos = Position::new();
+    pos.set_piece(Square::new(1, 2), Piece::new(Color::Gote, PieceKind::Lance));
+    pos.set_piece(Square::new(1, 3), Piece::new(Color::Gote, PieceKind::Pawn));
+    pos.set_piece(Square::new(2, 3), Piece::new(Color::Gote, PieceKind::King));
+    pos.set_piece(Square::new(3, 5), Piece::new(Color::Gote, PieceKind::Pawn));
+    pos.set_piece(Square::new(3, 6), Piece::new(Color::Gote, PieceKind::Gold));
+    pos.set_piece(Square::new(4, 3), Piece::new(Color::Sente, PieceKind::PromotedPawn));
+    pos.set_piece(Square::new(5, 7), Piece::new(Color::Sente, PieceKind::Pawn));
+    pos.set_piece(Square::new(6, 4), Piece::new(Color::Gote, PieceKind::Bishop));
+    for _ in 0..2 { pos.sente_hand.add(PieceKind::Rook); }
+    pos.sente_hand.add(PieceKind::Gold);
+    pos.gote_hand.add(PieceKind::Bishop);
+    for _ in 0..2 { pos.gote_hand.add(PieceKind::Gold); }
+    for _ in 0..4 { pos.gote_hand.add(PieceKind::Silver); }
+    for _ in 0..4 { pos.gote_hand.add(PieceKind::Knight); }
+    for _ in 0..3 { pos.gote_hand.add(PieceKind::Lance); }
+    for _ in 0..14 { pos.gote_hand.add(PieceKind::Pawn); }
+    pos.side_to_move = Color::Sente;
+
+    // ▲2二飛打 を適用して王手状態にする
+    let check_moves = pos.generate_check_moves();
+    println!("先手王手候補数: {}", check_moves.len());
+
+    // 各王手手に対してevasionの正しさを検証
+    let mut errors = 0;
+    for cm in &check_moves {
+        let mut pos_after = pos.clone();
+        pos_after.make_move(*cm);
+
+        let legal = pos_after.generate_legal_moves();
+        let evasions = pos_after.generate_check_evasions();
+
+        let legal_set: std::collections::HashSet<Move> = legal.iter().cloned().collect();
+        let evasion_set: std::collections::HashSet<Move> = evasions.iter().cloned().collect();
+
+        if legal_set != evasion_set {
+            println!(
+                "MISMATCH after {}: legal={}, evasions={}",
+                cm.to_japanese(Color::Sente),
+                legal.len(),
+                evasions.len()
+            );
+            let missing: Vec<_> = legal_set.difference(&evasion_set).collect();
+            let extra: Vec<_> = evasion_set.difference(&legal_set).collect();
+            if !missing.is_empty() {
+                println!("  Missing from evasions: {:?}", missing);
+            }
+            if !extra.is_empty() {
+                println!("  Extra in evasions: {:?}", extra);
+            }
+            errors += 1;
+        }
+    }
+    // 追加: ▲2二飛打後の王手状態で詳細確認
+    let rook_22 = Move {
+        from: None,
+        to: Square::new(2, 2),
+        promotion: false,
+        drop_piece: Some(PieceKind::Rook),
+    };
+    let mut pos22 = pos.clone();
+    pos22.make_move(rook_22);
+    let legal = pos22.generate_legal_moves();
+    let evasions = pos22.generate_check_evasions();
+    println!("\n▲2二飛打後:");
+    println!("  legal_moves({}):", legal.len());
+    for m in &legal {
+        let in_ev = evasions.contains(m);
+        println!("    {} {}", m.to_japanese(Color::Gote), if in_ev { "✓" } else { "✗ MISSING" });
+    }
+    println!("  check_evasions({}):", evasions.len());
+    for m in &evasions {
+        let in_leg = legal.contains(m);
+        if !in_leg {
+            println!("    {} ✗ EXTRA", m.to_japanese(Color::Gote));
+        }
+    }
+
+    assert_eq!(errors, 0, "check evasion と legal moves の不一致あり");
+}
+
+/// ▲2二飛打のCaptured分岐を単独テスト
+/// 玉が2二に来た状態から何手詰めか調査（結果: 7手必要）
+#[test]
+#[ignore] // 長時間実行: cargo test --release -- --ignored test_captured_branch_22_rook
+fn test_captured_branch_22_rook() {
+    let mut pos = Position::new();
+    // 玉が2二に移動（飛車を取った後）
+    pos.set_piece(Square::new(2, 2), Piece::new(Color::Gote, PieceKind::King));
+    pos.set_piece(Square::new(1, 2), Piece::new(Color::Gote, PieceKind::Lance));
+    pos.set_piece(Square::new(1, 3), Piece::new(Color::Gote, PieceKind::Pawn));
+    pos.set_piece(Square::new(3, 5), Piece::new(Color::Gote, PieceKind::Pawn));
+    pos.set_piece(Square::new(3, 6), Piece::new(Color::Gote, PieceKind::Gold));
+    pos.set_piece(Square::new(4, 3), Piece::new(Color::Sente, PieceKind::PromotedPawn));
+    pos.set_piece(Square::new(5, 7), Piece::new(Color::Sente, PieceKind::Pawn));
+    pos.set_piece(Square::new(6, 4), Piece::new(Color::Gote, PieceKind::Bishop));
+    // 先手持ち駒: 飛x1, 金x1 (飛1枚は玉に取られた)
+    pos.sente_hand.add(PieceKind::Rook);
+    pos.sente_hand.add(PieceKind::Gold);
+    // 後手持ち駒: 飛x1(取った分), 角x1, 金x2, 銀x4, 桂x4, 香x3, 歩x14
+    pos.gote_hand.add(PieceKind::Rook);
+    pos.gote_hand.add(PieceKind::Bishop);
+    for _ in 0..2 { pos.gote_hand.add(PieceKind::Gold); }
+    for _ in 0..4 { pos.gote_hand.add(PieceKind::Silver); }
+    for _ in 0..4 { pos.gote_hand.add(PieceKind::Knight); }
+    for _ in 0..3 { pos.gote_hand.add(PieceKind::Lance); }
+    for _ in 0..14 { pos.gote_hand.add(PieceKind::Pawn); }
+    pos.side_to_move = Color::Sente;
+
+    let meta = MetaPosition::new(pos);
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_clone = cancel.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        cancel_clone.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+
+    // 5手、7手、9手で試す
+    for max_d in [5, 7, 9] {
+        let mut solver = TsuitateSolver::new(max_d, cancel.clone());
+        solver.set_trace_enabled(false);
+        let start = std::time::Instant::now();
+        let result = solver.solve(&meta);
+        let elapsed = start.elapsed();
+        println!(
+            "Captured(2,2) max_depth={}: found={}, time={:?}, nodes={}, msg={}",
+            max_d, result.found, elapsed, solver.nodes_searched, result.message
+        );
+        if result.found {
+            break;
+        }
+    }
+}
+
+/// ▲2二飛打のNoCapture分岐を単独テスト
+/// 個別局面では1手詰めだが、メタポジション（両方含む）では深さ9でも解なし
+#[test]
+#[ignore] // 長時間実行: cargo test --release -- --ignored test_nocapture_branch_22_rook
+fn test_nocapture_branch_22_rook() {
+    // 元の盤面 + 飛車を2二に配置
+    let mut pos = Position::new();
+    pos.set_piece(Square::new(1, 2), Piece::new(Color::Gote, PieceKind::Lance));
+    pos.set_piece(Square::new(1, 3), Piece::new(Color::Gote, PieceKind::Pawn));
+    // 玉は2三にいない（移動済み）
+    pos.set_piece(Square::new(3, 5), Piece::new(Color::Gote, PieceKind::Pawn));
+    pos.set_piece(Square::new(3, 6), Piece::new(Color::Gote, PieceKind::Gold));
+    pos.set_piece(Square::new(4, 3), Piece::new(Color::Sente, PieceKind::PromotedPawn));
+    pos.set_piece(Square::new(5, 7), Piece::new(Color::Sente, PieceKind::Pawn));
+    pos.set_piece(Square::new(6, 4), Piece::new(Color::Gote, PieceKind::Bishop));
+    pos.set_piece(Square::new(2, 2), Piece::new(Color::Sente, PieceKind::Rook)); // ▲2二飛
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_clone = cancel.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(120));
+        cancel_clone.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+
+    // 玉が(1,4)の場合
+    let mut pos14 = pos.clone();
+    pos14.set_piece(Square::new(1, 4), Piece::new(Color::Gote, PieceKind::King));
+    pos14.sente_hand.add(PieceKind::Rook);
+    pos14.sente_hand.add(PieceKind::Gold);
+    pos14.gote_hand.add(PieceKind::Bishop);
+    for _ in 0..2 { pos14.gote_hand.add(PieceKind::Gold); }
+    for _ in 0..4 { pos14.gote_hand.add(PieceKind::Silver); }
+    for _ in 0..4 { pos14.gote_hand.add(PieceKind::Knight); }
+    for _ in 0..3 { pos14.gote_hand.add(PieceKind::Lance); }
+    for _ in 0..14 { pos14.gote_hand.add(PieceKind::Pawn); }
+    pos14.side_to_move = Color::Sente;
+
+    // 玉が(3,4)の場合
+    let mut pos34 = pos.clone();
+    pos34.set_piece(Square::new(3, 4), Piece::new(Color::Gote, PieceKind::King));
+    pos34.sente_hand.add(PieceKind::Rook);
+    pos34.sente_hand.add(PieceKind::Gold);
+    pos34.gote_hand.add(PieceKind::Bishop);
+    for _ in 0..2 { pos34.gote_hand.add(PieceKind::Gold); }
+    for _ in 0..4 { pos34.gote_hand.add(PieceKind::Silver); }
+    for _ in 0..4 { pos34.gote_hand.add(PieceKind::Knight); }
+    for _ in 0..3 { pos34.gote_hand.add(PieceKind::Lance); }
+    for _ in 0..14 { pos34.gote_hand.add(PieceKind::Pawn); }
+    pos34.side_to_move = Color::Sente;
+
+    // 個別テスト
+    for (name, p) in [("King@(1,4)", pos14.clone()), ("King@(3,4)", pos34.clone())] {
+        for max_d in [5, 7, 9] {
+            let meta = MetaPosition::new(p.clone());
+            let mut solver = TsuitateSolver::new(max_d, cancel.clone());
+            solver.set_trace_enabled(false);
+            let start = std::time::Instant::now();
+            let result = solver.solve(&meta);
+            let elapsed = start.elapsed();
+            println!(
+                "{} max_depth={}: found={}, time={:?}, nodes={}",
+                name, max_d, result.found, elapsed, solver.nodes_searched
+            );
+            if result.found { break; }
+        }
+    }
+
+    // メタポジション（両方含む）テスト
+    let meta = MetaPosition {
+        positions: vec![pos14, pos34],
+    };
+    for max_d in [5, 7, 9] {
+        let mut solver = TsuitateSolver::new(max_d, cancel.clone());
+        solver.set_trace_enabled(false);
+        let start = std::time::Instant::now();
+        let result = solver.solve(&meta);
+        let elapsed = start.elapsed();
+        println!(
+            "NoCapture meta max_depth={}: found={}, time={:?}, nodes={}",
+            max_d, result.found, elapsed, solver.nodes_searched
+        );
+        if result.found { break; }
+    }
 }
 
 /// expand_defense_moves テスト

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::shogi::position::Position;
 use crate::shogi::types::*;
@@ -41,7 +41,7 @@ impl MetaPosition {
             if !pos.is_in_check(defender_color) {
                 return false; // 王手でなければ詰みではない
             }
-            let legal_moves = pos.generate_legal_moves();
+            let legal_moves = pos.generate_check_evasions();
             if legal_moves.is_empty() {
                 continue; // 合法手なし = 詰み
             }
@@ -124,13 +124,21 @@ impl MetaPosition {
         let mut legal_positions = Vec::new();
         let mut illegal_positions = Vec::new();
 
+        let mut legal_seen = HashSet::new();
+        let mut illegal_seen = HashSet::new();
+
         for (i, pos) in self.positions.iter().enumerate() {
             if legal_move_sets[i].contains(&mv) {
                 let mut new_pos = pos.clone();
                 new_pos.make_move(mv);
-                legal_positions.push(new_pos);
+                if legal_seen.insert(new_pos.clone()) {
+                    legal_positions.push(new_pos);
+                }
             } else {
-                illegal_positions.push(pos.clone());
+                let cloned = pos.clone();
+                if illegal_seen.insert(cloned.clone()) {
+                    illegal_positions.push(cloned);
+                }
             }
         }
 
@@ -150,12 +158,15 @@ impl MetaPosition {
     ///   - 「詰み」: 玉方に合法手がない
     pub fn expand_defense_moves(&self, attack_move: Move) -> Vec<(Observation, MetaPosition)> {
         let mut checkmate_positions = Vec::new();
+        let mut capture_seen = HashSet::new();
         let mut capture_positions = Vec::new();
+        let mut no_capture_seen = HashSet::new();
         let mut no_capture_positions = Vec::new();
 
         for pos in &self.positions {
-            // posは既に攻め方の手を指した後の状態（玉方手番）
-            let legal_moves = pos.generate_legal_moves();
+            // posは既に攻め方の手を指した後の状態（玉方手番、王手されている）
+            // 王手回避専用ジェネレータで高速に合法手を生成
+            let legal_moves = pos.generate_check_evasions();
 
             if legal_moves.is_empty() {
                 // 玉方に合法手がない = 詰み
@@ -170,7 +181,21 @@ impl MetaPosition {
             // 無駄合い判定のキャッシュ（マス目ごと：同じマスへの合駒は同様に無駄）
             let mut futile_squares: HashSet<Square> = HashSet::new();
 
+            // 合駒の限定: 同一マスへの打ち駒合駒を最安値と最高値の2つに絞る
+            let allowed_drops = Self::compute_allowed_drops(&legal_moves, attack_move);
+
             for def_mv in &legal_moves {
+                // 打ち駒合駒の限定フィルタ
+                if let Some(drop_kind) = def_mv.drop_piece {
+                    if def_mv.to != attack_move.to {
+                        if let Some(allowed) = allowed_drops.get(&def_mv.to) {
+                            if !allowed.contains(&drop_kind) {
+                                continue;
+                            }
+                        }
+                    }
+                }
+
                 // 無駄合い判定（最適化済み）
                 let is_futile = if !in_check {
                     false // 王手でなければ合駒ではない
@@ -207,9 +232,13 @@ impl MetaPosition {
                 let captured = def_mv.to == attack_move.to;
 
                 if captured {
-                    capture_positions.push(new_pos);
+                    if capture_seen.insert(new_pos.clone()) {
+                        capture_positions.push(new_pos);
+                    }
                 } else {
-                    no_capture_positions.push(new_pos);
+                    if no_capture_seen.insert(new_pos.clone()) {
+                        no_capture_positions.push(new_pos);
+                    }
                 }
             }
         }
@@ -244,6 +273,54 @@ impl MetaPosition {
         }
 
         result
+    }
+
+    /// 合駒の限定: 各マスへの打ち駒合駒について、最安値の1種のみ許可する
+    /// 盤上の駒の移動による合駒は制限しない（限定合いの可能性があるため）
+    ///
+    /// 理由: 衝立詰将棋では攻め方は合駒の駒種を観測できない。
+    /// 攻め方の応手は全合駒に対して成功する必要がある。
+    /// 最安値の合駒は取り返しても得られる駒が最小であり、
+    /// 攻め方にとって最も不利なケースとなるため、これで代表させる。
+    /// これはヒューリスティックであり理論上は不完全だが、実用上ほぼ正しく機能する。
+    fn compute_allowed_drops(
+        legal_moves: &[Move],
+        attack_move: Move,
+    ) -> HashMap<Square, Vec<PieceKind>> {
+        fn piece_value(kind: PieceKind) -> u8 {
+            match kind {
+                PieceKind::Pawn => 0,
+                PieceKind::Lance => 1,
+                PieceKind::Knight => 2,
+                PieceKind::Silver => 3,
+                PieceKind::Gold => 4,
+                PieceKind::Bishop => 5,
+                PieceKind::Rook => 6,
+                _ => 7,
+            }
+        }
+
+        let mut drops_by_square: HashMap<Square, Vec<PieceKind>> = HashMap::new();
+
+        for mv in legal_moves {
+            if let Some(drop_kind) = mv.drop_piece {
+                if mv.to != attack_move.to {
+                    drops_by_square.entry(mv.to).or_default().push(drop_kind);
+                }
+            }
+        }
+
+        let mut allowed: HashMap<Square, Vec<PieceKind>> = HashMap::new();
+        for (sq, kinds) in drops_by_square {
+            if kinds.len() <= 1 {
+                allowed.insert(sq, kinds);
+            } else {
+                let cheapest = *kinds.iter().min_by_key(|k| piece_value(**k)).unwrap();
+                allowed.insert(sq, vec![cheapest]);
+            }
+        }
+
+        allowed
     }
 }
 

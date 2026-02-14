@@ -449,6 +449,409 @@ fn check_slide_attacker(
     false
 }
 
+/// 王手回避手を生成（王手されている局面専用の高効率合法手生成）
+/// 通常の generate_legal_moves() の代わりに使用する。
+/// 王手に対する合法応手のみを生成するため、持ち駒が多い局面で大幅に高速。
+pub fn generate_check_evasions(pos: &Position) -> Vec<Move> {
+    let color = pos.side_to_move;
+    let king_sq = match pos.find_king(color) {
+        Some(sq) => sq,
+        None => return Vec::new(),
+    };
+    let opponent = color.opponent();
+
+    let checkers = find_checkers(pos, king_sq, opponent);
+    if checkers.is_empty() {
+        return pos.generate_legal_moves();
+    }
+
+    let mut evasions = Vec::new();
+
+    // 1. 玉の移動（常に候補）
+    for &(df, dr) in &king_offsets() {
+        let nf = king_sq.file as i8 + df;
+        let nr = king_sq.rank as i8 + dr;
+        if !Square::is_valid(nf, nr) {
+            continue;
+        }
+        let to = Square::new(nf as u8, nr as u8);
+        if let Some(p) = pos.piece_at(to) {
+            if p.color == color {
+                continue;
+            }
+        }
+        let mv = Move::normal(king_sq, to, false);
+        let mut test = pos.clone();
+        test.make_move(mv);
+        if !test.is_in_check(color) {
+            evasions.push(mv);
+        }
+    }
+
+    // 両王手の場合は玉の移動のみ
+    if checkers.len() > 1 {
+        return evasions;
+    }
+
+    let checker_sq = checkers[0];
+
+    // 2. 王手している駒を取る（玉以外の駒で）
+    let capture_moves = generate_moves_to_square(pos, checker_sq, color, false);
+    for mv in capture_moves {
+        let mut test = pos.clone();
+        test.make_move(mv);
+        if !test.is_in_check(color) {
+            evasions.push(mv);
+        }
+    }
+
+    // 3. 合駒（スライド攻撃の場合のみ）
+    let interpose_sqs = compute_interposition_squares(king_sq, checker_sq);
+    for sq in &interpose_sqs {
+        let interpose_moves = generate_moves_to_square(pos, *sq, color, true);
+        for mv in interpose_moves {
+            let mut test = pos.clone();
+            test.make_move(mv);
+            if !test.is_in_check(color) {
+                evasions.push(mv);
+            }
+        }
+    }
+
+    evasions
+}
+
+/// 指定マスに到達可能な指し手を生成（玉以外、合法性チェックなし）
+fn generate_moves_to_square(
+    pos: &Position,
+    to: Square,
+    color: Color,
+    include_drops: bool,
+) -> Vec<Move> {
+    let mut moves = Vec::new();
+
+    for idx in 0..81 {
+        let from = Square::from_index(idx);
+        if let Some(piece) = pos.piece_at(from) {
+            if piece.color != color || piece.kind == PieceKind::King {
+                continue;
+            }
+            if can_piece_reach(pos, from, piece, to) {
+                add_move_with_promotion(from, to, color, piece.kind.can_promote(), pos, &mut moves);
+            }
+        }
+    }
+
+    if include_drops && pos.piece_at(to).is_none() {
+        let hand = pos.hand(color);
+        for &kind in &PieceKind::HAND_PIECES {
+            if !hand.has(kind) {
+                continue;
+            }
+            if !can_drop_to(pos, kind, to, color) {
+                continue;
+            }
+            moves.push(Move::drop(to, kind));
+        }
+    }
+
+    moves
+}
+
+/// 駒がfromからtoに到達可能かチェック（盤上の障害物を考慮）
+fn can_piece_reach(pos: &Position, from: Square, piece: Piece, to: Square) -> bool {
+    let color = piece.color;
+    let df = to.file as i8 - from.file as i8;
+    let dr = to.rank as i8 - from.rank as i8;
+
+    match piece.kind {
+        PieceKind::King => false,
+        PieceKind::Gold
+        | PieceKind::PromotedSilver
+        | PieceKind::PromotedKnight
+        | PieceKind::PromotedLance
+        | PieceKind::PromotedPawn => gold_offsets(color).contains(&(df, dr)),
+        PieceKind::Silver => silver_offsets(color).contains(&(df, dr)),
+        PieceKind::Knight => knight_offsets(color).contains(&(df, dr)),
+        PieceKind::Pawn => pawn_offsets(color).contains(&(df, dr)),
+        PieceKind::Lance => {
+            if df != 0 {
+                return false;
+            }
+            let expected_dr = if color == Color::Sente { -1 } else { 1 };
+            if dr.signum() != expected_dr {
+                return false;
+            }
+            is_path_clear(pos, from, 0, expected_dr, to)
+        }
+        PieceKind::Rook => {
+            if (df != 0 && dr != 0) || (df == 0 && dr == 0) {
+                return false;
+            }
+            is_path_clear(pos, from, df.signum(), dr.signum(), to)
+        }
+        PieceKind::Bishop => {
+            if df.abs() != dr.abs() || df == 0 {
+                return false;
+            }
+            is_path_clear(pos, from, df.signum(), dr.signum(), to)
+        }
+        PieceKind::PromotedRook => {
+            if df == 0 && dr == 0 {
+                return false;
+            }
+            if df == 0 || dr == 0 {
+                is_path_clear(pos, from, df.signum(), dr.signum(), to)
+            } else {
+                df.abs() <= 1 && dr.abs() <= 1
+            }
+        }
+        PieceKind::PromotedBishop => {
+            if df == 0 && dr == 0 {
+                return false;
+            }
+            if df.abs() == dr.abs() {
+                is_path_clear(pos, from, df.signum(), dr.signum(), to)
+            } else {
+                (df == 0 || dr == 0) && df.abs() + dr.abs() == 1
+            }
+        }
+    }
+}
+
+/// fromからtoまでの直線上に障害物がないか（toは含まない）
+fn is_path_clear(pos: &Position, from: Square, df: i8, dr: i8, to: Square) -> bool {
+    let mut f = from.file as i8 + df;
+    let mut r = from.rank as i8 + dr;
+    while f != to.file as i8 || r != to.rank as i8 {
+        if !Square::is_valid(f, r) {
+            return false;
+        }
+        if pos.piece_at(Square::new(f as u8, r as u8)).is_some() {
+            return false;
+        }
+        f += df;
+        r += dr;
+    }
+    true
+}
+
+/// 駒が指定マスに打てるかチェック
+fn can_drop_to(pos: &Position, kind: PieceKind, sq: Square, color: Color) -> bool {
+    match kind {
+        PieceKind::Pawn => {
+            if (color == Color::Sente && sq.rank == 1) || (color == Color::Gote && sq.rank == 9) {
+                return false;
+            }
+            if pos.has_pawn_on_file(color, sq.file) {
+                return false;
+            }
+            if is_pawn_drop_mate(pos, sq, color) {
+                return false;
+            }
+            true
+        }
+        PieceKind::Lance => {
+            !((color == Color::Sente && sq.rank == 1) || (color == Color::Gote && sq.rank == 9))
+        }
+        PieceKind::Knight => {
+            !((color == Color::Sente && sq.rank <= 2) || (color == Color::Gote && sq.rank >= 8))
+        }
+        _ => true,
+    }
+}
+
+/// 王手している駒の位置を全て見つける
+fn find_checkers(pos: &Position, king_sq: Square, attacker_color: Color) -> Vec<Square> {
+    let mut checkers = Vec::new();
+
+    // 金型
+    for &(df, dr) in &gold_offsets(attacker_color.opponent()) {
+        let nf = king_sq.file as i8 + df;
+        let nr = king_sq.rank as i8 + dr;
+        if !Square::is_valid(nf, nr) {
+            continue;
+        }
+        let sq = Square::new(nf as u8, nr as u8);
+        if let Some(p) = pos.piece_at(sq) {
+            if p.color == attacker_color
+                && matches!(
+                    p.kind,
+                    PieceKind::Gold
+                        | PieceKind::PromotedSilver
+                        | PieceKind::PromotedKnight
+                        | PieceKind::PromotedLance
+                        | PieceKind::PromotedPawn
+                )
+            {
+                checkers.push(sq);
+            }
+        }
+    }
+
+    // 銀
+    for &(df, dr) in &silver_offsets(attacker_color.opponent()) {
+        let nf = king_sq.file as i8 + df;
+        let nr = king_sq.rank as i8 + dr;
+        if !Square::is_valid(nf, nr) {
+            continue;
+        }
+        let sq = Square::new(nf as u8, nr as u8);
+        if let Some(p) = pos.piece_at(sq) {
+            if p.color == attacker_color && p.kind == PieceKind::Silver {
+                checkers.push(sq);
+            }
+        }
+    }
+
+    // 桂
+    for &(df, dr) in &knight_offsets(attacker_color.opponent()) {
+        let nf = king_sq.file as i8 + df;
+        let nr = king_sq.rank as i8 + dr;
+        if !Square::is_valid(nf, nr) {
+            continue;
+        }
+        let sq = Square::new(nf as u8, nr as u8);
+        if let Some(p) = pos.piece_at(sq) {
+            if p.color == attacker_color && p.kind == PieceKind::Knight {
+                checkers.push(sq);
+            }
+        }
+    }
+
+    // 歩
+    for &(df, dr) in &pawn_offsets(attacker_color.opponent()) {
+        let nf = king_sq.file as i8 + df;
+        let nr = king_sq.rank as i8 + dr;
+        if !Square::is_valid(nf, nr) {
+            continue;
+        }
+        let sq = Square::new(nf as u8, nr as u8);
+        if let Some(p) = pos.piece_at(sq) {
+            if p.color == attacker_color && p.kind == PieceKind::Pawn {
+                checkers.push(sq);
+            }
+        }
+    }
+
+    // 香
+    let lance_dr: i8 = if attacker_color == Color::Sente { 1 } else { -1 };
+    if let Some(sq) = find_slide_checker(pos, king_sq, 0, lance_dr, attacker_color, &[PieceKind::Lance]) {
+        checkers.push(sq);
+    }
+
+    // 飛車/竜（十字スライド）
+    for &(df, dr) in &[(0i8, -1i8), (0, 1), (-1, 0), (1, 0)] {
+        if let Some(sq) = find_slide_checker(
+            pos, king_sq, df, dr, attacker_color,
+            &[PieceKind::Rook, PieceKind::PromotedRook],
+        ) {
+            checkers.push(sq);
+        }
+    }
+
+    // 角/馬（斜めスライド）
+    for &(df, dr) in &[(-1i8, -1i8), (-1, 1), (1, -1), (1, 1)] {
+        if let Some(sq) = find_slide_checker(
+            pos, king_sq, df, dr, attacker_color,
+            &[PieceKind::Bishop, PieceKind::PromotedBishop],
+        ) {
+            checkers.push(sq);
+        }
+    }
+
+    // 竜の斜め1マス
+    for &(df, dr) in &[(-1i8, -1i8), (-1, 1), (1, -1), (1, 1)] {
+        let nf = king_sq.file as i8 + df;
+        let nr = king_sq.rank as i8 + dr;
+        if !Square::is_valid(nf, nr) {
+            continue;
+        }
+        let sq = Square::new(nf as u8, nr as u8);
+        if !checkers.contains(&sq) {
+            if let Some(p) = pos.piece_at(sq) {
+                if p.color == attacker_color && p.kind == PieceKind::PromotedRook {
+                    checkers.push(sq);
+                }
+            }
+        }
+    }
+
+    // 馬の十字1マス
+    for &(df, dr) in &[(0i8, -1i8), (0, 1), (-1, 0), (1, 0)] {
+        let nf = king_sq.file as i8 + df;
+        let nr = king_sq.rank as i8 + dr;
+        if !Square::is_valid(nf, nr) {
+            continue;
+        }
+        let sq = Square::new(nf as u8, nr as u8);
+        if !checkers.contains(&sq) {
+            if let Some(p) = pos.piece_at(sq) {
+                if p.color == attacker_color && p.kind == PieceKind::PromotedBishop {
+                    checkers.push(sq);
+                }
+            }
+        }
+    }
+
+    checkers
+}
+
+/// スライド方向に攻撃駒を探す（位置を返す）
+fn find_slide_checker(
+    pos: &Position,
+    sq: Square,
+    df: i8,
+    dr: i8,
+    color: Color,
+    kinds: &[PieceKind],
+) -> Option<Square> {
+    let mut f = sq.file as i8 + df;
+    let mut r = sq.rank as i8 + dr;
+    while Square::is_valid(f, r) {
+        let check_sq = Square::new(f as u8, r as u8);
+        if let Some(piece) = pos.piece_at(check_sq) {
+            if piece.color == color && kinds.contains(&piece.kind) {
+                return Some(check_sq);
+            }
+            return None;
+        }
+        f += df;
+        r += dr;
+    }
+    None
+}
+
+/// 王手回避マスの列挙（玉と王手駒の間のマス）
+fn compute_interposition_squares(king_sq: Square, checker_sq: Square) -> Vec<Square> {
+    let df = checker_sq.file as i8 - king_sq.file as i8;
+    let dr = checker_sq.rank as i8 - king_sq.rank as i8;
+
+    let is_line = df == 0 || dr == 0 || df.abs() == dr.abs();
+    if !is_line {
+        return Vec::new();
+    }
+
+    let distance = df.abs().max(dr.abs());
+    if distance <= 1 {
+        return Vec::new();
+    }
+
+    let step_f = df.signum();
+    let step_r = dr.signum();
+
+    let mut squares = Vec::new();
+    let mut f = king_sq.file as i8 + step_f;
+    let mut r = king_sq.rank as i8 + step_r;
+    while f != checker_sq.file as i8 || r != checker_sq.rank as i8 {
+        squares.push(Square::new(f as u8, r as u8));
+        f += step_f;
+        r += step_r;
+    }
+
+    squares
+}
+
 // 各駒の移動オフセット
 
 fn king_offsets() -> [(i8, i8); 8] {

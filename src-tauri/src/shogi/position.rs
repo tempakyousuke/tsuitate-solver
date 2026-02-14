@@ -185,6 +185,12 @@ impl Position {
         legal_moves
     }
 
+    /// 王手回避手を生成（王手されている局面専用、高効率版）
+    /// 持ち駒が多い局面では generate_legal_moves() よりも大幅に高速
+    pub fn generate_check_evasions(&self) -> Vec<Move> {
+        movegen::generate_check_evasions(self)
+    }
+
     /// 王手になる手のみ生成（攻め方用）
     pub fn generate_check_moves(&self) -> Vec<Move> {
         let color = self.side_to_move;
