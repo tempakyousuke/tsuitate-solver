@@ -503,4 +503,37 @@ fn bench_all_questions() {
             r.nodes,
         );
     }
+
+    // Markdown ファイル出力
+    let output_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("benchmark-results.md");
+
+    let now = chrono::Local::now();
+    let mut md = String::new();
+    md.push_str(&format!("# ベンチマーク結果\n\n"));
+    md.push_str(&format!("- 実行日時: {}\n", now.format("%Y-%m-%d %H:%M:%S")));
+    md.push_str(&format!("- 最大探索深さ: {}\n", max_depth));
+    md.push_str(&format!("- 制限時間: {}秒/問\n", time_limit_secs));
+    md.push_str(&format!("- 解けた問題: {}/{}\n", solved, total));
+    md.push_str(&format!("- 合計時間: {:.3}秒\n", total_time));
+    md.push_str(&format!("- 合計ノード数: {}\n\n", total_nodes));
+
+    md.push_str("| 問題 | 結果 | 手数 | 時間(秒) | ノード数 |\n");
+    md.push_str("|-----:|:----:|-----:|---------:|---------:|\n");
+    for r in &results {
+        md.push_str(&format!(
+            "| {} | {} | {} | {:.3} | {} |\n",
+            r.number,
+            if r.found { "OK" } else { "NG" },
+            if r.found { format!("{}", r.depth) } else { "-".to_string() },
+            r.time_secs,
+            r.nodes,
+        ));
+    }
+
+    std::fs::write(&output_path, &md)
+        .unwrap_or_else(|e| panic!("Failed to write {}: {}", output_path.display(), e));
+    println!("\nベンチマーク結果を {} に出力しました", output_path.display());
 }

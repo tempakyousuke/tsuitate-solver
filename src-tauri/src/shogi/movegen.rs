@@ -281,14 +281,35 @@ fn generate_drop_moves(pos: &Position, color: Color, moves: &mut Vec<Move>) {
     }
 }
 
+// 打ち歩詰め判定の再帰ガード
+// is_pawn_drop_mate → generate_legal_moves → generate_drop_moves → is_pawn_drop_mate の
+// 相互再帰を防止するため、スレッドローカルフラグで既にチェック中かを管理する。
+// ネストした呼び出しでは打ち歩詰めチェックをスキップし、基本合法性のみ判定する。
+thread_local! {
+    static IN_PAWN_DROP_MATE_CHECK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// 打ち歩詰め判定
 fn is_pawn_drop_mate(pos: &Position, sq: Square, color: Color) -> bool {
+    // 既に打ち歩詰めチェック中なら再帰しない
+    if IN_PAWN_DROP_MATE_CHECK.with(|f| f.get()) {
+        return false;
+    }
+
     let mut test_pos = pos.clone();
     test_pos.set_piece(sq, Piece::new(color, PieceKind::Pawn));
     test_pos.side_to_move = color.opponent();
 
-    // 相手玉に王手がかかっていて、合法手がないなら打ち歩詰め
-    test_pos.is_in_check(color.opponent()) && test_pos.generate_legal_moves().is_empty()
+    if !test_pos.is_in_check(color.opponent()) {
+        return false;
+    }
+
+    // ネストした generate_legal_moves では打ち歩詰めチェックをスキップ
+    IN_PAWN_DROP_MATE_CHECK.with(|f| f.set(true));
+    let result = test_pos.generate_legal_moves().is_empty();
+    IN_PAWN_DROP_MATE_CHECK.with(|f| f.set(false));
+
+    result
 }
 
 /// マスが特定の色の駒に攻撃されているか

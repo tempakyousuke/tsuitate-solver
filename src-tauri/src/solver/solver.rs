@@ -383,6 +383,10 @@ impl TsuitateSolver {
         }
 
         for mv in candidate_moves {
+            if self.is_cancelled() {
+                return None;
+            }
+
             let node_before = self.nodes_searched;
 
             // 全盤面にこの手を適用し、合法/不正に分割（事前計算済みの合法手セットを再利用）
@@ -451,6 +455,9 @@ impl TsuitateSolver {
             } else {
                 // 合法分岐の処理: 玉方の応手を展開し、観測結果で分類
                 let branches = legal_meta.expand_defense_moves(mv);
+                if self.is_cancelled() {
+                    return None;
+                }
                 self.log(current_depth, format!(
                     "  合法分岐: 観測パターン数={}",
                     branches.len()
@@ -567,8 +574,17 @@ impl TsuitateSolver {
         let legal_move_sets: Vec<HashSet<Move>> = meta
             .positions
             .iter()
-            .map(|pos| pos.generate_legal_moves().into_iter().collect())
+            .map(|pos| {
+                if self.is_cancelled() {
+                    return HashSet::new();
+                }
+                pos.generate_legal_moves().into_iter().collect()
+            })
             .collect();
+
+        if self.is_cancelled() {
+            return (Vec::new(), legal_move_sets);
+        }
 
         let mut seen = HashSet::new();
         let mut check_moves = Vec::new();

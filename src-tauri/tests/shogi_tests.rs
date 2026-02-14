@@ -427,3 +427,45 @@ fn test_bishop_slide() {
     // 合計: 7+7+4+3 = 21
     assert_eq!(bishop_moves.len(), 21);
 }
+
+/// 問題22（双玉）の局面で generate_legal_moves が正常に完了するかテスト
+#[test]
+fn test_dual_king_legal_moves() {
+    use std::time::Instant;
+
+    let mut pos = Position::new();
+    pos.set_piece(Square::new(1, 8), Piece::new(Color::Sente, PieceKind::King));
+    pos.set_piece(Square::new(1, 9), Piece::new(Color::Sente, PieceKind::Lance));
+    pos.set_piece(Square::new(2, 5), Piece::new(Color::Sente, PieceKind::Silver));
+    pos.set_piece(Square::new(2, 6), Piece::new(Color::Gote, PieceKind::King));
+    pos.set_piece(Square::new(3, 4), Piece::new(Color::Sente, PieceKind::Silver));
+    pos.set_piece(Square::new(3, 5), Piece::new(Color::Gote, PieceKind::Pawn));
+    pos.set_piece(Square::new(3, 9), Piece::new(Color::Sente, PieceKind::Gold));
+    pos.set_piece(Square::new(4, 6), Piece::new(Color::Gote, PieceKind::PromotedPawn));
+    pos.set_piece(Square::new(4, 9), Piece::new(Color::Sente, PieceKind::Pawn));
+    pos.sente_hand.add(PieceKind::Pawn);
+    for _ in 0..2 { pos.gote_hand.add(PieceKind::Rook); }
+    for _ in 0..2 { pos.gote_hand.add(PieceKind::Bishop); }
+    for _ in 0..3 { pos.gote_hand.add(PieceKind::Gold); }
+    for _ in 0..2 { pos.gote_hand.add(PieceKind::Silver); }
+    for _ in 0..4 { pos.gote_hand.add(PieceKind::Knight); }
+    for _ in 0..3 { pos.gote_hand.add(PieceKind::Lance); }
+    for _ in 0..14 { pos.gote_hand.add(PieceKind::Pawn); }
+    pos.side_to_move = Color::Sente;
+
+    // 先手の合法手生成
+    let start = Instant::now();
+    let sente_moves = pos.generate_legal_moves();
+    let sente_time = start.elapsed();
+    println!("先手合法手数: {}, 時間: {:?}", sente_moves.len(), sente_time);
+    assert!(sente_time.as_millis() < 100, "先手合法手生成が100ms超え: {:?}", sente_time);
+
+    // 後手の合法手生成
+    let mut pos_gote = pos.clone();
+    pos_gote.side_to_move = Color::Gote;
+    let start = Instant::now();
+    let gote_moves = pos_gote.generate_legal_moves();
+    let gote_time = start.elapsed();
+    println!("後手合法手数: {}, 時間: {:?}", gote_moves.len(), gote_time);
+    assert!(gote_time.as_millis() < 100, "後手合法手生成が100ms超え: {:?}", gote_time);
+}
