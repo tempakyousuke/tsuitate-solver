@@ -180,13 +180,16 @@ impl MetaPosition {
                     continue;
                 }
 
+                let attacker_color = defender_color.opponent();
                 let mut found_capture = false;
                 let mut found_no_capture = false;
                 for def_mv in &legal_moves {
                     if found_capture && found_no_capture {
                         break;
                     }
-                    let captured = def_mv.to == attack_move.to;
+                    // 攻め方のどの駒でも取られたらCaptured観測
+                    let captured = pos.piece_at(def_mv.to)
+                        .map_or(false, |p| p.color == attacker_color);
                     if captured && !found_capture {
                         let mut new_pos = pos.clone();
                         new_pos.make_move(*def_mv);
@@ -259,9 +262,10 @@ impl MetaPosition {
                 let mut new_pos = pos.clone();
                 new_pos.make_move(*def_mv);
 
-                // 攻め方が指した手の駒が取られたかどうか
-                // = 玉方がattack_move.toに移動してきたか
-                let captured = def_mv.to == attack_move.to;
+                // 攻め方のどの駒でも取られたらCaptured観測
+                let attacker_color = defender_color.opponent();
+                let captured = pos.piece_at(def_mv.to)
+                    .map_or(false, |p| p.color == attacker_color);
 
                 if captured {
                     if capture_seen.insert(new_pos.clone()) {
