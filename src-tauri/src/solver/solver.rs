@@ -252,9 +252,10 @@ impl TsuitateSolver {
             if self.is_cancelled() {
                 return None;
             }
-            // 各反復で転置表をクリア（より深い探索では浅い探索の失敗が無効になる場合がある）
-            self.fail_table.clear();
-            self.log(0, format!("--- 深さ{}手で探索開始 ---", search_depth));
+            // 転置表は反復間で保持する。fail_table は remaining_depth ベースで管理されており、
+            // 浅い反復で「深さ N で失敗」と記録されたエントリは、深い反復でも remaining_depth ≤ N
+            // の場合にのみスキップに使われるため、安全に再利用できる。
+            self.log(0, format!("--- 深さ{}手で探索開始 (転置表サイズ: {}) ---", search_depth, self.fail_table.len()));
 
             if let Some(tree) = self.solve_attack(meta, search_depth, 0, excluded_first_moves) {
                 return Some(tree);
