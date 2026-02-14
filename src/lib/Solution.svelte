@@ -4,6 +4,48 @@
 
   const RANK_KANJI = ["", "一", "二", "三", "四", "五", "六", "七", "八", "九"];
 
+  let collapsed = $state(new Set<string>());
+
+  function toggle(key: string) {
+    const next = new Set(collapsed);
+    if (next.has(key)) {
+      next.delete(key);
+    } else {
+      next.add(key);
+    }
+    collapsed = next;
+  }
+
+  function collapseAll(node: SolutionNode, prefix: string, keys: Set<string>) {
+    if (isAttackMove(node)) {
+      if (node.AttackMove.branches.length > 0) {
+        keys.add(prefix);
+      }
+      for (let i = 0; i < node.AttackMove.branches.length; i++) {
+        const b = node.AttackMove.branches[i];
+        if (b.observation !== "Checkmate") {
+          collapseAll(b.continuation, `${prefix}/${i}`, keys);
+        }
+      }
+    }
+  }
+
+  function foldAll(tree: SolutionNode | undefined, secondTree: SolutionNode | undefined) {
+    const keys = new Set<string>();
+    if (tree) collapseAll(tree, "t", keys);
+    if (secondTree) collapseAll(secondTree, "s", keys);
+    collapsed = keys;
+  }
+
+  function unfoldAll() {
+    collapsed = new Set();
+  }
+
+  function countBranches(node: SolutionNode): number {
+    if (!isAttackMove(node)) return 0;
+    return node.AttackMove.branches.length;
+  }
+
   function squareLabel(file: number, rank: number): string {
     return `${file}${RANK_KANJI[rank]}`;
   }
@@ -40,39 +82,64 @@
       {$solution.message}
     </p>
 
-    {#snippet nodeDisplay(node: SolutionNode, depth: number)}
+    {#snippet nodeDisplay(node: SolutionNode, depth: number, path: string)}
       {#if isCheckmate(node)}
-        <div class="node checkmate" style="padding-left: {depth * 16}px">
-          詰み
+        <div class="line" style="padding-left: {depth * 20 + 24}px">
+          <span class="checkmate">詰み</span>
         </div>
       {:else if isAttackMove(node)}
-        <div class="node attack" style="padding-left: {depth * 16}px">
-          <span class="move">{node.AttackMove.mv.notation}</span>
-        </div>
-        {#each node.AttackMove.branches as branch}
-          <div class="branch" style="padding-left: {depth * 16 + 8}px">
-            <span class="observation">[{observationLabel(branch.observation)}]</span>
-            {#if branch.observation === "Checkmate"}
-              <span class="checkmate-inline"> → 詰み</span>
+        {@const hasBranches = node.AttackMove.branches.length > 0}
+        {@const isFolded = collapsed.has(path)}
+        <div
+          class="line foldable"
+          style="padding-left: {depth * 20}px"
+          onclick={() => hasBranches && toggle(path)}
+        >
+          <span class="gutter">
+            {#if hasBranches}
+              <span class="chevron" class:folded={isFolded}></span>
             {:else}
-              {@render nodeDisplay(branch.continuation, depth + 1)}
+              <span class="chevron-placeholder"></span>
             {/if}
-          </div>
-        {/each}
+          </span>
+          <span class="move">{node.AttackMove.mv.notation}</span>
+          {#if isFolded}
+            <span class="fold-badge">{countBranches(node)} 分岐</span>
+          {/if}
+        </div>
+        {#if !isFolded}
+          {#each node.AttackMove.branches as branch, i}
+            <div class="line branch-line" style="padding-left: {depth * 20 + 24}px">
+              <span class="observation">[{observationLabel(branch.observation)}]</span>
+              {#if branch.observation === "Checkmate"}
+                <span class="checkmate-inline"> → 詰み</span>
+              {/if}
+            </div>
+            {#if branch.observation !== "Checkmate"}
+              {@render nodeDisplay(branch.continuation, depth + 1, `${path}/${i}`)}
+            {/if}
+          {/each}
+        {/if}
       {/if}
     {/snippet}
 
     {#if $solution.tree}
       <div class="tree">
-        <h4>解の手順</h4>
-        {@render nodeDisplay($solution.tree, 0)}
+        <div class="tree-header">
+          <h4>解の手順</h4>
+          <div class="fold-controls">
+            <button onclick={() => foldAll($solution?.tree, $solution?.second_tree)}>全て折りたたむ</button>
+            <button onclick={() => unfoldAll()}>全て展開</button>
+          </div>
+        </div>
+        {@render nodeDisplay($solution.tree, 0, "t")}
       </div>
     {/if}
 
     {#if $solution.second_tree}
       <div class="tree second-solution">
         <h4>2つ目の解（余詰め）</h4>
-        {@render nodeDisplay($solution.second_tree, 0)}
+        {@render nodeDisplay($solution.second_tree, 0, "s")}
       </div>
     {/if}
 
@@ -99,8 +166,34 @@
   }
 
   h4 {
-    margin: 8px 0 4px;
+    margin: 0;
     font-size: 14px;
+  }
+
+  .tree-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin: 8px 0 4px;
+  }
+
+  .fold-controls {
+    display: flex;
+    gap: 4px;
+  }
+
+  .fold-controls button {
+    padding: 2px 8px;
+    font-size: 11px;
+    border: 1px solid #ccc;
+    border-radius: 3px;
+    background: #fff;
+    color: #555;
+    cursor: pointer;
+  }
+
+  .fold-controls button:hover {
+    background: #e8e8e8;
   }
 
   .message {
@@ -126,14 +219,63 @@
     overflow-x: auto;
   }
 
-  .node {
-    margin: 2px 0;
+  .line {
+    display: flex;
+    align-items: center;
+    height: 22px;
     white-space: nowrap;
+  }
+
+  .line.foldable {
+    cursor: pointer;
+    border-radius: 3px;
+  }
+
+  .line.foldable:hover {
+    background: rgba(0, 0, 0, 0.04);
+  }
+
+  .gutter {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    flex-shrink: 0;
+  }
+
+  .chevron {
+    display: inline-block;
+    width: 0;
+    height: 0;
+    border-left: 5px solid #888;
+    border-top: 4px solid transparent;
+    border-bottom: 4px solid transparent;
+    transition: transform 0.1s ease;
+    transform: rotate(90deg);
+  }
+
+  .chevron.folded {
+    transform: rotate(0deg);
+  }
+
+  .chevron-placeholder {
+    display: inline-block;
+    width: 5px;
   }
 
   .move {
     font-weight: bold;
     font-size: 14px;
+  }
+
+  .fold-badge {
+    margin-left: 8px;
+    padding: 0 6px;
+    font-size: 11px;
+    color: #888;
+    background: #e4e4e4;
+    border-radius: 3px;
+    line-height: 18px;
   }
 
   .observation {
@@ -152,9 +294,8 @@
     font-size: 13px;
   }
 
-  .branch {
-    margin: 1px 0;
-    white-space: nowrap;
+  .branch-line {
+    margin: 0;
   }
 
   .second-solution {
