@@ -58,6 +58,16 @@ impl DfpnSolver {
         }
     }
 
+    /// ノードカウンタをリセット（転置表は保持）
+    pub fn reset_for_new_query(&mut self) {
+        self.nodes_searched = 0;
+    }
+
+    /// ノード上限を変更
+    pub fn set_node_limit(&mut self, limit: u64) {
+        self.node_limit = limit;
+    }
+
     /// 局面が詰むかどうかを df-pn で判定する
     ///
     /// pos は攻め方（先手）の手番であること。

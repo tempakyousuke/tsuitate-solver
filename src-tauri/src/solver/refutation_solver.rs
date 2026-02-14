@@ -50,7 +50,9 @@ pub struct RefutationSolver {
     cancelled: Arc<AtomicBool>,
     /// 不詰が証明されたメタポジション: hash → 証明済みの最大remaining_depth
     refutation_table: HashMap<u64, u32>,
-    /// df-pn のノード上限
+    /// df-pn ソルバー（転置表を再利用するためフィールドに保持）
+    dfpn_solver: DfpnSolver,
+    /// df-pn の1局面あたりのノード上限
     dfpn_node_limit: u64,
     /// df-pn の累計ノード数
     pub dfpn_nodes_total: u64,
@@ -58,12 +60,14 @@ pub struct RefutationSolver {
 
 impl RefutationSolver {
     pub fn new(max_depth: u32, cancelled: Arc<AtomicBool>) -> Self {
+        let dfpn_node_limit = 500_000u64;
         Self {
             max_depth,
             nodes_searched: 0,
-            cancelled,
+            cancelled: cancelled.clone(),
             refutation_table: HashMap::new(),
-            dfpn_node_limit: 500_000,
+            dfpn_solver: DfpnSolver::new(dfpn_node_limit, cancelled),
+            dfpn_node_limit,
             dfpn_nodes_total: 0,
         }
     }
@@ -180,14 +184,32 @@ impl RefutationSolver {
         self.cancelled.load(Ordering::Relaxed)
     }
 
-    /// 通常詰将棋（完全情報）として不詰かどうかを df-pn で判定する
-    /// 通常詰将棋で詰まなければ衝立詰将棋でも詰まない
-    fn is_regular_tsume_unsolvable(&mut self, pos: &Position) -> bool {
-        let mut dfpn = DfpnSolver::new(self.dfpn_node_limit, self.cancelled.clone());
-        let mut pos_clone = pos.clone();
-        let result = dfpn.solve(&mut pos_clone);
-        self.dfpn_nodes_total += dfpn.nodes_searched;
-        result == DfpnResult::Disproven
+    /// MetaPosition 内のいずれかの局面が通常詰将棋として不詰かを判定する
+    ///
+    /// 1つでも不詰の局面があれば、攻め方はその局面が実際の局面だった場合に
+    /// 詰ませられない → 衝立詰将棋全体が不詰
+    fn any_position_unsolvable(&mut self, positions: &[Position]) -> bool {
+        if positions.is_empty() {
+            return false;
+        }
+
+        // 局面数に応じて1局面あたりのノード上限を調整
+        let per_pos_limit = (self.dfpn_node_limit / positions.len() as u64).max(10_000);
+
+        for pos in positions {
+            if self.is_cancelled() {
+                return false;
+            }
+            self.dfpn_solver.reset_for_new_query();
+            self.dfpn_solver.set_node_limit(per_pos_limit);
+            let mut pos_clone = pos.clone();
+            let result = self.dfpn_solver.solve(&mut pos_clone);
+            self.dfpn_nodes_total += self.dfpn_solver.nodes_searched;
+            if result == DfpnResult::Disproven {
+                return true;
+            }
+        }
+        false
     }
 
     /// 全ての攻め手が不詰であることを証明する（ANDノード: 全候補手が失敗必要）
@@ -220,15 +242,13 @@ impl RefutationSolver {
             }
         }
 
-        // df-pn フィルタ: メタポジションが1局面の場合、通常詰将棋として不詰判定
-        if meta.positions.len() == 1 {
-            if self.is_regular_tsume_unsolvable(&meta.positions[0]) {
-                let entry = self.refutation_table.entry(meta_hash).or_insert(0);
-                if remaining_depth > *entry {
-                    *entry = remaining_depth;
-                }
-                return true; // 通常詰将棋で詰まない → 衝立でも詰まない
+        // df-pn フィルタ: いずれかの局面が通常詰将棋として不詰なら全体も不詰
+        if self.any_position_unsolvable(&meta.positions) {
+            let entry = self.refutation_table.entry(meta_hash).or_insert(0);
+            if remaining_depth > *entry {
+                *entry = remaining_depth;
             }
+            return true;
         }
 
         // 候補手を列挙
@@ -373,11 +393,9 @@ impl RefutationSolver {
                     if branch_meta.positions.len() > MAX_META_POSITIONS {
                         return true;
                     }
-                    // df-pn フィルタ: 1局面なら通常詰将棋として不詰判定
-                    if branch_meta.positions.len() == 1 {
-                        if self.is_regular_tsume_unsolvable(&branch_meta.positions[0]) {
-                            return true; // この分岐は不詰
-                        }
+                    // df-pn フィルタ: いずれかの局面が不詰ならこの分岐は不詰
+                    if self.any_position_unsolvable(&branch_meta.positions) {
+                        return true;
                     }
                     if self.refute_all_attacks(branch_meta, remaining_depth - 2) {
                         return true; // この分岐で不詰証明成功
