@@ -271,7 +271,8 @@ impl HandPieces {
     }
 
     pub fn remove(&mut self, kind: PieceKind) {
-        let idx = Self::kind_index(kind);
+        let k = kind.unpromoted();
+        let idx = Self::kind_index(k);
         debug_assert!(self.counts[idx] > 0);
         self.counts[idx] -= 1;
     }

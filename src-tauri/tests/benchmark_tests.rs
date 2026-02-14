@@ -13,6 +13,7 @@ use tsuitate_resolver_lib::solver::solver::TsuitateSolver;
 #[derive(Debug, Deserialize)]
 struct QuestionJson {
     board: Vec<BoardPiece>,
+    #[serde(default)]
     sente_hand: Vec<HandPieceJson>,
 }
 
@@ -423,6 +424,66 @@ fn bench_question_30() {
     run_question(30, 15, 60);
 }
 
+#[test]
+#[ignore]
+fn bench_question_31() {
+    run_question(31, 15, 60);
+}
+
+#[test]
+#[ignore]
+fn bench_question_32() {
+    run_question(32, 15, 60);
+}
+
+#[test]
+#[ignore]
+fn bench_question_33() {
+    run_question(33, 15, 60);
+}
+
+#[test]
+#[ignore]
+fn bench_question_34() {
+    run_question(34, 15, 60);
+}
+
+#[test]
+#[ignore]
+fn bench_question_35() {
+    run_question(35, 15, 60);
+}
+
+#[test]
+#[ignore]
+fn bench_question_36() {
+    run_question(36, 15, 60);
+}
+
+#[test]
+#[ignore]
+fn bench_question_37() {
+    run_question(37, 15, 60);
+}
+
+#[test]
+#[ignore]
+fn bench_question_38() {
+    run_question(38, 15, 60);
+}
+
+#[test]
+#[ignore]
+fn bench_question_39() {
+    run_question(39, 15, 60);
+}
+
+#[test]
+#[ignore]
+fn bench_question_40() {
+    run_question(40, 15, 60);
+}
+
 /// 全問一括ベンチマーク（サマリー表付き）
 /// cargo test --release -- --ignored bench_all_questions --nocapture
 #[test]
@@ -444,7 +505,7 @@ fn bench_all_questions() {
 
     let mut results = Vec::new();
 
-    for number in 1..=30 {
+    for number in 1..=40 {
         let path = dir.join(format!("{}.json", number));
         if !path.exists() {
             println!("問題{}: ファイルが見つかりません", number);
