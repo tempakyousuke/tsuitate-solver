@@ -1,6 +1,7 @@
 use std::sync::atomic::Ordering;
 
 use serde::{Deserialize, Serialize};
+use tauri::Manager;
 
 use crate::shogi::position::Position;
 use crate::shogi::types::*;
@@ -161,4 +162,55 @@ pub async fn solve(
 #[tauri::command]
 pub fn cancel_solve(cancel_flag: tauri::State<'_, CancelFlag>) {
     cancel_flag.store(true, Ordering::Relaxed);
+}
+
+/// sample-questions ディレクトリのパスを取得する
+fn get_sample_questions_dir(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    // 本番ビルド: リソースディレクトリから探す
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        let dir = resource_dir.join("sample-questions");
+        if dir.is_dir() {
+            return Some(dir);
+        }
+    }
+    // 開発時: プロジェクトルートの sample-questions/
+    let dev_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("sample-questions");
+    if dev_dir.is_dir() {
+        return Some(dev_dir);
+    }
+    None
+}
+
+/// サンプル問題の一覧を取得する
+#[tauri::command]
+pub fn list_sample_questions(app: tauri::AppHandle) -> Result<Vec<u32>, String> {
+    let dir = get_sample_questions_dir(&app)
+        .ok_or_else(|| "サンプル問題ディレクトリが見つかりません".to_string())?;
+
+    let mut numbers: Vec<u32> = std::fs::read_dir(&dir)
+        .map_err(|e| format!("ディレクトリの読み込みに失敗: {}", e))?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            let num = name.strip_suffix(".json")?.parse::<u32>().ok()?;
+            Some(num)
+        })
+        .collect();
+
+    numbers.sort();
+    Ok(numbers)
+}
+
+/// 指定番号のサンプル問題を読み込む
+#[tauri::command]
+pub fn load_sample_question(app: tauri::AppHandle, number: u32) -> Result<String, String> {
+    let dir = get_sample_questions_dir(&app)
+        .ok_or_else(|| "サンプル問題ディレクトリが見つかりません".to_string())?;
+
+    let path = dir.join(format!("{}.json", number));
+    std::fs::read_to_string(&path)
+        .map_err(|e| format!("問題ファイルの読み込みに失敗: {}", e))
 }

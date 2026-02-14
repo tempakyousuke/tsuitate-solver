@@ -115,7 +115,7 @@ fn generate_rook_moves(
                     continue;
                 }
             }
-            moves.push(Move::normal(from, to, false));
+            moves.push(Move::normal(from, to, false, PieceKind::PromotedRook));
         }
     }
 }
@@ -146,7 +146,7 @@ fn generate_bishop_moves(
                     continue;
                 }
             }
-            moves.push(Move::normal(from, to, false));
+            moves.push(Move::normal(from, to, false, PieceKind::PromotedBishop));
         }
     }
 }
@@ -195,14 +195,14 @@ fn add_move_with_promotion(
 
     if can_promote && piece.kind.can_promote() && in_promo_zone {
         // 成る手
-        moves.push(Move::normal(from, to, true));
+        moves.push(Move::normal(from, to, true, piece.kind));
 
         // 不成が合法な場合のみ追加
         if !must_promote(piece.kind, to, color) {
-            moves.push(Move::normal(from, to, false));
+            moves.push(Move::normal(from, to, false, piece.kind));
         }
     } else {
-        moves.push(Move::normal(from, to, false));
+        moves.push(Move::normal(from, to, false, piece.kind));
     }
 }
 
@@ -501,7 +501,7 @@ pub fn generate_check_evasions(pos: &Position) -> Vec<Move> {
                 continue;
             }
         }
-        let mv = Move::normal(king_sq, to, false);
+        let mv = Move::normal(king_sq, to, false, PieceKind::King);
         let mut test = pos.clone();
         test.make_move(mv);
         if !test.is_in_check(color) {

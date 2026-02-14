@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import {
     boardState,
@@ -18,6 +19,21 @@
   /** JSON インポート/エクスポート用のテキスト */
   let jsonText = "";
   let jsonVisible = false;
+
+  /** サンプル問題 */
+  let sampleQuestions: number[] = [];
+  let selectedQuestion: number | null = null;
+
+  onMount(async () => {
+    try {
+      sampleQuestions = await invoke<number[]>("list_sample_questions");
+      if (sampleQuestions.length > 0) {
+        selectedQuestion = sampleQuestions[0];
+      }
+    } catch (_) {
+      // サンプル問題が見つからなくても無視
+    }
+  });
 
   function buildPositionData(
     board: BoardState,
@@ -155,6 +171,18 @@
   function handleClear() {
     clearBoard();
   }
+
+  /** サンプル問題を読み込む */
+  async function loadSampleQuestion() {
+    if (selectedQuestion == null) return;
+    try {
+      const json = await invoke<string>("load_sample_question", { number: selectedQuestion });
+      jsonText = json;
+      handleImport();
+    } catch (e) {
+      errorMessage.set(`サンプル問題の読み込みエラー: ${e}`);
+    }
+  }
 </script>
 
 <div class="controls">
@@ -199,6 +227,20 @@
       クリア
     </button>
   </div>
+
+  {#if sampleQuestions.length > 0}
+    <div class="sample-question">
+      <label for="sample-select">サンプル問題:</label>
+      <select id="sample-select" bind:value={selectedQuestion} disabled={$solving}>
+        {#each sampleQuestions as num}
+          <option value={num}>第{num}問</option>
+        {/each}
+      </select>
+      <button class="load-btn" on:click={loadSampleQuestion} disabled={$solving}>
+        読み込み
+      </button>
+    </div>
+  {/if}
 
   <div class="io-buttons">
     <button class="io-btn" on:click={handleExport} disabled={$solving}>
@@ -314,6 +356,46 @@
 
   .clear-btn:disabled {
     cursor: not-allowed;
+  }
+
+  .sample-question {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .sample-question label {
+    font-size: 14px;
+    font-weight: bold;
+    white-space: nowrap;
+  }
+
+  .sample-question select {
+    flex: 1;
+    padding: 4px 8px;
+    border-radius: 4px;
+    border: 1px solid #ccc;
+    font-size: 14px;
+  }
+
+  .load-btn {
+    padding: 4px 12px;
+    background: #5cb85c;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    font-size: 13px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .load-btn:hover:not(:disabled) {
+    background: #4cae4c;
+  }
+
+  .load-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
   }
 
   .io-buttons {

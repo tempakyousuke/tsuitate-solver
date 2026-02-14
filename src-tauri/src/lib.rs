@@ -16,6 +16,8 @@ pub fn run() {
             commands::validate_position,
             commands::solve,
             commands::cancel_solve,
+            commands::list_sample_questions,
+            commands::load_sample_question,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

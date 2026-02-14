@@ -190,16 +190,19 @@ pub struct Move {
     pub promotion: bool,
     /// 打ちの場合の駒種
     pub drop_piece: Option<PieceKind>,
+    /// 移動する駒の種類（成る前の駒種、表示用）
+    pub moved_piece_kind: Option<PieceKind>,
 }
 
 impl Move {
     /// 盤上の駒の移動
-    pub fn normal(from: Square, to: Square, promotion: bool) -> Self {
+    pub fn normal(from: Square, to: Square, promotion: bool, kind: PieceKind) -> Self {
         Self {
             from: Some(from),
             to,
             promotion,
             drop_piece: None,
+            moved_piece_kind: Some(kind),
         }
     }
 
@@ -210,6 +213,7 @@ impl Move {
             to,
             promotion: false,
             drop_piece: Some(kind),
+            moved_piece_kind: None,
         }
     }
 
@@ -223,8 +227,12 @@ impl Move {
         if let Some(kind) = self.drop_piece {
             format!("{}{}{}打", prefix, to_str, kind.to_kanji())
         } else {
+            let kind_str = self
+                .moved_piece_kind
+                .map(|k| k.to_kanji())
+                .unwrap_or("");
             let promo = if self.promotion { "成" } else { "" };
-            format!("{}{}{}", prefix, to_str, promo)
+            format!("{}{}{}{}", prefix, to_str, kind_str, promo)
         }
     }
 }

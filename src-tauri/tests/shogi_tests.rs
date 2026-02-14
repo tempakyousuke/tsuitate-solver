@@ -209,7 +209,7 @@ fn test_make_unmake_move() {
     );
     pos.side_to_move = Color::Sente;
 
-    let mv = Move::normal(Square::new(5, 5), Square::new(5, 4), false);
+    let mv = Move::normal(Square::new(5, 5), Square::new(5, 4), false, PieceKind::Pawn);
     let undo = pos.make_move(mv);
 
     assert!(pos.piece_at(Square::new(5, 5)).is_none());
@@ -242,7 +242,7 @@ fn test_capture_and_hand() {
     );
     pos.side_to_move = Color::Sente;
 
-    let mv = Move::normal(Square::new(5, 5), Square::new(5, 1), true); // 成って取る
+    let mv = Move::normal(Square::new(5, 5), Square::new(5, 1), true, PieceKind::Rook); // 成って取る
     pos.make_move(mv);
 
     // 先手の持ち駒に歩が追加される

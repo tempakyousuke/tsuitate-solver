@@ -362,6 +362,7 @@ fn test_check_evasion_correctness() {
         to: Square::new(2, 2),
         promotion: false,
         drop_piece: Some(PieceKind::Rook),
+        moved_piece_kind: None,
     };
     let mut pos22 = pos.clone();
     pos22.make_move(rook_22);
