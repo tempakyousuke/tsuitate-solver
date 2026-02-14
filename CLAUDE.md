@@ -109,7 +109,7 @@ npm run tauri dev
 
 ## ベンチマークテスト
 
-`src-tauri/tests/benchmark_tests.rs` に、`sample-questions/` 配下の問題ファイル（1.json〜20.json）を使ったベンチマークテストがある。全テストに `#[ignore]` が付いているため `--ignored` フラグが必要。性能測定のため `--release` ビルドを推奨。
+`src-tauri/tests/benchmark_tests.rs` に、`sample-questions/` 配下の問題ファイル（1.json〜30.json）を使ったベンチマークテストがある。全テストに `#[ignore]` が付いているため `--ignored` フラグが必要。性能測定のため `--release` ビルドを推奨。
 
 ```bash
 # 個別の問題を実行（例: 問題1）
