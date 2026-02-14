@@ -2,17 +2,24 @@
   import { solution } from "./stores";
   import type { SolutionNode, SolutionBranch, Observation } from "./types";
 
+  const RANK_KANJI = ["", "一", "二", "三", "四", "五", "六", "七", "八", "九"];
+
+  function squareLabel(file: number, rank: number): string {
+    return `${file}${RANK_KANJI[rank]}`;
+  }
+
+  function isCaptured(obs: Observation): obs is { Captured: { file: number; rank: number } } {
+    return typeof obs === "object" && obs !== null && "Captured" in obs;
+  }
+
   function observationLabel(obs: Observation): string {
-    switch (obs) {
-      case "NoCapture":
-        return "取られない";
-      case "Captured":
-        return "駒を取られた";
-      case "Checkmate":
-        return "詰み";
-      case "Illegal":
-        return "反則";
+    if (obs === "NoCapture") return "取られない";
+    if (obs === "Checkmate") return "詰み";
+    if (obs === "Illegal") return "反則";
+    if (isCaptured(obs)) {
+      return `${squareLabel(obs.Captured.file, obs.Captured.rank)}の駒を取られた`;
     }
+    return "不明";
   }
 
   function isCheckmate(node: SolutionNode): node is { Checkmate: { depth: number } } {

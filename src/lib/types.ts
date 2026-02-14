@@ -86,7 +86,7 @@ export interface SolutionBranch {
   continuation: SolutionNode;
 }
 
-export type Observation = "NoCapture" | "Captured" | "Illegal" | "Checkmate";
+export type Observation = "NoCapture" | { Captured: { file: number; rank: number } } | "Illegal" | "Checkmate";
 
 /** 駒の漢字表示 */
 export const PIECE_KANJI: Record<PieceKind, string> = {

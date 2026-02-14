@@ -517,7 +517,7 @@ impl TsuitateSolver {
                                 }),
                             });
                         }
-                        Observation::Captured | Observation::NoCapture => {
+                        Observation::Captured { .. } | Observation::NoCapture => {
                             // メタポジションが大きすぎる場合は枝刈り
                             if branch_meta.positions.len() > MAX_META_POSITIONS {
                                 self.log(current_depth, format!(

@@ -229,11 +229,11 @@ fn print_solution_tree(node: &tsuitate_resolver_lib::solver::solution::SolutionN
         SolutionNode::AttackMove { mv, branches } => {
             println!("{}{}", pad, mv.notation);
             for branch in branches {
-                let obs_str = match branch.observation {
-                    Observation::Checkmate => "詰み",
-                    Observation::Captured => "駒取り",
-                    Observation::NoCapture => "駒取りなし",
-                    Observation::Illegal => "反則",
+                let obs_str = match &branch.observation {
+                    Observation::Checkmate => "詰み".to_string(),
+                    Observation::Captured { file, rank } => format!("{}{}駒取り", file, rank),
+                    Observation::NoCapture => "駒取りなし".to_string(),
+                    Observation::Illegal => "反則".to_string(),
                 };
                 println!("{}  [{}]:", pad, obs_str);
                 print_solution_tree(&branch.continuation, indent + 4);

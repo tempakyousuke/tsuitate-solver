@@ -304,7 +304,7 @@ impl TsuitateDfpnSolver {
                             obs_hash.push(0);
                             obs_metas.push(branch_meta);
                         }
-                        Observation::Captured | Observation::NoCapture => {
+                        Observation::Captured { .. } | Observation::NoCapture => {
                             if branch_meta.positions.len() > MAX_META_POSITIONS {
                                 self.and_table
                                     .insert(and_key, PnDn { pn: INF, dn: 0 });
@@ -869,7 +869,7 @@ impl TsuitateDfpnSolver {
                         }),
                     });
                 }
-                Observation::Captured | Observation::NoCapture => {
+                Observation::Captured { .. } | Observation::NoCapture => {
                     // depth + 2: 攻め方の手(+1) + 玉方の応手(+1)
                     let continuation = self.extract_or(&branch_meta, depth + 2)?;
                     branches.push(SolutionBranch {

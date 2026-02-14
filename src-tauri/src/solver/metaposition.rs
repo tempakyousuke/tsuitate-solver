@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
@@ -165,8 +165,8 @@ impl MetaPosition {
     ///   - 「詰み」: 玉方に合法手がない
     pub fn expand_defense_moves(&self, _attack_move: Move) -> Vec<(Observation, MetaPosition)> {
         let mut checkmate_positions = Vec::new();
-        let mut capture_seen: HashSet<u64> = HashSet::new();
-        let mut capture_positions = Vec::new();
+        // 地点ごとの駒取りグループ: Square → (重複排除用ハッシュ集合, 局面リスト)
+        let mut capture_groups: HashMap<Square, (HashSet<u64>, Vec<Position>)> = HashMap::new();
         let mut no_capture_seen: HashSet<u64> = HashSet::new();
         let mut no_capture_positions = Vec::new();
 
@@ -177,9 +177,9 @@ impl MetaPosition {
 
             if !in_check {
                 // 王手でない場合（プローブ手など）: 全合法手を展開すると爆発するため、
-                // Captured/NoCapture の代表局面を1つずつ生成する。
+                // 各地点のCaptured/NoCapture の代表局面を1つずつ生成する。
                 // 王手でないなら詰みに近づいていないので、玉方の具体的な応手は重要でなく、
-                // 「駒を取ったかどうか」の観測情報のみが重要。
+                // 「駒を取ったかどうか（どの地点か）」の観測情報のみが重要。
                 let legal_moves = pos.generate_legal_moves();
                 if legal_moves.is_empty() {
                     // 合法手がない（ステイルメイト - 将棋では通常起きないが安全のため）
@@ -188,22 +188,22 @@ impl MetaPosition {
                 }
 
                 let attacker_color = defender_color.opponent();
-                let mut found_capture = false;
+                let mut found_capture_squares: HashSet<Square> = HashSet::new();
                 let mut found_no_capture = false;
                 for def_mv in &legal_moves {
-                    if found_capture && found_no_capture {
-                        break;
-                    }
                     // 攻め方のどの駒でも取られたらCaptured観測
                     let captured = pos.piece_at(def_mv.to)
                         .map_or(false, |p| p.color == attacker_color);
-                    if captured && !found_capture {
+                    if captured && !found_capture_squares.contains(&def_mv.to) {
                         let mut new_pos = pos.clone();
                         new_pos.make_move(*def_mv);
-                        if capture_seen.insert(position_hash(&new_pos)) {
-                            capture_positions.push(new_pos);
+                        let (seen, positions) = capture_groups
+                            .entry(def_mv.to)
+                            .or_insert_with(|| (HashSet::new(), Vec::new()));
+                        if seen.insert(position_hash(&new_pos)) {
+                            positions.push(new_pos);
                         }
-                        found_capture = true;
+                        found_capture_squares.insert(def_mv.to);
                     } else if !captured && !found_no_capture {
                         let mut new_pos = pos.clone();
                         new_pos.make_move(*def_mv);
@@ -255,14 +255,17 @@ impl MetaPosition {
                 let mut new_pos = pos.clone();
                 new_pos.make_move(*def_mv);
 
-                // 攻め方のどの駒でも取られたらCaptured観測
+                // 攻め方のどの駒でも取られたらCaptured観測（地点ごとに分類）
                 let attacker_color = defender_color.opponent();
                 let captured = pos.piece_at(def_mv.to)
                     .map_or(false, |p| p.color == attacker_color);
 
                 if captured {
-                    if capture_seen.insert(position_hash(&new_pos)) {
-                        capture_positions.push(new_pos);
+                    let (seen, positions) = capture_groups
+                        .entry(def_mv.to)
+                        .or_insert_with(|| (HashSet::new(), Vec::new()));
+                    if seen.insert(position_hash(&new_pos)) {
+                        positions.push(new_pos);
                     }
                 } else {
                     if no_capture_seen.insert(position_hash(&new_pos)) {
@@ -283,13 +286,16 @@ impl MetaPosition {
             ));
         }
 
-        if !capture_positions.is_empty() {
-            result.push((
-                Observation::Captured,
-                MetaPosition {
-                    positions: capture_positions,
-                },
-            ));
+        // 地点ごとにCaptured分岐を追加
+        let mut capture_squares: Vec<Square> = capture_groups.keys().copied().collect();
+        capture_squares.sort_by_key(|sq| (sq.file, sq.rank));
+        for sq in capture_squares {
+            if let Some((_, positions)) = capture_groups.remove(&sq) {
+                result.push((
+                    Observation::Captured { file: sq.file, rank: sq.rank },
+                    MetaPosition { positions },
+                ));
+            }
         }
 
         if !no_capture_positions.is_empty() {

@@ -7,8 +7,8 @@ use crate::shogi::types::Move;
 pub enum Observation {
     /// 駒が取られなかった
     NoCapture,
-    /// 駒が取られた（取られた駒の種類は分からない - 衝立のルール）
-    Captured,
+    /// 駒が取られた（どの地点の駒が取られたかは分かるが、取った駒の種類は分からない）
+    Captured { file: u8, rank: u8 },
     /// 反則（打ち歩詰め等で手が無効だった場合）
     /// 衝立詰将棋では通常使わないが、不正局面の検出用
     Illegal,
@@ -82,7 +82,7 @@ impl SolutionNode {
                         // 反則: 攻め方の手は実行されていない → サブ解法の手数のみ
                         Observation::Illegal => b.continuation.max_moves(),
                         // 攻め方の手(1手) + 玉方の応手(1手) + 続きの手数
-                        Observation::Captured | Observation::NoCapture => {
+                        Observation::Captured { .. } | Observation::NoCapture => {
                             2 + b.continuation.max_moves()
                         }
                     })
