@@ -157,11 +157,18 @@ impl TsuitateSolver {
         // 第2フェーズ: 2つ目の解を探す（オプション）
         if self.find_second_solution {
             if let Some(first_mv) = self.last_root_move {
+                // 成/不成の違いだけの手順は余詰として扱わない
+                let mut excluded = vec![first_mv];
+                if first_mv.from.is_some() {
+                    let mut counterpart = first_mv;
+                    counterpart.promotion = !counterpart.promotion;
+                    excluded.push(counterpart);
+                }
                 self.log(0, format!(
-                    "--- 2つ目の解を探索（初手 {} を除外）---",
+                    "--- 2つ目の解を探索（初手 {} および成/不成を除外）---",
                     first_mv.to_japanese(Color::Sente)
                 ));
-                let second_tree = self.solve_iterative(meta, &depths, &[first_mv]);
+                let second_tree = self.solve_iterative(meta, &depths, &excluded);
 
                 if self.is_cancelled() {
                     let msg = format!(
@@ -380,6 +387,9 @@ impl TsuitateSolver {
             self.log(current_depth, format!("  候補: {}", mv.to_japanese(Color::Sente)));
         }
 
+        // 成/不成の重複候補をスキップするためのフィンガープリント
+        let mut branch_fingerprints: HashMap<(Option<Square>, Square), u64> = HashMap::new();
+
         for mv in candidate_moves {
             if self.is_cancelled() {
                 return None;
@@ -404,6 +414,36 @@ impl TsuitateSolver {
                 ));
                 continue;
             }
+
+            // 成/不成の重複検出: 同じ移動元・移動先の手で同一の分岐構造になる場合はスキップ
+            let precomputed_branches = if remaining_depth > 1 && mv.from.is_some() {
+                let branches = legal_meta.expand_defense_moves(mv);
+                let fp = {
+                    use std::collections::hash_map::DefaultHasher;
+                    let mut h = DefaultHasher::new();
+                    h.write_u64(meta_position_hash(&illegal_meta));
+                    h.write_usize(branches.len());
+                    for (obs, bm) in &branches {
+                        obs.hash(&mut h);
+                        h.write_u64(meta_position_hash(bm));
+                    }
+                    h.finish()
+                };
+                let key = (mv.from, mv.to);
+                if let Some(&prev) = branch_fingerprints.get(&key) {
+                    if prev == fp {
+                        self.log(current_depth, format!(
+                            "  {} → 成/不成による同一分岐 → スキップ",
+                            mv.to_japanese(Color::Sente)
+                        ));
+                        continue;
+                    }
+                }
+                branch_fingerprints.insert(key, fp);
+                Some(branches)
+            } else {
+                None
+            };
 
             self.log(current_depth, format!(
                 "試行: {} (合法={}, 不正={})",
@@ -452,7 +492,7 @@ impl TsuitateSolver {
                 }
             } else {
                 // 合法分岐の処理: 玉方の応手を展開し、観測結果で分類
-                let branches = legal_meta.expand_defense_moves(mv);
+                let branches = precomputed_branches.unwrap_or_else(|| legal_meta.expand_defense_moves(mv));
                 if self.is_cancelled() {
                     return None;
                 }
