@@ -46,3 +46,6 @@ Thumbs.db
 # Test / Coverage
 coverage
 *.lcov
+
+benchmark-results.md
+question.json
