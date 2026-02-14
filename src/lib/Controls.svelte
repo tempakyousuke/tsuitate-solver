@@ -167,6 +167,14 @@
       <option value={7}>7手</option>
       <option value={9}>9手</option>
       <option value={11}>11手</option>
+      <option value={13}>13手</option>
+      <option value={15}>15手</option>
+      <option value={17}>17手</option>
+      <option value={19}>19手</option>
+      <option value={21}>21手</option>
+      <option value={23}>23手</option>
+      <option value={25}>25手</option>
+      <option value={27}>27手</option>
     </select>
   </div>
 

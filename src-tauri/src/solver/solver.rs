@@ -391,6 +391,17 @@ impl TsuitateSolver {
                 continue; // この手はどの盤面でも指せない
             }
 
+            // 全合法盤面で王手がかかっているか確認
+            // 衝立詰将棋では攻め方は毎手王手をかける必要がある
+            // 王手にならない盤面がある場合、不正解手として打ち切り
+            if !legal_meta.positions.iter().all(|pos| pos.is_in_check(pos.side_to_move)) {
+                self.log(current_depth, format!(
+                    "  {} → 一部の盤面で王手にならない → 打ち切り",
+                    mv.to_japanese(Color::Sente)
+                ));
+                continue;
+            }
+
             self.log(current_depth, format!(
                 "試行: {} (合法={}, 不正={})",
                 mv.to_japanese(Color::Sente),
