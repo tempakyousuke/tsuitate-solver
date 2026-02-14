@@ -484,6 +484,12 @@ fn bench_question_40() {
     run_question(40, 15, 60);
 }
 
+#[test]
+#[ignore]
+fn bench_question_41() {
+    run_question(41, 15, 60);
+}
+
 /// 全問一括ベンチマーク（サマリー表付き）
 /// cargo test --release -- --ignored bench_all_questions --nocapture
 #[test]
@@ -509,7 +515,7 @@ fn bench_all_questions() {
 
     let mut results = Vec::new();
 
-    for number in 1..=40 {
+    for number in 1..=41 {
         let path = dir.join(format!("{}.json", number));
         if !path.exists() {
             println!("問題{}: ファイルが見つかりません", number);
