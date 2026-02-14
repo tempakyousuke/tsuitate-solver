@@ -197,12 +197,14 @@ impl Position {
         let legal = self.generate_legal_moves();
         let opponent = color.opponent();
 
+        let mut test_pos = self.clone();
         legal
             .into_iter()
             .filter(|mv| {
-                let mut pos = self.clone();
-                pos.make_move(*mv);
-                pos.is_in_check(opponent)
+                let undo = test_pos.make_move(*mv);
+                let is_check = test_pos.is_in_check(opponent);
+                test_pos.unmake_move(&undo);
+                is_check
             })
             .collect()
     }
@@ -210,7 +212,7 @@ impl Position {
     /// 詰んでいるか（手番側に合法手がなく王手されている）
     pub fn is_checkmate(&self) -> bool {
         let color = self.side_to_move;
-        self.is_in_check(color) && self.generate_legal_moves().is_empty()
+        self.is_in_check(color) && self.generate_check_evasions().is_empty()
     }
 
     /// 無駄合い判定（詰将棋ルール）

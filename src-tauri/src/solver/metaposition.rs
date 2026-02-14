@@ -1,7 +1,15 @@
 use std::collections::{HashMap, HashSet};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 use crate::shogi::position::Position;
 use crate::shogi::types::*;
+
+fn position_hash(pos: &Position) -> u64 {
+    let mut h = DefaultHasher::new();
+    pos.hash(&mut h);
+    h.finish()
+}
 
 /// メタポジション: 観測情報と矛盾しない盤面状態の集合
 /// 衝立詰将棋では、攻め方が相手の応手を直接観察できないため、
@@ -124,20 +132,19 @@ impl MetaPosition {
         let mut legal_positions = Vec::new();
         let mut illegal_positions = Vec::new();
 
-        let mut legal_seen = HashSet::new();
-        let mut illegal_seen = HashSet::new();
+        let mut legal_seen: HashSet<u64> = HashSet::new();
+        let mut illegal_seen: HashSet<u64> = HashSet::new();
 
         for (i, pos) in self.positions.iter().enumerate() {
             if legal_move_sets[i].contains(&mv) {
                 let mut new_pos = pos.clone();
                 new_pos.make_move(mv);
-                if legal_seen.insert(new_pos.clone()) {
+                if legal_seen.insert(position_hash(&new_pos)) {
                     legal_positions.push(new_pos);
                 }
             } else {
-                let cloned = pos.clone();
-                if illegal_seen.insert(cloned.clone()) {
-                    illegal_positions.push(cloned);
+                if illegal_seen.insert(position_hash(pos)) {
+                    illegal_positions.push(pos.clone());
                 }
             }
         }
@@ -158,9 +165,9 @@ impl MetaPosition {
     ///   - 「詰み」: 玉方に合法手がない
     pub fn expand_defense_moves(&self, attack_move: Move) -> Vec<(Observation, MetaPosition)> {
         let mut checkmate_positions = Vec::new();
-        let mut capture_seen = HashSet::new();
+        let mut capture_seen: HashSet<u64> = HashSet::new();
         let mut capture_positions = Vec::new();
-        let mut no_capture_seen = HashSet::new();
+        let mut no_capture_seen: HashSet<u64> = HashSet::new();
         let mut no_capture_positions = Vec::new();
 
         for pos in &self.positions {
@@ -193,14 +200,14 @@ impl MetaPosition {
                     if captured && !found_capture {
                         let mut new_pos = pos.clone();
                         new_pos.make_move(*def_mv);
-                        if capture_seen.insert(new_pos.clone()) {
+                        if capture_seen.insert(position_hash(&new_pos)) {
                             capture_positions.push(new_pos);
                         }
                         found_capture = true;
                     } else if !captured && !found_no_capture {
                         let mut new_pos = pos.clone();
                         new_pos.make_move(*def_mv);
-                        if no_capture_seen.insert(new_pos.clone()) {
+                        if no_capture_seen.insert(position_hash(&new_pos)) {
                             no_capture_positions.push(new_pos);
                         }
                         found_no_capture = true;
@@ -268,11 +275,11 @@ impl MetaPosition {
                     .map_or(false, |p| p.color == attacker_color);
 
                 if captured {
-                    if capture_seen.insert(new_pos.clone()) {
+                    if capture_seen.insert(position_hash(&new_pos)) {
                         capture_positions.push(new_pos);
                     }
                 } else {
-                    if no_capture_seen.insert(new_pos.clone()) {
+                    if no_capture_seen.insert(position_hash(&new_pos)) {
                         no_capture_positions.push(new_pos);
                     }
                 }

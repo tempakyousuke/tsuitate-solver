@@ -303,6 +303,66 @@ fn bench_question_10() {
     run_question(10, 15, 60);
 }
 
+#[test]
+#[ignore]
+fn bench_question_11() {
+    run_question(11, 15, 60);
+}
+
+#[test]
+#[ignore]
+fn bench_question_12() {
+    run_question(12, 15, 60);
+}
+
+#[test]
+#[ignore]
+fn bench_question_13() {
+    run_question(13, 15, 60);
+}
+
+#[test]
+#[ignore]
+fn bench_question_14() {
+    run_question(14, 15, 60);
+}
+
+#[test]
+#[ignore]
+fn bench_question_15() {
+    run_question(15, 15, 60);
+}
+
+#[test]
+#[ignore]
+fn bench_question_16() {
+    run_question(16, 15, 60);
+}
+
+#[test]
+#[ignore]
+fn bench_question_17() {
+    run_question(17, 15, 60);
+}
+
+#[test]
+#[ignore]
+fn bench_question_18() {
+    run_question(18, 15, 60);
+}
+
+#[test]
+#[ignore]
+fn bench_question_19() {
+    run_question(19, 15, 60);
+}
+
+#[test]
+#[ignore]
+fn bench_question_20() {
+    run_question(20, 15, 60);
+}
+
 /// 全問一括ベンチマーク（サマリー表付き）
 /// cargo test --release -- --ignored bench_all_questions --nocapture
 #[test]
@@ -324,7 +384,7 @@ fn bench_all_questions() {
 
     let mut results = Vec::new();
 
-    for number in 1..=10 {
+    for number in 1..=20 {
         let path = dir.join(format!("{}.json", number));
         if !path.exists() {
             println!("問題{}: ファイルが見つかりません", number);

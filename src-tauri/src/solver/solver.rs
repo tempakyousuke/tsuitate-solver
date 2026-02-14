@@ -575,16 +575,17 @@ impl TsuitateSolver {
         // 全盤面から王手の手を収集（union）
         for (i, pos) in meta.positions.iter().enumerate() {
             let opponent = pos.side_to_move.opponent();
+            let mut test_pos = pos.clone(); // 1盤面につき1回だけclone
             for mv in &legal_move_sets[i] {
                 if seen.contains(mv) {
                     continue;
                 }
-                let mut test_pos = pos.clone();
-                test_pos.make_move(*mv);
+                let undo = test_pos.make_move(*mv);
                 if test_pos.is_in_check(opponent) {
                     seen.insert(*mv);
                     check_moves.push(*mv);
                 }
+                test_pos.unmake_move(&undo);
             }
         }
 
