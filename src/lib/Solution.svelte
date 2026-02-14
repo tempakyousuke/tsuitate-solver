@@ -33,25 +33,25 @@
       {$solution.message}
     </p>
 
-    {#snippet nodeDisplay(node: SolutionNode, indent: number)}
+    {#snippet nodeDisplay(node: SolutionNode, depth: number)}
       {#if isCheckmate(node)}
-        <div class="node checkmate" style="margin-left: {indent * 20}px">
+        <div class="node checkmate" style="padding-left: {depth * 16}px">
           詰み
         </div>
       {:else if isAttackMove(node)}
-        <div class="node attack" style="margin-left: {indent * 20}px">
+        <div class="node attack" style="padding-left: {depth * 16}px">
           <span class="move">{node.AttackMove.mv.notation}</span>
-          {#each node.AttackMove.branches as branch}
-            <div class="branch" style="margin-left: 20px">
-              <span class="observation">[{observationLabel(branch.observation)}]</span>
-              {#if branch.observation === "Checkmate"}
-                <span class="checkmate-inline"> → 詰み</span>
-              {:else}
-                {@render nodeDisplay(branch.continuation, indent + 1)}
-              {/if}
-            </div>
-          {/each}
         </div>
+        {#each node.AttackMove.branches as branch}
+          <div class="branch" style="padding-left: {depth * 16 + 8}px">
+            <span class="observation">[{observationLabel(branch.observation)}]</span>
+            {#if branch.observation === "Checkmate"}
+              <span class="checkmate-inline"> → 詰み</span>
+            {:else}
+              {@render nodeDisplay(branch.continuation, depth + 1)}
+            {/if}
+          </div>
+        {/each}
       {/if}
     {/snippet}
 
@@ -116,10 +116,12 @@
     margin-top: 8px;
     font-family: monospace;
     font-size: 13px;
+    overflow-x: auto;
   }
 
   .node {
-    margin: 4px 0;
+    margin: 2px 0;
+    white-space: nowrap;
   }
 
   .move {
@@ -144,7 +146,8 @@
   }
 
   .branch {
-    margin: 2px 0;
+    margin: 1px 0;
+    white-space: nowrap;
   }
 
   .second-solution {
