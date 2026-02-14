@@ -487,6 +487,7 @@ pub fn generate_check_evasions(pos: &Position) -> Vec<Move> {
     }
 
     let mut evasions = Vec::new();
+    let mut test = pos.clone();
 
     // 1. 玉の移動（常に候補）
     for &(df, dr) in &king_offsets() {
@@ -502,11 +503,11 @@ pub fn generate_check_evasions(pos: &Position) -> Vec<Move> {
             }
         }
         let mv = Move::normal(king_sq, to, false, PieceKind::King);
-        let mut test = pos.clone();
-        test.make_move(mv);
+        let undo = test.make_move(mv);
         if !test.is_in_check(color) {
             evasions.push(mv);
         }
+        test.unmake_move(&undo);
     }
 
     // 両王手の場合は玉の移動のみ
@@ -519,11 +520,11 @@ pub fn generate_check_evasions(pos: &Position) -> Vec<Move> {
     // 2. 王手している駒を取る（玉以外の駒で）
     let capture_moves = generate_moves_to_square(pos, checker_sq, color, false);
     for mv in capture_moves {
-        let mut test = pos.clone();
-        test.make_move(mv);
+        let undo = test.make_move(mv);
         if !test.is_in_check(color) {
             evasions.push(mv);
         }
+        test.unmake_move(&undo);
     }
 
     // 3. 合駒（スライド攻撃の場合のみ）
@@ -531,11 +532,11 @@ pub fn generate_check_evasions(pos: &Position) -> Vec<Move> {
     for sq in &interpose_sqs {
         let interpose_moves = generate_moves_to_square(pos, *sq, color, true);
         for mv in interpose_moves {
-            let mut test = pos.clone();
-            test.make_move(mv);
+            let undo = test.make_move(mv);
             if !test.is_in_check(color) {
                 evasions.push(mv);
             }
+            test.unmake_move(&undo);
         }
     }
 

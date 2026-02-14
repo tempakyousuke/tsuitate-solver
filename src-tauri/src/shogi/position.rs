@@ -173,13 +173,14 @@ impl Position {
         let pseudo_moves = movegen::generate_pseudo_legal_moves(self, color);
         let mut legal_moves = Vec::new();
 
+        let mut test_pos = self.clone();
         for mv in pseudo_moves {
-            let mut pos = self.clone();
-            pos.make_move(mv);
+            let undo = test_pos.make_move(mv);
             // 自玉が取られる手は除外
-            if !pos.is_in_check(color) {
+            if !test_pos.is_in_check(color) {
                 legal_moves.push(mv);
             }
+            test_pos.unmake_move(&undo);
         }
 
         legal_moves
@@ -257,34 +258,38 @@ impl Position {
                 continue;
             }
 
-            let mut pos_captured = pos_after.clone();
-            pos_captured.make_move(*cap_mv);
+            let undo_cap = pos_after.make_move(*cap_mv);
 
             // 合法性チェック: 自玉が王手されていないか
-            if pos_captured.is_in_check(attacker_color) {
+            if pos_after.is_in_check(attacker_color) {
+                pos_after.unmake_move(&undo_cap);
                 continue;
             }
 
             // 取り返した後に王手でなければ無駄合いではない
-            let defender_color = pos_captured.side_to_move;
-            if !pos_captured.is_in_check(defender_color) {
+            let defender_color = pos_after.side_to_move;
+            if !pos_after.is_in_check(defender_color) {
+                pos_after.unmake_move(&undo_cap);
                 continue;
             }
 
             // 取り返し後に即詰みなら無駄合い
-            if pos_captured.is_checkmate() {
+            if pos_after.is_checkmate() {
                 return true;
             }
 
             // 取り返し後の全応手も無駄合いなら、元の合駒も無駄合い
-            let responses = pos_captured.generate_legal_moves();
-            if !responses.is_empty()
+            let responses = pos_after.generate_legal_moves();
+            let all_futile = !responses.is_empty()
                 && responses
                     .iter()
-                    .all(|dm| pos_captured.is_futile_interposition_impl(dm, remaining_depth - 1))
-            {
+                    .all(|dm| pos_after.is_futile_interposition_impl(dm, remaining_depth - 1));
+
+            if all_futile {
                 return true;
             }
+
+            pos_after.unmake_move(&undo_cap);
         }
 
         false

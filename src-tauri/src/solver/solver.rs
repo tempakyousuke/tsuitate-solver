@@ -8,18 +8,16 @@ use super::solution::*;
 use crate::shogi::types::*;
 
 /// MetaPosition のハッシュキー（転置表用）
-/// Position のベクタをソートしてハッシュ化することで、順序に依存しないキーを生成
+/// 各 Position のハッシュを XOR で結合し、順序に依存しないキーを生成（O(N)）
 fn meta_position_hash(meta: &MetaPosition) -> u64 {
     use std::collections::hash_map::DefaultHasher;
-    let mut hashes: Vec<u64> = meta.positions.iter().map(|pos| {
+    let mut xor_hash: u64 = 0;
+    for pos in &meta.positions {
         let mut h = DefaultHasher::new();
         pos.hash(&mut h);
-        h.finish()
-    }).collect();
-    hashes.sort();
-    let mut h = DefaultHasher::new();
-    hashes.hash(&mut h);
-    h.finish()
+        xor_hash ^= h.finish();
+    }
+    xor_hash
 }
 
 /// メタポジションのサイズ上限（これを超える分岐は枝刈り）
@@ -660,20 +658,20 @@ impl TsuitateSolver {
         }
 
         // プローブ手: 一部の盤面でのみ合法な手（メタポジションを分割する手）
-        let mut probe_moves = Vec::new();
-        let mut all_moves: HashSet<Move> = HashSet::new();
+        // HashMap でカウントして O(M + total_moves) に
+        let mut move_counts: HashMap<Move, usize> = HashMap::new();
         for legal_set in &legal_move_sets {
             for mv in legal_set {
-                all_moves.insert(*mv);
+                *move_counts.entry(*mv).or_insert(0) += 1;
             }
         }
 
-        for mv in &all_moves {
+        let mut probe_moves = Vec::new();
+        for (mv, count) in &move_counts {
             if seen.contains(mv) {
                 continue;
             }
-            let legal_count = legal_move_sets.iter().filter(|s| s.contains(mv)).count();
-            if legal_count > 0 && legal_count < n {
+            if *count > 0 && *count < n {
                 seen.insert(*mv);
                 probe_moves.push(*mv);
             }
