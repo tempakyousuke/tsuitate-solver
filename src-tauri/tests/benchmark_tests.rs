@@ -445,7 +445,7 @@ fn bench_question_33() {
 #[test]
 #[ignore]
 fn bench_question_34() {
-    run_question(34, 15, 60);
+    run_question(34, 17, 60);
 }
 
 #[test]
