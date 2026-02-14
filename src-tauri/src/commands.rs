@@ -7,7 +7,7 @@ use crate::shogi::position::Position;
 use crate::shogi::types::*;
 use crate::solver::metaposition::MetaPosition;
 use crate::solver::solution::SolutionData;
-use crate::solver::solver::TsuitateSolver;
+use crate::solver::tsuitate_dfpn::TsuitateDfpnSolver;
 use crate::CancelFlag;
 
 /// フロントエンドから受け取る盤面データ
@@ -135,9 +135,8 @@ pub async fn solve(
         return Err("後手の玉が配置されていません".to_string());
     }
 
-    let max_depth = max_depth.unwrap_or(7); // デフォルト7手詰めまで
-
-    let find_second = find_second_solution.unwrap_or(false);
+    let _max_depth = max_depth.unwrap_or(7); // df-pnではノード上限で制御
+    let _find_second = find_second_solution.unwrap_or(false); // df-pnでは未対応
 
     // キャンセルフラグをリセット
     cancel_flag.store(false, Ordering::Relaxed);
@@ -147,10 +146,9 @@ pub async fn solve(
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let meta = MetaPosition::new(pos);
-        let mut solver = TsuitateSolver::new(max_depth, cancelled);
-        solver.set_trace_enabled(false); // 大量のトレースを抑制（depth<=2のみログ）
-        solver.set_find_second_solution(find_second);
-        let result = solver.solve(&meta);
+        let node_limit = 50_000_000; // df-pnのノード上限
+        let mut solver = TsuitateDfpnSolver::new(node_limit, cancelled);
+        let result = solver.solve_to_solution(&meta);
         let _ = tx.send(result);
     });
 
