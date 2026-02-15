@@ -351,7 +351,7 @@ fn tsuitate_dfpn_question_01_solution() {
     let mut solver = TsuitateDfpnSolver::new(10_000_000, cancel);
 
     let start = Instant::now();
-    let solution = solver.solve_to_solution(&meta);
+    let solution = solver.solve_to_solution(&meta, false);
     let elapsed = start.elapsed();
 
     println!("問題1: found={}, time={:.3}s", solution.found, elapsed.as_secs_f64());
@@ -392,7 +392,7 @@ fn tsuitate_dfpn_solutions_batch() {
         let mut solver = TsuitateDfpnSolver::new(node_limit, cancel);
 
         let start = Instant::now();
-        let solution = solver.solve_to_solution(&meta);
+        let solution = solver.solve_to_solution(&meta, false);
         let elapsed = start.elapsed();
 
         let moves = solution
@@ -429,7 +429,7 @@ fn tsuitate_dfpn_question_01_second_solution() {
     let mut solver = TsuitateDfpnSolver::new(10_000_000, cancel);
 
     let start = Instant::now();
-    let solution = solver.solve_to_solution_with_second(&meta);
+    let solution = solver.solve_to_solution_with_second(&meta, false);
     let elapsed = start.elapsed();
 
     println!("問題1 余詰めチェック: time={:.3}s", elapsed.as_secs_f64());

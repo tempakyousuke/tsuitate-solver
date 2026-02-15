@@ -9,6 +9,7 @@
     solving,
     errorMessage,
     findSecondSolution,
+    findShortestPath,
     clearBoard,
   } from "./stores";
   import type { BoardState, HandState } from "./stores";
@@ -152,6 +153,7 @@
       const result = await invoke<SolutionData>("solve", {
         position: posData,
         findSecondSolution: $findSecondSolution,
+        findShortestPath: $findShortestPath,
       });
 
       solution.set(result);
@@ -188,6 +190,10 @@
     <label>
       <input type="checkbox" bind:checked={$findSecondSolution} disabled={$solving} />
       2つ目の解を探す（余詰めチェック）
+    </label>
+    <label>
+      <input type="checkbox" bind:checked={$findShortestPath} disabled={$solving} />
+      最短経路を調べる
     </label>
   </div>
 

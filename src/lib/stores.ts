@@ -76,6 +76,9 @@ export const errorMessage = writable<string>("");
 /** 2つ目の解を探すかどうか（余詰めチェック） */
 export const findSecondSolution = writable<boolean>(false);
 
+/** 最短経路を探すかどうか */
+export const findShortestPath = writable<boolean>(false);
+
 /**
  * 盤面＋先手持ち駒における、指定した基本駒種（unpromoted）の使用数を返す。
  * excludeSquare を指定すると、そのマスの駒はカウントから除外する（上書き配置時用）。

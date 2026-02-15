@@ -135,10 +135,17 @@ cd src-tauri && cargo test --release --test dfpn_benchmark_tests dfpn_bench_ques
 
 # 全問一括ベンチマーク（サマリー表付き、dfpn-benchmark-results.md 出力）
 cd src-tauri && cargo test --release --test dfpn_benchmark_tests dfpn_bench_all -- --ignored --nocapture
+
+# 個別の問題を実行（最短経路探索あり、例: 問題34）
+cd src-tauri && cargo test --release --test dfpn_benchmark_tests dfpn_bench_shortest_question_34 -- --ignored --nocapture
+
+# 全問一括ベンチマーク（最短経路探索あり、dfpn-benchmark-results-shortest.md 出力）
+cd src-tauri && cargo test --release --test dfpn_benchmark_tests dfpn_bench_all_shortest -- --ignored --nocapture
 ```
 
 - ノード上限: 50,000,000
 - 制限時間: 120秒/問
+- 最短経路探索: 初回探索で得た解の深さに対し、深さ制限付き二分探索で最短解を求める（GUIでは「最短経路を調べる」オプションで有効化）
 
 ### 旧ソルバー（比較用）
 

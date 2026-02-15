@@ -65,6 +65,8 @@ pub struct TsuitateDfpnSolver {
     excluded_root_moves: Vec<Move>,
     /// ルートのメタポジションハッシュ（除外判定用）
     root_hash: Option<u64>,
+    /// 深さ上限（None = 制限なし）
+    depth_limit: Option<u32>,
 }
 
 impl TsuitateDfpnSolver {
@@ -77,6 +79,7 @@ impl TsuitateDfpnSolver {
             cancelled,
             excluded_root_moves: Vec::new(),
             root_hash: None,
+            depth_limit: None,
         }
     }
 
@@ -86,7 +89,7 @@ impl TsuitateDfpnSolver {
         self.root_hash = Some(hash);
         let mut path = vec![hash];
 
-        self.mid_or(meta, INF, INF, &mut path);
+        self.mid_or(meta, INF, INF, &mut path, 0);
 
         let entry = self.or_table.get(&hash).copied().unwrap_or(PnDn { pn: 1, dn: 1 });
         if entry.pn == 0 {
@@ -122,6 +125,7 @@ impl TsuitateDfpnSolver {
         pn_limit: u32,
         dn_limit: u32,
         path: &mut Vec<u64>,
+        depth: u32,
     ) {
         self.nodes_searched += 1;
         let hash = meta_position_hash(meta);
@@ -138,6 +142,14 @@ impl TsuitateDfpnSolver {
         if meta.positions.len() > MAX_META_POSITIONS {
             self.or_table.insert(hash, PnDn { pn: INF, dn: 0 });
             return;
+        }
+
+        // 深さ制限チェック
+        if let Some(limit) = self.depth_limit {
+            if depth >= limit {
+                self.or_table.insert(hash, PnDn { pn: INF, dn: 0 });
+                return;
+            }
         }
 
         // 候補手を生成
@@ -218,6 +230,7 @@ impl TsuitateDfpnSolver {
                 child_pn_limit,
                 child_dn_limit,
                 path,
+                depth,
             );
 
             // AND テーブルから値を読み戻す
@@ -240,6 +253,7 @@ impl TsuitateDfpnSolver {
         pn_limit: u32,
         dn_limit: u32,
         path: &mut Vec<u64>,
+        depth: u32,
     ) {
         let meta_hash = meta_position_hash(meta);
         let and_key = Self::and_key(meta_hash, &mv);
@@ -270,6 +284,7 @@ impl TsuitateDfpnSolver {
         let mut obs_terminal: Vec<bool> = Vec::new();
         let mut obs_hash: Vec<u64> = Vec::new();
         let mut obs_metas: Vec<MetaPosition> = Vec::new();
+        let mut obs_depth_inc: Vec<u32> = Vec::new();
 
         // Illegal 分岐
         if !illegal_meta.is_empty() {
@@ -280,6 +295,7 @@ impl TsuitateDfpnSolver {
             obs_terminal.push(false);
             obs_hash.push(bh);
             obs_metas.push(illegal_meta);
+            obs_depth_inc.push(0); // Illegal: 手が実行されていない
         }
 
         // 合法分岐
@@ -293,6 +309,7 @@ impl TsuitateDfpnSolver {
                 obs_metas.push(MetaPosition {
                     positions: Vec::new(),
                 });
+                obs_depth_inc.push(0); // 終端: 再帰しない
             } else {
                 let branches = legal_meta.expand_defense_moves(mv);
                 for (obs, branch_meta) in branches {
@@ -303,6 +320,7 @@ impl TsuitateDfpnSolver {
                             obs_terminal.push(true);
                             obs_hash.push(0);
                             obs_metas.push(branch_meta);
+                            obs_depth_inc.push(0); // 終端: 再帰しない
                         }
                         Observation::Captured { .. } | Observation::NoCapture => {
                             if branch_meta.positions.len() > MAX_META_POSITIONS {
@@ -317,6 +335,7 @@ impl TsuitateDfpnSolver {
                             obs_terminal.push(false);
                             obs_hash.push(bh);
                             obs_metas.push(branch_meta);
+                            obs_depth_inc.push(2); // 攻め方の手 + 玉方の応手
                         }
                         Observation::Illegal => {}
                     }
@@ -376,12 +395,14 @@ impl TsuitateDfpnSolver {
 
             // OR ノードに再帰
             let child_hash = obs_hash[best_idx];
+            let child_depth = depth + obs_depth_inc[best_idx];
             path.push(child_hash);
             self.mid_or(
                 &obs_metas[best_idx],
                 child_pn_limit,
                 child_dn_limit,
                 path,
+                child_depth,
             );
             path.pop();
 
@@ -595,38 +616,52 @@ impl TsuitateDfpnSolver {
     // ========================================================================
 
     /// 探索して SolutionData を返す（既存ソルバーと同じインターフェース）
-    pub fn solve_to_solution(&mut self, meta: &MetaPosition) -> SolutionData {
-        self.solve_to_solution_inner(meta, false)
+    pub fn solve_to_solution(&mut self, meta: &MetaPosition, find_shortest: bool) -> SolutionData {
+        self.solve_to_solution_inner(meta, false, find_shortest)
     }
 
     /// 余詰めチェック付きで探索して SolutionData を返す
     pub fn solve_to_solution_with_second(
         &mut self,
         meta: &MetaPosition,
+        find_shortest: bool,
     ) -> SolutionData {
-        self.solve_to_solution_inner(meta, true)
+        self.solve_to_solution_inner(meta, true, find_shortest)
     }
 
     fn solve_to_solution_inner(
         &mut self,
         meta: &MetaPosition,
         find_second: bool,
+        find_shortest: bool,
     ) -> SolutionData {
         let result = self.solve(meta);
         match result {
             TsuitateDfpnResult::Proven => {
                 let tree = self.extract_solution(meta);
                 let depth = tree.as_ref().map(|t| t.max_moves()).unwrap_or(0);
+                let initial_nodes = self.nodes_searched;
+
+                // 最短解を探す
+                let (tree, depth, shorten_nodes) = if find_shortest && depth > 1 {
+                    self.shorten_solution(meta, tree, depth)
+                } else {
+                    (tree, depth, 0)
+                };
+                let nodes_before_second = initial_nodes + shorten_nodes;
 
                 // 余詰めチェック
+                // find_second_solution は self.nodes_searched を first_phase_nodes として使うため、
+                // shorten 分を含めた累計値を設定しておく
+                self.nodes_searched = nodes_before_second;
                 let (second_tree, total_nodes, second_msg) = if find_second {
                     if let Some(ref t) = tree {
                         self.find_second_solution(meta, t)
                     } else {
-                        (None, self.nodes_searched, String::new())
+                        (None, nodes_before_second, String::new())
                     }
                 } else {
-                    (None, self.nodes_searched, String::new())
+                    (None, nodes_before_second, String::new())
                 };
 
                 let message = if second_tree.is_some() {
@@ -676,6 +711,58 @@ impl TsuitateDfpnSolver {
                 trace: Vec::new(),
             },
         }
+    }
+
+    /// 二分探索で最短の深さを求める
+    fn shorten_solution(
+        &mut self,
+        meta: &MetaPosition,
+        initial_tree: Option<SolutionNode>,
+        initial_depth: u32,
+    ) -> (Option<SolutionNode>, u32, u64) {
+        let mut low: u32 = 1;
+        let mut high: u32 = initial_depth - 1;
+        let mut best_tree = initial_tree;
+        let mut best_depth = initial_depth;
+        let mut total_nodes: u64 = 0;
+
+        while low <= high {
+            if self.should_stop() {
+                break;
+            }
+
+            let mid = low + (high - low) / 2;
+
+            // 転置表クリア、深さ制限付きで再探索
+            self.or_table.clear();
+            self.and_table.clear();
+            self.nodes_searched = 0;
+            self.depth_limit = Some(mid);
+
+            let result = self.solve(meta);
+            total_nodes += self.nodes_searched;
+
+            match result {
+                TsuitateDfpnResult::Proven => {
+                    let tree = self.extract_solution(meta);
+                    let actual_depth = tree.as_ref().map(|t| t.max_moves()).unwrap_or(0);
+                    if actual_depth < best_depth {
+                        best_tree = tree;
+                        best_depth = actual_depth;
+                    }
+                    if actual_depth <= 1 {
+                        break;
+                    }
+                    high = actual_depth - 1;
+                }
+                _ => {
+                    low = mid + 1;
+                }
+            }
+        }
+
+        self.depth_limit = None;
+        (best_tree, best_depth, total_nodes)
     }
 
     /// 1つ目の解の初手を除外して2つ目の解を探す

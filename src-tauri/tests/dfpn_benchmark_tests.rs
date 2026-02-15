@@ -143,10 +143,18 @@ fn cancel_after(secs: u64) -> Arc<AtomicBool> {
 
 /// 1問を解いて結果を表示するヘルパー
 fn run_question(number: u32, node_limit: u64, time_limit_secs: u64) {
+    run_question_with_options(number, node_limit, time_limit_secs, false);
+}
+
+fn run_question_shortest(number: u32, node_limit: u64, time_limit_secs: u64) {
+    run_question_with_options(number, node_limit, time_limit_secs, true);
+}
+
+fn run_question_with_options(number: u32, node_limit: u64, time_limit_secs: u64, find_shortest: bool) {
     let path = sample_questions_dir().join(format!("{}.json", number));
     let pos = load_question(&path);
 
-    println!("=== 問題 {} ===", number);
+    println!("=== 問題 {} {}===", number, if find_shortest { "(最短経路) " } else { "" });
     print_position(&pos);
 
     let meta = MetaPosition::new(pos);
@@ -155,7 +163,7 @@ fn run_question(number: u32, node_limit: u64, time_limit_secs: u64) {
     let mut solver = TsuitateDfpnSolver::new(node_limit, cancel);
 
     let start = Instant::now();
-    let result = solver.solve_to_solution(&meta);
+    let result = solver.solve_to_solution(&meta, find_shortest);
     let elapsed = start.elapsed();
 
     println!(
@@ -408,18 +416,83 @@ fn dfpn_bench_question_40() { run_question(40, NODE_LIMIT, TIME_LIMIT); }
 #[ignore]
 fn dfpn_bench_question_41() { run_question(41, NODE_LIMIT, TIME_LIMIT); }
 
+// === 個別テスト（最短経路探索あり） ===
+
+macro_rules! dfpn_shortest_test {
+    ($name:ident, $num:expr) => {
+        #[test]
+        #[ignore]
+        fn $name() { run_question_shortest($num, NODE_LIMIT, TIME_LIMIT); }
+    };
+}
+
+dfpn_shortest_test!(dfpn_bench_shortest_question_01, 1);
+dfpn_shortest_test!(dfpn_bench_shortest_question_02, 2);
+dfpn_shortest_test!(dfpn_bench_shortest_question_03, 3);
+dfpn_shortest_test!(dfpn_bench_shortest_question_04, 4);
+dfpn_shortest_test!(dfpn_bench_shortest_question_05, 5);
+dfpn_shortest_test!(dfpn_bench_shortest_question_06, 6);
+dfpn_shortest_test!(dfpn_bench_shortest_question_07, 7);
+dfpn_shortest_test!(dfpn_bench_shortest_question_08, 8);
+dfpn_shortest_test!(dfpn_bench_shortest_question_09, 9);
+dfpn_shortest_test!(dfpn_bench_shortest_question_10, 10);
+dfpn_shortest_test!(dfpn_bench_shortest_question_11, 11);
+dfpn_shortest_test!(dfpn_bench_shortest_question_12, 12);
+dfpn_shortest_test!(dfpn_bench_shortest_question_13, 13);
+dfpn_shortest_test!(dfpn_bench_shortest_question_14, 14);
+dfpn_shortest_test!(dfpn_bench_shortest_question_15, 15);
+dfpn_shortest_test!(dfpn_bench_shortest_question_16, 16);
+dfpn_shortest_test!(dfpn_bench_shortest_question_17, 17);
+dfpn_shortest_test!(dfpn_bench_shortest_question_18, 18);
+dfpn_shortest_test!(dfpn_bench_shortest_question_19, 19);
+dfpn_shortest_test!(dfpn_bench_shortest_question_20, 20);
+dfpn_shortest_test!(dfpn_bench_shortest_question_21, 21);
+dfpn_shortest_test!(dfpn_bench_shortest_question_22, 22);
+dfpn_shortest_test!(dfpn_bench_shortest_question_23, 23);
+dfpn_shortest_test!(dfpn_bench_shortest_question_24, 24);
+dfpn_shortest_test!(dfpn_bench_shortest_question_25, 25);
+dfpn_shortest_test!(dfpn_bench_shortest_question_26, 26);
+dfpn_shortest_test!(dfpn_bench_shortest_question_27, 27);
+dfpn_shortest_test!(dfpn_bench_shortest_question_28, 28);
+dfpn_shortest_test!(dfpn_bench_shortest_question_29, 29);
+dfpn_shortest_test!(dfpn_bench_shortest_question_30, 30);
+dfpn_shortest_test!(dfpn_bench_shortest_question_31, 31);
+dfpn_shortest_test!(dfpn_bench_shortest_question_32, 32);
+dfpn_shortest_test!(dfpn_bench_shortest_question_33, 33);
+dfpn_shortest_test!(dfpn_bench_shortest_question_34, 34);
+dfpn_shortest_test!(dfpn_bench_shortest_question_35, 35);
+dfpn_shortest_test!(dfpn_bench_shortest_question_36, 36);
+dfpn_shortest_test!(dfpn_bench_shortest_question_37, 37);
+dfpn_shortest_test!(dfpn_bench_shortest_question_38, 38);
+dfpn_shortest_test!(dfpn_bench_shortest_question_39, 39);
+dfpn_shortest_test!(dfpn_bench_shortest_question_40, 40);
+dfpn_shortest_test!(dfpn_bench_shortest_question_41, 41);
+
 /// 全問一括ベンチマーク（サマリー表付き）
 /// cargo test --release --test dfpn_benchmark_tests dfpn_bench_all -- --ignored --nocapture
 #[test]
 #[ignore]
 fn dfpn_bench_all_questions() {
+    run_all_questions(false);
+}
+
+/// 全問一括ベンチマーク（最短経路探索あり）
+/// cargo test --release --test dfpn_benchmark_tests dfpn_bench_all_shortest -- --ignored --nocapture
+#[test]
+#[ignore]
+fn dfpn_bench_all_shortest_questions() {
+    run_all_questions(true);
+}
+
+fn run_all_questions(find_shortest: bool) {
     let dir = sample_questions_dir();
     let node_limit: u64 = NODE_LIMIT;
     let time_limit_secs: u64 = TIME_LIMIT;
 
+    let mode_label = if find_shortest { "最短経路あり" } else { "通常" };
     println!(
-        "=== 衝立df-pn 全問ベンチマーク (node_limit={}, time_limit={}s) ===\n",
-        node_limit, time_limit_secs
+        "=== 衝立df-pn 全問ベンチマーク [{}] (node_limit={}, time_limit={}s) ===\n",
+        mode_label, node_limit, time_limit_secs
     );
 
     struct Result {
@@ -446,7 +519,7 @@ fn dfpn_bench_all_questions() {
         let mut solver = TsuitateDfpnSolver::new(node_limit, cancel);
 
         let start = Instant::now();
-        let result = solver.solve_to_solution(&meta);
+        let result = solver.solve_to_solution(&meta, find_shortest);
         let elapsed = start.elapsed();
 
         let depth = result.tree.as_ref().map_or(0, |t| t.max_moves());
@@ -473,7 +546,7 @@ fn dfpn_bench_all_questions() {
     let total_time: f64 = results.iter().map(|r| r.time_secs).sum();
     let total_nodes: u64 = results.iter().map(|r| r.nodes).sum();
 
-    println!("\n=== サマリー ===");
+    println!("\n=== サマリー [{}] ===", mode_label);
     println!("解けた問題: {}/{}", solved, total);
     println!("合計時間: {:.3}s", total_time);
     println!("合計ノード数: {}", total_nodes);
@@ -499,18 +572,24 @@ fn dfpn_bench_all_questions() {
     }
 
     // Markdown ファイル出力
+    let filename = if find_shortest {
+        "dfpn-benchmark-results-shortest.md"
+    } else {
+        "dfpn-benchmark-results.md"
+    };
     let output_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
-        .join("dfpn-benchmark-results.md");
+        .join(filename);
 
     let now = chrono::Local::now();
     let mut md = String::new();
-    md.push_str("# 衝立df-pn ベンチマーク結果\n\n");
+    md.push_str(&format!("# 衝立df-pn ベンチマーク結果 [{}]\n\n", mode_label));
     md.push_str(&format!(
         "- 実行日時: {}\n",
         now.format("%Y-%m-%d %H:%M:%S")
     ));
+    md.push_str(&format!("- モード: {}\n", mode_label));
     md.push_str(&format!("- ノード上限: {}\n", node_limit));
     md.push_str(&format!("- 制限時間: {}秒/問\n", time_limit_secs));
     md.push_str(&format!("- 解けた問題: {}/{}\n", solved, total));
