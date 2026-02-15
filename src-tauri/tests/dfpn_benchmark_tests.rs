@@ -468,6 +468,150 @@ dfpn_shortest_test!(dfpn_bench_shortest_question_39, 39);
 dfpn_shortest_test!(dfpn_bench_shortest_question_40, 40);
 dfpn_shortest_test!(dfpn_bench_shortest_question_41, 41);
 
+/// aigoma.json デバッグテスト
+#[test]
+#[ignore]
+fn dfpn_debug_aigoma() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("aigoma.json");
+    let pos = load_question(&path);
+
+    println!("=== aigoma.json デバッグ ===");
+    print_position(&pos);
+
+    // ▲4二竜 を指す
+    let rook_move = Move::normal(
+        Square::new(6, 2), // from: 6二
+        Square::new(4, 2), // to: 4二
+        false,
+        PieceKind::PromotedRook,
+    );
+
+    let mut pos_after = pos.clone();
+    pos_after.make_move(rook_move);
+
+    println!("\n=== ▲4二竜 後の盤面 ===");
+    print_position(&pos_after);
+
+    // 王手されているか
+    let in_check = pos_after.is_in_check(Color::Gote);
+    println!("後手王手されている: {}", in_check);
+
+    // 王手回避手を列挙
+    let evasions = pos_after.generate_check_evasions();
+    println!("王手回避手の数: {}", evasions.len());
+
+    for ev in &evasions {
+        let is_king_move = if let Some(from) = ev.from {
+            pos_after.piece_at(from).map_or(false, |p| p.kind == PieceKind::King)
+        } else {
+            false
+        };
+
+        let futile = if is_king_move {
+            false
+        } else {
+            pos_after.is_futile_interposition(ev)
+        };
+
+        let move_desc = if let Some(drop_kind) = ev.drop_piece {
+            format!("△{}{}打", ev.to.to_japanese(), drop_kind.to_kanji())
+        } else if let Some(from) = ev.from {
+            let kind = pos_after.piece_at(from).map(|p| p.kind.to_kanji()).unwrap_or("?");
+            let promo = if ev.promotion { "成" } else { "" };
+            format!("△{}{}{} (from {})", ev.to.to_japanese(), kind, promo, from.to_japanese())
+        } else {
+            format!("?")
+        };
+
+        println!(
+            "  {} | king_move={} futile={}",
+            move_desc, is_king_move, futile
+        );
+
+        // 非無駄合いの場合、詳細をダンプ
+        if !is_king_move && !futile {
+            println!("    *** NOT FUTILE - investigating ***");
+
+            let mut test_pos = pos_after.clone();
+            test_pos.make_move(*ev);
+            println!("    合駒後の盤面:");
+            print_position(&test_pos);
+
+            // 攻め方が取り返せるか
+            let capture_sq = ev.to;
+            let is_attacked = test_pos.is_attacked(capture_sq, Color::Sente);
+            println!("    {}に先手の利き: {}", capture_sq.to_japanese(), is_attacked);
+
+            // 取り返し手を列挙
+            let legal_moves = test_pos.generate_legal_moves();
+            let recaptures: Vec<_> = legal_moves.iter().filter(|m| m.to == capture_sq).collect();
+            println!("    取り返し手: {} 個", recaptures.len());
+            for rc in &recaptures {
+                let mut test2 = test_pos.clone();
+                test2.make_move(**rc);
+                let gives_check = test2.is_in_check(Color::Gote);
+                let is_mate = if gives_check { test2.is_checkmate() } else { false };
+                let rc_desc = if let Some(from) = rc.from {
+                    let kind = test_pos.piece_at(from).map(|p| p.kind.to_kanji()).unwrap_or("?");
+                    format!("▲{}{}", rc.to.to_japanese(), kind)
+                } else {
+                    format!("▲{}打", rc.to.to_japanese())
+                };
+                println!(
+                    "      {} -> check={} mate={}",
+                    rc_desc, gives_check, is_mate
+                );
+                if gives_check && !is_mate {
+                    let ev2 = test2.generate_check_evasions();
+                    println!("        回避手: {} 個", ev2.len());
+                    for e2 in &ev2 {
+                        let e2_desc = if let Some(dk) = e2.drop_piece {
+                            format!("△{}{}打", e2.to.to_japanese(), dk.to_kanji())
+                        } else if let Some(from) = e2.from {
+                            let kind = test2.piece_at(from).map(|p| p.kind.to_kanji()).unwrap_or("?");
+                            format!("△{}{}", e2.to.to_japanese(), kind)
+                        } else {
+                            "?".to_string()
+                        };
+                        let is_king2 = if let Some(from) = e2.from {
+                            test2.piece_at(from).map_or(false, |p| p.kind == PieceKind::King)
+                        } else {
+                            false
+                        };
+                        let futile2 = if is_king2 { false } else { test2.is_futile_interposition(e2) };
+                        println!("          {} king={} futile={}", e2_desc, is_king2, futile2);
+                    }
+                }
+            }
+        }
+    }
+
+    // all_effectively_checkmate のチェック
+    let meta_after = MetaPosition { positions: vec![pos_after.clone()] };
+    let aec = meta_after.all_effectively_checkmate();
+    println!("\nall_effectively_checkmate: {}", aec);
+
+    // ソルバーの結果
+    println!("\n=== ソルバー実行 ===");
+    let meta = MetaPosition::new(pos.clone());
+    let cancel = cancel_after(120);
+    let mut solver = TsuitateDfpnSolver::new(50_000_000, cancel);
+    let result = solver.solve_to_solution(&meta, false);
+    println!(
+        "Result: found={}, nodes={}, msg={}",
+        result.found,
+        solver.nodes_searched,
+        result.message,
+    );
+    if let Some(ref tree) = result.tree {
+        println!("  解の手順木:");
+        print_solution_tree(tree, 2);
+    }
+}
+
 /// 全問一括ベンチマーク（サマリー表付き）
 /// cargo test --release --test dfpn_benchmark_tests dfpn_bench_all -- --ignored --nocapture
 #[test]

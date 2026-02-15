@@ -61,7 +61,10 @@ impl MetaPosition {
                 continue; // 合法手なし = 詰み
             }
             // 合法手がある場合、全てが無駄合いかチェック（早期打ち切り）
-            let mut futile_squares: HashSet<Square> = HashSet::new();
+            // 注意: 同じマスへの合駒でも、盤上の駒の移動と持ち駒の打ちでは
+            // 結果が異なる場合がある（移動元マスが空くことで防御手が変わるため）。
+            // そのため、打ち駒のみキャッシュし、盤上の駒の移動は個別にチェックする。
+            let mut futile_drop_squares: HashSet<Square> = HashSet::new();
             for def_mv in &legal_moves {
                 let is_king_move = if let Some(from) = def_mv.from {
                     pos.piece_at(from).map_or(false, |p| p.kind == PieceKind::King)
@@ -71,13 +74,16 @@ impl MetaPosition {
                 if is_king_move {
                     return false; // 玉が逃げられる = 詰みではない
                 }
-                if futile_squares.contains(&def_mv.to) {
-                    continue; // キャッシュヒット
+                let is_drop = def_mv.drop_piece.is_some();
+                if is_drop && futile_drop_squares.contains(&def_mv.to) {
+                    continue; // 打ち駒の同一マスキャッシュヒット
                 }
                 if !pos.is_futile_interposition(def_mv) {
                     return false; // 有効な応手がある = 詰みではない
                 }
-                futile_squares.insert(def_mv.to);
+                if is_drop {
+                    futile_drop_squares.insert(def_mv.to);
+                }
             }
         }
         true
@@ -237,8 +243,10 @@ impl MetaPosition {
                 continue;
             }
 
-            // 無駄合い判定のキャッシュ（マス目ごと：同じマスへの合駒は同様に無駄）
-            let mut futile_squares: HashSet<Square> = HashSet::new();
+            // 無駄合い判定のキャッシュ（打ち駒のみ、マス目ごと）
+            // 盤上の駒の移動は移動元マスが空くことで防御手が変わる可能性があるため
+            // キャッシュ対象外とする
+            let mut futile_drop_squares: HashSet<Square> = HashSet::new();
 
             for def_mv in &legal_moves {
                 // 無駄合い判定
@@ -248,14 +256,15 @@ impl MetaPosition {
                     false
                 };
 
+                let is_drop = def_mv.drop_piece.is_some();
                 let is_futile = if is_king_move {
                     false
-                } else if futile_squares.contains(&def_mv.to) {
-                    true // キャッシュヒット: このマスへの合駒は無駄
+                } else if is_drop && futile_drop_squares.contains(&def_mv.to) {
+                    true // 打ち駒の同一マスキャッシュヒット
                 } else {
                     let result = pos.is_futile_interposition(def_mv);
-                    if result {
-                        futile_squares.insert(def_mv.to);
+                    if result && is_drop {
+                        futile_drop_squares.insert(def_mv.to);
                     }
                     result
                 };
