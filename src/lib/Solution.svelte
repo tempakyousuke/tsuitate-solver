@@ -85,7 +85,7 @@
     {#snippet nodeDisplay(node: SolutionNode, depth: number, path: string)}
       {#if isCheckmate(node)}
         <div class="line" style="padding-left: {depth * 20 + 24}px">
-          <span class="checkmate">詰み</span>
+          <span class="checkmate">詰み（{node.Checkmate.depth}手）</span>
         </div>
       {:else if isAttackMove(node)}
         {@const hasBranches = node.AttackMove.branches.length > 0}
@@ -111,8 +111,8 @@
           {#each node.AttackMove.branches as branch, i}
             <div class="line branch-line" style="padding-left: {depth * 20 + 24}px">
               <span class="observation">[{observationLabel(branch.observation)}]</span>
-              {#if branch.observation === "Checkmate"}
-                <span class="checkmate-inline"> → 詰み</span>
+              {#if branch.observation === "Checkmate" && isCheckmate(branch.continuation)}
+                <span class="checkmate-inline"> → 詰み（{branch.continuation.Checkmate.depth}手）</span>
               {/if}
             </div>
             {#if branch.observation !== "Checkmate"}
