@@ -11,6 +11,8 @@
     findSecondSolution,
     findShortestPath,
     clearBoard,
+    saveInitialPosition,
+    exitPreview,
   } from "./stores";
   import type { BoardState, HandState } from "./stores";
   import type { PositionData, HandPieceData, SolutionData, PieceKind, Color } from "./types";
@@ -139,9 +141,11 @@
   }
 
   async function handleSolve() {
+    exitPreview();
     errorMessage.set("");
     solution.set(null);
     solving.set(true);
+    saveInitialPosition();
 
     try {
       const posData = buildPositionData($boardState, $senteHand, $goteHand);

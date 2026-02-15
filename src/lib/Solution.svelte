@@ -1,6 +1,9 @@
 <script lang="ts">
-  import { solution } from "./stores";
-  import type { SolutionNode, SolutionBranch, Observation } from "./types";
+  import {
+    solution, previewMode, selectedPath, exitPreview,
+    selectMove, selectObservation, isAttackMove, isCaptured,
+  } from "./stores";
+  import type { SolutionNode, Observation } from "./types";
 
   const RANK_KANJI = ["", "一", "二", "三", "四", "五", "六", "七", "八", "九"];
 
@@ -50,10 +53,6 @@
     return `${file}${RANK_KANJI[rank]}`;
   }
 
-  function isCaptured(obs: Observation): obs is { Captured: { file: number; rank: number } } {
-    return typeof obs === "object" && obs !== null && "Captured" in obs;
-  }
-
   function observationLabel(obs: Observation): string {
     if (obs === "NoCapture") return "取られない";
     if (obs === "Checkmate") return "詰み";
@@ -68,10 +67,14 @@
     return "Checkmate" in node;
   }
 
-  function isAttackMove(node: SolutionNode): node is {
-    AttackMove: { mv: { notation: string }; branches: SolutionBranch[] };
-  } {
-    return "AttackMove" in node;
+  function handleMoveClick(pathStr: string, event: MouseEvent) {
+    event.stopPropagation();
+    selectMove(pathStr);
+  }
+
+  function handleObservationClick(parentPath: string, branchIdx: number, event: MouseEvent) {
+    event.stopPropagation();
+    selectObservation(parentPath, branchIdx);
   }
 </script>
 
@@ -102,7 +105,11 @@
               <span class="chevron-placeholder"></span>
             {/if}
           </span>
-          <span class="move">{node.AttackMove.mv.notation}</span>
+          <span
+            class="move clickable"
+            class:selected={$selectedPath === path}
+            onclick={(e) => handleMoveClick(path, e)}
+          >{node.AttackMove.mv.notation}</span>
           {#if isFolded}
             <span class="fold-badge">{countBranches(node)} 分岐</span>
           {/if}
@@ -110,7 +117,11 @@
         {#if !isFolded}
           {#each node.AttackMove.branches as branch, i}
             <div class="line branch-line" style="padding-left: {depth * 20 + 24}px">
-              <span class="observation">[{observationLabel(branch.observation)}]</span>
+              <span
+                class="observation clickable"
+                class:selected={$selectedPath === `${path}/${i}!`}
+                onclick={(e) => handleObservationClick(path, i, e)}
+              >[{observationLabel(branch.observation)}]</span>
               {#if branch.observation === "Checkmate" && isCheckmate(branch.continuation)}
                 <span class="checkmate-inline"> → 詰み（{branch.continuation.Checkmate.depth}手）</span>
               {/if}
@@ -128,7 +139,10 @@
         <div class="tree-header">
           <h4>解の手順</h4>
           <div class="fold-controls">
-            <button onclick={() => foldAll($solution?.tree, $solution?.second_tree)}>全て折りたたむ</button>
+            {#if $previewMode}
+              <button class="reset-btn" onclick={() => exitPreview()}>盤面を戻す</button>
+            {/if}
+            <button onclick={() => foldAll($solution?.tree ?? undefined, $solution?.second_tree ?? undefined)}>全て折りたたむ</button>
             <button onclick={() => unfoldAll()}>全て展開</button>
           </div>
         </div>
@@ -268,6 +282,34 @@
     font-size: 14px;
   }
 
+  .move.clickable {
+    cursor: pointer;
+    padding: 0 4px;
+    border-radius: 3px;
+  }
+
+  .move.clickable:hover {
+    background: rgba(74, 144, 217, 0.15);
+  }
+
+  .move.selected {
+    background: rgba(74, 144, 217, 0.25);
+  }
+
+  .reset-btn {
+    padding: 2px 8px;
+    font-size: 11px;
+    border: 1px solid #c33;
+    border-radius: 3px;
+    background: #fff;
+    color: #c33;
+    cursor: pointer;
+  }
+
+  .reset-btn:hover {
+    background: #fee;
+  }
+
   .fold-badge {
     margin-left: 8px;
     padding: 0 6px;
@@ -281,6 +323,20 @@
   .observation {
     color: #666;
     font-size: 12px;
+  }
+
+  .observation.clickable {
+    cursor: pointer;
+    padding: 0 4px;
+    border-radius: 3px;
+  }
+
+  .observation.clickable:hover {
+    background: rgba(100, 100, 100, 0.12);
+  }
+
+  .observation.selected {
+    background: rgba(100, 100, 100, 0.2);
   }
 
   .checkmate {

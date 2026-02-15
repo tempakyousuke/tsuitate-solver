@@ -1,11 +1,16 @@
 <script lang="ts">
-  import { boardState, senteHand, goteHand, selectedPieceKind, selectedColor, remainingPieces } from "./stores";
+  import {
+    boardState, senteHand, goteHand, selectedPieceKind, selectedColor, remainingPieces,
+    previewMode, previewHighlight, solution,
+    navigateToStart, navigateBackward, navigateForward, navigateToEnd,
+  } from "./stores";
   import type { HandState } from "./stores";
   import { PIECE_KANJI, HAND_PIECE_KINDS, unpromoted, isPromoted } from "./types";
   import type { Piece, PieceKind } from "./types";
 
   // 盤面クリック時の処理
   function onCellClick(file: number, rank: number) {
+    if ($previewMode) return;
     boardState.update((board) => {
       const existing = board[file][rank];
       const kind = $selectedPieceKind;
@@ -40,6 +45,7 @@
 
   // 先手の持ち駒を減らす（既存の持ち駒をクリック）
   function removeSenteHand(kind: PieceKind) {
+    if ($previewMode) return;
     senteHand.update((h: HandState) => {
       const current = h.get(kind) || 0;
       if (current > 0) {
@@ -52,6 +58,7 @@
 
   // 先手の持ち駒を増やす（＋ボタン）
   function addSenteHand(kind: PieceKind) {
+    if ($previewMode) return;
     senteHand.update((h: HandState) => {
       const remaining = remainingPieces(kind);
       if (remaining <= 0) return h;
@@ -105,14 +112,24 @@
             {@const file = 8 - fileDisplayIdx}
             {@const rank = rankIdx}
             {@const piece = $boardState[file][rank]}
+            {@const hiddenKing = $previewMode && piece?.color === "gote" && piece?.kind === "king"}
+            {@const visiblePiece = piece && !hiddenKing}
+            {@const hl = $previewHighlight}
+            {@const isHighlightFrom = hl !== null && hl.fromFile === file && hl.fromRank === rank}
+            {@const isHighlightTo = hl !== null && hl.toFile === file && hl.toRank === rank}
+            {@const isIllegalHighlight = isHighlightTo && hl !== null && hl.illegal}
             <button
               class="cell"
-              class:has-piece={piece !== null}
-              class:sente-piece={piece?.color === "sente"}
-              class:gote-piece={piece?.color === "gote"}
+              class:has-piece={visiblePiece}
+              class:sente-piece={visiblePiece && piece?.color === "sente"}
+              class:gote-piece={visiblePiece && piece?.color === "gote"}
+              class:highlight-from={isHighlightFrom}
+              class:highlight-to={isHighlightTo && !isIllegalHighlight}
+              class:highlight-illegal={isIllegalHighlight}
+              class:preview={$previewMode}
               on:click={() => onCellClick(file, rank)}
             >
-              {#if piece}
+              {#if visiblePiece}
                 <span class="piece-text" class:gote={piece.color === "gote"} class:promoted={isPromoted(piece.kind)}>
                   {pieceText(piece)}
                 </span>
@@ -157,6 +174,16 @@
       >＋</button>
     </div>
   </div>
+
+  <!-- リプレイ操作 -->
+  {#if $solution?.tree}
+    <div class="replay-controls">
+      <button class="replay-btn" on:click={navigateToStart} disabled={!$previewMode} title="最初に戻る">|&lt;</button>
+      <button class="replay-btn" on:click={navigateBackward} disabled={!$previewMode} title="前の手">&lt;</button>
+      <button class="replay-btn" on:click={navigateForward} title="次の手">&gt;</button>
+      <button class="replay-btn" on:click={navigateToEnd} title="最後まで進む">&gt;|</button>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -265,8 +292,24 @@
     font-family: serif;
   }
 
-  .cell:hover {
+  .cell:hover:not(.preview) {
     background: rgba(0, 0, 0, 0.08);
+  }
+
+  .cell.preview {
+    cursor: default;
+  }
+
+  .cell.highlight-from {
+    background: rgba(80, 160, 80, 0.25);
+  }
+
+  .cell.highlight-to {
+    background: rgba(60, 160, 60, 0.35);
+  }
+
+  .cell.highlight-illegal {
+    background: rgba(220, 80, 50, 0.35);
   }
 
   .piece-text {
@@ -296,5 +339,37 @@
     align-items: center;
     font-size: 12px;
     color: #666;
+  }
+
+  .replay-controls {
+    display: flex;
+    gap: 6px;
+    justify-content: center;
+    margin-top: 4px;
+  }
+
+  .replay-btn {
+    width: 40px;
+    height: 32px;
+    border: 1px solid #aaa;
+    border-radius: 4px;
+    background: #fff;
+    font-size: 16px;
+    font-weight: bold;
+    color: #333;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: monospace;
+  }
+
+  .replay-btn:hover:not(:disabled) {
+    background: #e8e8e8;
+  }
+
+  .replay-btn:disabled {
+    opacity: 0.35;
+    cursor: default;
   }
 </style>
