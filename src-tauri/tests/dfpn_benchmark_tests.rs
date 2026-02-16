@@ -607,6 +607,15 @@ fn dfpn_debug_aigoma() {
         solver.dominance_hits,
         result.message,
     );
+    println!(
+        "  Diagnostics: mid_and_calls={}, expand_defense_calls={}, replay_attempts={}, replay_full={}, replay_partial={}, replay_fail={}",
+        solver.mid_and_calls,
+        solver.expand_defense_calls,
+        solver.proof_replay_attempts,
+        solver.proof_replay_full_success,
+        solver.proof_replay_partial,
+        solver.proof_replay_fail,
+    );
     if let Some(ref tree) = result.tree {
         println!("  解の手順木:");
         print_solution_tree(tree, 2);

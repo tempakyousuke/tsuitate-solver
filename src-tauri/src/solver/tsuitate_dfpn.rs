@@ -101,6 +101,18 @@ fn meta_board_only_hash(meta: &MetaPosition) -> u64 {
     h.finish()
 }
 
+/// AND ノードの展開結果キャッシュ
+/// mid_and が同一 AND ノードを再訪問する際の expand_defense_moves 再計算を回避
+#[derive(Clone)]
+struct CachedAndExpansion {
+    obs_terminal: Vec<bool>,
+    obs_hash: Vec<u64>,
+    obs_metas: Vec<MetaPosition>,
+    obs_depth_inc: Vec<u32>,
+    obs_hands: Vec<[u8; 7]>,
+    parent_hand: [u8; 7],
+}
+
 /// 衝立詰将棋 df-pn ソルバー
 ///
 /// 通常の df-pn が Position で動くのに対し、MetaPosition で動く。
@@ -137,8 +149,18 @@ pub struct TsuitateDfpnSolver {
     and_proof_hands: HashMap<u64, [u8; 7]>,
     /// 盤面のみのハッシュ → 証明された手（手順ヒント用）
     move_hints: HashMap<u64, Move>,
-    /// 盤面のみのハッシュ → 証明木（リプレイキャッシュ）
-    proof_cache: HashMap<u64, ProofNode>,
+    /// 盤面のみのハッシュ → 証明木リスト（リプレイキャッシュ、複数手順対応）
+    proof_cache: HashMap<u64, Vec<ProofNode>>,
+    /// AND ノードの展開結果キャッシュ: and_key → 構造データ
+    /// mid_and が同一 AND ノードを再訪問する際の expand_defense_moves 再計算を回避
+    and_expansion_cache: HashMap<u64, CachedAndExpansion>,
+    /// 診断用カウンタ
+    pub proof_replay_attempts: u64,
+    pub proof_replay_full_success: u64,
+    pub proof_replay_partial: u64,
+    pub proof_replay_fail: u64,
+    pub expand_defense_calls: u64,
+    pub mid_and_calls: u64,
 }
 
 impl TsuitateDfpnSolver {
@@ -158,6 +180,13 @@ impl TsuitateDfpnSolver {
             and_proof_hands: HashMap::new(),
             move_hints: HashMap::new(),
             proof_cache: HashMap::new(),
+            and_expansion_cache: HashMap::new(),
+            proof_replay_attempts: 0,
+            proof_replay_full_success: 0,
+            proof_replay_partial: 0,
+            proof_replay_fail: 0,
+            expand_defense_calls: 0,
+            mid_and_calls: 0,
         }
     }
 
@@ -255,11 +284,27 @@ impl TsuitateDfpnSolver {
             }
         }
 
-        // 証明木リプレイ: board-only hash でキャッシュされた証明木を試す
+        // 証明木リプレイ: board-only hash でキャッシュされた証明木を試す（複数候補対応）
         if !meta.positions.is_empty() {
             let board_only_hash = meta_board_only_hash(meta);
-            if let Some(proof) = self.proof_cache.get(&board_only_hash).cloned() {
-                if let Some(_or_ph) = self.try_replay_proof(meta, &proof, hash, path, depth) {
+            if let Some(proofs) = self.proof_cache.get(&board_only_hash).cloned() {
+                self.proof_replay_attempts += 1;
+                let or_table_size_before = self.or_table.len();
+                let mut replayed = false;
+                for proof in &proofs {
+                    if let Some(_or_ph) = self.try_replay_proof(meta, proof, hash, path, depth) {
+                        self.proof_replay_full_success += 1;
+                        replayed = true;
+                        break;
+                    }
+                }
+                if !replayed {
+                    if self.or_table.len() > or_table_size_before {
+                        self.proof_replay_partial += 1;
+                    } else {
+                        self.proof_replay_fail += 1;
+                    }
+                } else {
                     return;
                 }
             }
@@ -350,10 +395,18 @@ impl TsuitateDfpnSolver {
                         if let Some(proven_child) = children.iter().find(|c| c.2 == 0) {
                             self.move_hints.insert(board_only_hash, proven_child.0);
                         }
-                        // 証明木をキャッシュ（リプレイ用）
-                        if !self.proof_cache.contains_key(&board_only_hash) {
-                            if let Some(proof) = self.extract_compact_or(meta) {
-                                self.proof_cache.insert(board_only_hash, proof);
+                        // 証明木をキャッシュ（リプレイ用、複数手順対応）
+                        {
+                            let max_proofs = 20;
+                            let should_add = self.proof_cache
+                                .get(&board_only_hash)
+                                .map_or(true, |v| v.len() < max_proofs);
+                            if should_add {
+                                if let Some(proof) = self.extract_compact_or(meta) {
+                                    self.proof_cache.entry(board_only_hash)
+                                        .or_default()
+                                        .push(proof);
+                                }
                             }
                         }
                     }
@@ -416,126 +469,143 @@ impl TsuitateDfpnSolver {
         path: &mut Vec<u64>,
         depth: u32,
     ) {
+        self.mid_and_calls += 1;
         let meta_hash = meta_position_hash(meta);
         let and_key = Self::and_key(meta_hash, &mv);
 
-        // 手を適用して合法/不正に分割
-        let (legal_meta, illegal_meta) =
-            meta.apply_attack_move_split_with_sets(mv, legal_move_sets);
+        // Phase 1: キャッシュから展開結果を取得、なければ計算
+        // remove で所有権を取り、ループ後に再挿入（borrow checker 回避）
+        let expansion = if let Some(cached) = self.and_expansion_cache.remove(&and_key) {
+            cached
+        } else {
+            // 手を適用して合法/不正に分割
+            let (legal_meta, illegal_meta) =
+                meta.apply_attack_move_split_with_sets(mv, legal_move_sets);
 
-        if legal_meta.is_empty() && illegal_meta.is_empty() {
-            self.and_table.insert(and_key, PnDn { pn: INF, dn: 0 });
-            return;
-        }
+            if legal_meta.is_empty() && illegal_meta.is_empty() {
+                self.and_table.insert(and_key, PnDn { pn: INF, dn: 0 });
+                return;
+            }
 
-        // 全合法盤面で王手がかかっているか（衝立詰将棋: 毎手王手が必要）
-        if !legal_meta.is_empty()
-            && !legal_meta
-                .positions
-                .iter()
-                .all(|pos| pos.is_in_check(pos.side_to_move))
-        {
-            self.and_table.insert(and_key, PnDn { pn: INF, dn: 0 });
-            return;
-        }
+            // 全合法盤面で王手がかかっているか（衝立詰将棋: 毎手王手が必要）
+            if !legal_meta.is_empty()
+                && !legal_meta
+                    .positions
+                    .iter()
+                    .all(|pos| pos.is_in_check(pos.side_to_move))
+            {
+                self.and_table.insert(and_key, PnDn { pn: INF, dn: 0 });
+                return;
+            }
 
-        // 観測分岐の子ノードを構築（並列配列）
-        let mut obs_pn: Vec<u32> = Vec::new();
-        let mut obs_dn: Vec<u32> = Vec::new();
-        let mut obs_terminal: Vec<bool> = Vec::new();
-        let mut obs_hash: Vec<u64> = Vec::new();
-        let mut obs_metas: Vec<MetaPosition> = Vec::new();
-        let mut obs_depth_inc: Vec<u32> = Vec::new();
-        let mut obs_hands: Vec<[u8; 7]> = Vec::new(); // 各分岐の sente_hand（proof_hand 計算用）
-        let parent_hand = meta.positions.first()
-            .map(|p| p.hand(Color::Sente).counts_array())
-            .unwrap_or([0; 7]);
+            let parent_hand = meta.positions.first()
+                .map(|p| p.hand(Color::Sente).counts_array())
+                .unwrap_or([0; 7]);
 
-        // Illegal 分岐
-        if !illegal_meta.is_empty() {
-            let bh = meta_position_hash(&illegal_meta);
-            let (cpn, cdn) = self.lookup_or(bh, path);
-            obs_pn.push(cpn);
-            obs_dn.push(cdn);
-            obs_terminal.push(false);
-            obs_hash.push(bh);
-            obs_hands.push(parent_hand); // Illegal: 手が実行されていないので親と同じ
-            obs_metas.push(illegal_meta);
-            obs_depth_inc.push(0);
-        }
+            let mut obs_terminal: Vec<bool> = Vec::new();
+            let mut obs_hash: Vec<u64> = Vec::new();
+            let mut obs_metas: Vec<MetaPosition> = Vec::new();
+            let mut obs_depth_inc: Vec<u32> = Vec::new();
+            let mut obs_hands: Vec<[u8; 7]> = Vec::new();
 
-        // 合法分岐
-        if !legal_meta.is_empty() {
-            if legal_meta.all_effectively_checkmate() {
-                // 全合法盤面で実質詰み → 空の proof_hand を dominance に記録
-                if !legal_meta.positions.is_empty() {
-                    let board_hash = meta_board_set_hash(&legal_meta);
-                    self.add_dominance_entry(board_hash, [0; 7]);
-                }
-                let legal_hand = legal_meta.positions.first()
-                    .map(|p| p.hand(Color::Sente).counts_array())
-                    .unwrap_or(parent_hand);
-                obs_pn.push(0);
-                obs_dn.push(INF);
-                obs_terminal.push(true);
-                obs_hash.push(0);
-                obs_hands.push(legal_hand);
-                obs_metas.push(MetaPosition {
-                    positions: Vec::new(),
-                });
-                obs_depth_inc.push(0); // 終端: 再帰しない
-            } else {
-                let branches = legal_meta.expand_defense_moves(mv);
+            // Illegal 分岐
+            if !illegal_meta.is_empty() {
+                let bh = meta_position_hash(&illegal_meta);
+                obs_terminal.push(false);
+                obs_hash.push(bh);
+                obs_hands.push(parent_hand);
+                obs_metas.push(illegal_meta);
+                obs_depth_inc.push(0);
+            }
 
-                for (obs, branch_meta) in branches {
-                    match obs {
-                        Observation::Checkmate => {
-                            let branch_hand = branch_meta.positions.first()
-                                .map(|p| p.hand(Color::Sente).counts_array())
-                                .unwrap_or(parent_hand);
-                            obs_pn.push(0);
-                            obs_dn.push(INF);
-                            obs_terminal.push(true);
-                            obs_hash.push(0);
-                            obs_hands.push(branch_hand);
-                            obs_metas.push(branch_meta);
-                            obs_depth_inc.push(0); // 終端: 再帰しない
-                        }
-                        Observation::Captured { .. } | Observation::NoCapture => {
-                            if branch_meta.positions.len() > MAX_META_POSITIONS {
-                                self.and_table
-                                    .insert(and_key, PnDn { pn: INF, dn: 0 });
-                                return;
+            // 合法分岐
+            if !legal_meta.is_empty() {
+                if legal_meta.all_effectively_checkmate() {
+                    if !legal_meta.positions.is_empty() {
+                        let board_hash = meta_board_set_hash(&legal_meta);
+                        self.add_dominance_entry(board_hash, [0; 7]);
+                    }
+                    let legal_hand = legal_meta.positions.first()
+                        .map(|p| p.hand(Color::Sente).counts_array())
+                        .unwrap_or(parent_hand);
+                    obs_terminal.push(true);
+                    obs_hash.push(0);
+                    obs_hands.push(legal_hand);
+                    obs_metas.push(MetaPosition { positions: Vec::new() });
+                    obs_depth_inc.push(0);
+                } else {
+                    self.expand_defense_calls += 1;
+                    let branches = legal_meta.expand_defense_moves(mv);
+
+                    for (obs, branch_meta) in branches {
+                        match obs {
+                            Observation::Checkmate => {
+                                let branch_hand = branch_meta.positions.first()
+                                    .map(|p| p.hand(Color::Sente).counts_array())
+                                    .unwrap_or(parent_hand);
+                                obs_terminal.push(true);
+                                obs_hash.push(0);
+                                obs_hands.push(branch_hand);
+                                obs_metas.push(branch_meta);
+                                obs_depth_inc.push(0);
                             }
-                            let branch_hand = branch_meta.positions.first()
-                                .map(|p| p.hand(Color::Sente).counts_array())
-                                .unwrap_or(parent_hand);
-                            let bh = meta_position_hash(&branch_meta);
-                            let (cpn, cdn) = self.lookup_or(bh, path);
-                            obs_pn.push(cpn);
-                            obs_dn.push(cdn);
-                            obs_terminal.push(false);
-                            obs_hash.push(bh);
-                            obs_hands.push(branch_hand);
-                            obs_metas.push(branch_meta);
-                            obs_depth_inc.push(2); // 攻め方の手 + 玉方の応手
+                            Observation::Captured { .. } | Observation::NoCapture => {
+                                if branch_meta.positions.len() > MAX_META_POSITIONS {
+                                    self.and_table
+                                        .insert(and_key, PnDn { pn: INF, dn: 0 });
+                                    return;
+                                }
+                                let branch_hand = branch_meta.positions.first()
+                                    .map(|p| p.hand(Color::Sente).counts_array())
+                                    .unwrap_or(parent_hand);
+                                let bh = meta_position_hash(&branch_meta);
+                                obs_terminal.push(false);
+                                obs_hash.push(bh);
+                                obs_hands.push(branch_hand);
+                                obs_metas.push(branch_meta);
+                                obs_depth_inc.push(2);
+                            }
+                            Observation::Illegal => {}
                         }
-                        Observation::Illegal => {}
                     }
                 }
             }
+
+            if obs_terminal.is_empty() {
+                self.and_table.insert(and_key, PnDn { pn: INF, dn: 0 });
+                return;
+            }
+
+            CachedAndExpansion {
+                obs_terminal,
+                obs_hash,
+                obs_metas,
+                obs_depth_inc,
+                obs_hands,
+                parent_hand,
+            }
+        };
+
+        let n = expansion.obs_terminal.len();
+
+        // Phase 2: 転置表から最新の pn/dn を取得
+        let mut obs_pn: Vec<u32> = Vec::with_capacity(n);
+        let mut obs_dn: Vec<u32> = Vec::with_capacity(n);
+        for i in 0..n {
+            if expansion.obs_terminal[i] {
+                obs_pn.push(0);
+                obs_dn.push(INF);
+            } else {
+                let (cpn, cdn) = self.lookup_or(expansion.obs_hash[i], path);
+                obs_pn.push(cpn);
+                obs_dn.push(cdn);
+            }
         }
 
-        if obs_pn.is_empty() {
-            self.and_table.insert(and_key, PnDn { pn: INF, dn: 0 });
-            return;
-        }
-
-        let n = obs_pn.len();
-
+        // Phase 3: メインループ（break で統一して最後にキャッシュ再挿入）
         loop {
             if self.should_stop() {
-                return;
+                break;
             }
 
             // AND 集約: pn = sum{pn_c}, dn = min{dn_c}
@@ -545,18 +615,18 @@ impl TsuitateDfpnSolver {
             if pn_n == 0 || dn_n == 0 {
                 self.and_table.insert(and_key, PnDn { pn: pn_n, dn: dn_n });
                 if pn_n == 0 {
-                    // AND 証明駒の計算: max over branches of max(P_b[j] + H[j] - H_b[j], 0)
+                    // AND 証明駒の計算
                     let mut and_ph = [0u8; 7];
                     for i in 0..n {
-                        let child_ph = if obs_terminal[i] {
+                        let child_ph = if expansion.obs_terminal[i] {
                             [0u8; 7]
                         } else {
-                            self.or_proof_hands.get(&obs_hash[i])
-                                .copied().unwrap_or(parent_hand)
+                            self.or_proof_hands.get(&expansion.obs_hash[i])
+                                .copied().unwrap_or(expansion.parent_hand)
                         };
-                        let child_hand = obs_hands[i];
+                        let child_hand = expansion.obs_hands[i];
                         for j in 0..7 {
-                            let eff = (child_ph[j] as i16) + (parent_hand[j] as i16)
+                            let eff = (child_ph[j] as i16) + (expansion.parent_hand[j] as i16)
                                 - (child_hand[j] as i16);
                             let eff = eff.max(0) as u8;
                             and_ph[j] = and_ph[j].max(eff);
@@ -564,24 +634,23 @@ impl TsuitateDfpnSolver {
                     }
                     self.and_proof_hands.insert(and_key, and_ph);
                 }
-                return;
+                break;
             }
 
             if pn_n >= pn_limit || dn_n >= dn_limit {
                 self.and_table.insert(and_key, PnDn { pn: pn_n, dn: dn_n });
-                return;
+                break;
             }
 
             // 最弱の非終端子（dn 最小）を選択
             let best = (0..n)
-                .filter(|&i| !obs_terminal[i])
+                .filter(|&i| !expansion.obs_terminal[i])
                 .min_by_key(|&i| obs_dn[i]);
             let best_idx = match best {
                 Some(i) => i,
                 None => {
-                    // 全て終端（ありえないはずだが安全のため）
                     self.and_table.insert(and_key, PnDn { pn: pn_n, dn: dn_n });
-                    return;
+                    break;
                 }
             };
 
@@ -598,11 +667,11 @@ impl TsuitateDfpnSolver {
             let child_pn_limit = pn_limit.saturating_sub(pn_n).saturating_add(best_pn);
 
             // OR ノードに再帰
-            let child_hash = obs_hash[best_idx];
-            let child_depth = depth + obs_depth_inc[best_idx];
+            let child_hash = expansion.obs_hash[best_idx];
+            let child_depth = depth + expansion.obs_depth_inc[best_idx];
             path.push(child_hash);
             self.mid_or(
-                &obs_metas[best_idx],
+                &expansion.obs_metas[best_idx],
                 child_pn_limit,
                 child_dn_limit,
                 path,
@@ -619,6 +688,9 @@ impl TsuitateDfpnSolver {
             obs_pn[best_idx] = e.pn;
             obs_dn[best_idx] = e.dn;
         }
+
+        // Phase 4: キャッシュに再挿入
+        self.and_expansion_cache.insert(and_key, expansion);
     }
 
     /// OR ノードの初期値を取得（転置表 or デフォルト）
@@ -970,6 +1042,8 @@ impl TsuitateDfpnSolver {
             self.and_proof_hands.clear();
             self.move_hints.clear();
             self.proof_cache.clear();
+            self.and_expansion_cache.clear();
+
             self.nodes_searched = 0;
             self.depth_limit = Some(mid);
 
@@ -1056,6 +1130,7 @@ impl TsuitateDfpnSolver {
         self.and_proof_hands.clear();
         self.move_hints.clear();
         self.proof_cache.clear();
+        self.and_expansion_cache.clear();
         self.nodes_searched = 0;
         self.excluded_root_moves = excluded;
 
@@ -1386,12 +1461,15 @@ impl TsuitateDfpnSolver {
                 let mut all_succeeded = true;
 
                 for (actual_obs, actual_meta) in &actual_branches {
-                    // 証明分岐から一致するものを探す
-                    let matched = proof_branches.iter().find(|(po, _)| po.matches(actual_obs));
-                    let sub_proof = match matched {
-                        Some((_, sp)) => sp,
-                        None => { all_succeeded = false; continue; }
-                    };
+                    // 証明分岐から一致するもの全てを収集（sente_hand_hash グループ化対応）
+                    let matching_proofs: Vec<&ProofNode> = proof_branches.iter()
+                        .filter(|(po, _)| po.matches(actual_obs))
+                        .map(|(_, sp)| sp)
+                        .collect();
+                    if matching_proofs.is_empty() {
+                        all_succeeded = false;
+                        continue;
+                    }
 
                     match actual_obs {
                         Observation::Checkmate => {
@@ -1401,18 +1479,21 @@ impl TsuitateDfpnSolver {
                             let child_hash = meta_position_hash(actual_meta);
                             let mut child_path = path.to_vec();
                             child_path.push(hash);
-                            match self.try_replay_proof(
-                                actual_meta, sub_proof, child_hash, &child_path, depth,
-                            ) {
-                                Some(child_ph) => {
+                            let mut branch_ok = false;
+                            for sub_proof in &matching_proofs {
+                                if let Some(child_ph) = self.try_replay_proof(
+                                    actual_meta, sub_proof, child_hash, &child_path, depth,
+                                ) {
                                     for j in 0..7 {
                                         let eff = (child_ph[j] as i16 + parent_hand[j] as i16
                                             - parent_hand[j] as i16).max(0) as u8;
                                         and_ph[j] = and_ph[j].max(eff);
                                     }
+                                    branch_ok = true;
+                                    break;
                                 }
-                                None => { all_succeeded = false; }
                             }
+                            if !branch_ok { all_succeeded = false; }
                         }
                         Observation::Captured { .. } | Observation::NoCapture => {
                             let child_hash = meta_position_hash(actual_meta);
@@ -1421,18 +1502,21 @@ impl TsuitateDfpnSolver {
                                 .unwrap_or(parent_hand);
                             let mut child_path = path.to_vec();
                             child_path.push(hash);
-                            match self.try_replay_proof(
-                                actual_meta, sub_proof, child_hash, &child_path, depth + 2,
-                            ) {
-                                Some(child_ph) => {
+                            let mut branch_ok = false;
+                            for sub_proof in &matching_proofs {
+                                if let Some(child_ph) = self.try_replay_proof(
+                                    actual_meta, sub_proof, child_hash, &child_path, depth + 2,
+                                ) {
                                     for j in 0..7 {
                                         let eff = (child_ph[j] as i16 + parent_hand[j] as i16
                                             - child_hand[j] as i16).max(0) as u8;
                                         and_ph[j] = and_ph[j].max(eff);
                                     }
+                                    branch_ok = true;
+                                    break;
                                 }
-                                None => { all_succeeded = false; }
                             }
+                            if !branch_ok { all_succeeded = false; }
                         }
                     }
                 }
