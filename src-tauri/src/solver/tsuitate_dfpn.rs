@@ -57,6 +57,18 @@ fn meta_board_set_hash(meta: &MetaPosition) -> u64 {
     h.finish()
 }
 
+/// MetaPosition の盤面のみのハッシュ（両方の持ち駒を除外）
+/// 手順ヒント用: 盤面配置が同じメタポジション間で証明手順を共有する
+fn meta_board_only_hash(meta: &MetaPosition) -> u64 {
+    let mut hashes: Vec<u64> = meta.positions.iter()
+        .map(|pos| pos.hash_board_only())
+        .collect();
+    hashes.sort();
+    let mut h = DefaultHasher::new();
+    hashes.hash(&mut h);
+    h.finish()
+}
+
 /// 衝立詰将棋 df-pn ソルバー
 ///
 /// 通常の df-pn が Position で動くのに対し、MetaPosition で動く。
@@ -91,6 +103,8 @@ pub struct TsuitateDfpnSolver {
     or_proof_hands: HashMap<u64, [u8; 7]>,
     /// AND ノードの証明駒: and_key → proof_hand
     and_proof_hands: HashMap<u64, [u8; 7]>,
+    /// 盤面のみのハッシュ → 証明された手（手順ヒント用）
+    move_hints: HashMap<u64, Move>,
 }
 
 impl TsuitateDfpnSolver {
@@ -108,6 +122,7 @@ impl TsuitateDfpnSolver {
             dominance_table: HashMap::new(),
             or_proof_hands: HashMap::new(),
             and_proof_hands: HashMap::new(),
+            move_hints: HashMap::new(),
         }
     }
 
@@ -228,6 +243,19 @@ impl TsuitateDfpnSolver {
             return;
         }
 
+        // 手順ヒントによる候補手の並べ替え
+        if !meta.positions.is_empty() {
+            let board_only_hash = meta_board_only_hash(meta);
+            if let Some(hint_mv) = self.move_hints.get(&board_only_hash).copied() {
+                if let Some(pos) = candidates.iter().position(|mv| *mv == hint_mv) {
+                    if pos > 0 {
+                        let mv = candidates.remove(pos);
+                        candidates.insert(0, mv);
+                    }
+                }
+            }
+        }
+
         // 子ノード（AND）の初期化
         let mut children: Vec<(Move, u64, u32, u32)> = Vec::with_capacity(candidates.len());
         for mv in &candidates {
@@ -271,6 +299,13 @@ impl TsuitateDfpnSolver {
                     }
                     self.or_proof_hands.insert(hash, or_ph);
                     self.record_proven_dominance(meta, or_ph);
+                    // 盤面のみのハッシュで手順ヒントを記録
+                    if !meta.positions.is_empty() {
+                        let board_only_hash = meta_board_only_hash(meta);
+                        if let Some(proven_child) = children.iter().find(|c| c.2 == 0) {
+                            self.move_hints.insert(board_only_hash, proven_child.0);
+                        }
+                    }
                 }
                 return;
             }
@@ -882,6 +917,7 @@ impl TsuitateDfpnSolver {
             self.dominance_table.clear();
             self.or_proof_hands.clear();
             self.and_proof_hands.clear();
+            self.move_hints.clear();
             self.nodes_searched = 0;
             self.depth_limit = Some(mid);
 
@@ -966,6 +1002,7 @@ impl TsuitateDfpnSolver {
         self.dominance_table.clear();
         self.or_proof_hands.clear();
         self.and_proof_hands.clear();
+        self.move_hints.clear();
         self.nodes_searched = 0;
         self.excluded_root_moves = excluded;
 

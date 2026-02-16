@@ -229,6 +229,15 @@ impl Position {
         h.finish()
     }
 
+    /// 盤面と手番のみのハッシュ（持ち駒を全て除外）
+    /// 手順ヒント用: 盤面配置が同じなら証明手順が同じ可能性が高い
+    pub fn hash_board_only(&self) -> u64 {
+        let mut h = DefaultHasher::new();
+        self.board.hash(&mut h);
+        self.side_to_move.hash(&mut h);
+        h.finish()
+    }
+
     /// 無駄合い判定（詰将棋ルール）
     /// 王手に対する合駒（玉以外の応手）が無駄かどうかを判定する。
     /// 合駒を取り返して再び王手＋詰みになる場合、無駄合いとみなす。
