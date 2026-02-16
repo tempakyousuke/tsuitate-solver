@@ -1,3 +1,6 @@
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
 use super::movegen;
 use super::types::*;
 
@@ -216,6 +219,15 @@ impl Position {
         self.is_in_check(color) && self.generate_check_evasions().is_empty()
     }
 
+    /// sente_hand を除外したハッシュ（優越関係の判定用）
+    pub fn hash_without_sente_hand(&self) -> u64 {
+        let mut h = DefaultHasher::new();
+        self.board.hash(&mut h);
+        self.gote_hand.hash(&mut h);
+        self.side_to_move.hash(&mut h);
+        h.finish()
+    }
+
     /// 無駄合い判定（詰将棋ルール）
     /// 王手に対する合駒（玉以外の応手）が無駄かどうかを判定する。
     /// 合駒を取り返して再び王手＋詰みになる場合、無駄合いとみなす。
@@ -281,9 +293,9 @@ impl Position {
             // 取り返し後の全応手も無駄合いなら、元の合駒も無駄合い
             let responses = pos_after.generate_legal_moves();
             let all_futile = !responses.is_empty()
-                && responses
-                    .iter()
-                    .all(|dm| pos_after.is_futile_interposition_impl(dm, remaining_depth - 1));
+                && responses.iter().all(|dm| {
+                    pos_after.is_futile_interposition_impl(dm, remaining_depth - 1)
+                });
 
             if all_futile {
                 return true;

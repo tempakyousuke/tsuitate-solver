@@ -481,12 +481,12 @@ fn dfpn_debug_aigoma() {
     println!("=== aigoma.json デバッグ ===");
     print_position(&pos);
 
-    // ▲4二竜 を指す
+    // ▲5一飛成 を指す（飛車は5三にある）
     let rook_move = Move::normal(
-        Square::new(6, 2), // from: 6二
-        Square::new(4, 2), // to: 4二
-        false,
-        PieceKind::PromotedRook,
+        Square::new(5, 3), // from: 5三
+        Square::new(5, 1), // to: 5一
+        true,              // 成り
+        PieceKind::Rook,
     );
 
     let mut pos_after = pos.clone();
@@ -601,9 +601,10 @@ fn dfpn_debug_aigoma() {
     let mut solver = TsuitateDfpnSolver::new(50_000_000, cancel);
     let result = solver.solve_to_solution(&meta, false);
     println!(
-        "Result: found={}, nodes={}, msg={}",
+        "Result: found={}, nodes={}, dominance_hits={}, msg={}",
         result.found,
         solver.nodes_searched,
+        solver.dominance_hits,
         result.message,
     );
     if let Some(ref tree) = result.tree {

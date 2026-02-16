@@ -280,6 +280,11 @@ impl HandPieces {
     pub fn has(&self, kind: PieceKind) -> bool {
         self.counts[Self::kind_index(kind)] > 0
     }
+
+    /// 持ち駒の内部配列を返す（優越関係の判定用）
+    pub fn counts_array(&self) -> [u8; 7] {
+        self.counts
+    }
 }
 
 impl Default for HandPieces {
