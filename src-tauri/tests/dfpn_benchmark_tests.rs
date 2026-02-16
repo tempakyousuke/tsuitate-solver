@@ -643,6 +643,96 @@ fn dfpn_debug_aigoma2() {
     }
 }
 
+/// aigoma_93.json デバッグテスト（飛車を9三に配置、合駒マスが増加）
+#[test]
+#[ignore]
+fn dfpn_debug_aigoma_93() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("aigoma_93.json");
+    let pos = load_question(&path);
+
+    println!("=== aigoma_93.json デバッグ ===");
+    print_position(&pos);
+
+    let meta = MetaPosition::new(pos.clone());
+    let cancel = cancel_after(120);
+    let mut solver = TsuitateDfpnSolver::new(50_000_000, cancel);
+    let result = solver.solve_to_solution(&meta, false);
+    println!(
+        "Result: found={}, nodes={}, dominance_hits={}, msg={}",
+        result.found,
+        solver.nodes_searched,
+        solver.dominance_hits,
+        result.message,
+    );
+    if let Some(ref tree) = result.tree {
+        println!("  解の手順木:");
+        print_solution_tree(tree, 2);
+    }
+}
+
+/// aigoma_63.json デバッグテスト（飛車を6三に配置、合駒マスが1つ増加）
+#[test]
+#[ignore]
+fn dfpn_debug_aigoma_63() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("aigoma_63.json");
+    let pos = load_question(&path);
+
+    println!("=== aigoma_63.json デバッグ ===");
+    print_position(&pos);
+
+    let meta = MetaPosition::new(pos.clone());
+    let cancel = cancel_after(120);
+    let mut solver = TsuitateDfpnSolver::new(50_000_000, cancel);
+    let result = solver.solve_to_solution(&meta, false);
+    println!(
+        "Result: found={}, nodes={}, dominance_hits={}, msg={}",
+        result.found,
+        solver.nodes_searched,
+        solver.dominance_hits,
+        result.message,
+    );
+    if let Some(ref tree) = result.tree {
+        println!("  解の手順木:");
+        print_solution_tree(tree, 2);
+    }
+}
+
+/// aigoma_73.json デバッグテスト（飛車を7三に配置、合駒マスが2つ増加）
+#[test]
+#[ignore]
+fn dfpn_debug_aigoma_73() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("aigoma_73.json");
+    let pos = load_question(&path);
+
+    println!("=== aigoma_73.json デバッグ ===");
+    print_position(&pos);
+
+    let meta = MetaPosition::new(pos.clone());
+    let cancel = cancel_after(120);
+    let mut solver = TsuitateDfpnSolver::new(50_000_000, cancel);
+    let result = solver.solve_to_solution(&meta, false);
+    println!(
+        "Result: found={}, nodes={}, dominance_hits={}, msg={}",
+        result.found,
+        solver.nodes_searched,
+        solver.dominance_hits,
+        result.message,
+    );
+    if let Some(ref tree) = result.tree {
+        println!("  解の手順木:");
+        print_solution_tree(tree, 2);
+    }
+}
+
 /// 全問一括ベンチマーク（サマリー表付き）
 /// cargo test --release --test dfpn_benchmark_tests dfpn_bench_all -- --ignored --nocapture
 #[test]

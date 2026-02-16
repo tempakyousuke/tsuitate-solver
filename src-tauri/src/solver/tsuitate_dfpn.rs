@@ -1376,17 +1376,21 @@ impl TsuitateDfpnSolver {
                 if actual_branches.is_empty() { return None; }
 
                 // 各実際の分岐に対応する証明分岐を探してリプレイ
+                // 部分リプレイ: 一部の分岐が失敗しても、成功した分岐の結果は
+                // 転置表に残す（再帰呼び出し内で or_table に記録される）。
+                // これにより、フォールバック時の df-pn で成功済みの分岐をスキップできる。
                 let parent_hand = meta.positions.first()
                     .map(|p| p.hand(Color::Sente).counts_array())
                     .unwrap_or([0; 7]);
                 let mut and_ph = [0u8; 7];
+                let mut all_succeeded = true;
 
                 for (actual_obs, actual_meta) in &actual_branches {
                     // 証明分岐から一致するものを探す
                     let matched = proof_branches.iter().find(|(po, _)| po.matches(actual_obs));
                     let sub_proof = match matched {
                         Some((_, sp)) => sp,
-                        None => return None, // 証明木にない観測 → 失敗
+                        None => { all_succeeded = false; continue; }
                     };
 
                     match actual_obs {
@@ -1397,14 +1401,17 @@ impl TsuitateDfpnSolver {
                             let child_hash = meta_position_hash(actual_meta);
                             let mut child_path = path.to_vec();
                             child_path.push(hash);
-                            let child_ph = self.try_replay_proof(
+                            match self.try_replay_proof(
                                 actual_meta, sub_proof, child_hash, &child_path, depth,
-                            )?;
-                            // Illegal: 手が実行されていないので hand は親と同じ
-                            for j in 0..7 {
-                                let eff = (child_ph[j] as i16 + parent_hand[j] as i16
-                                    - parent_hand[j] as i16).max(0) as u8;
-                                and_ph[j] = and_ph[j].max(eff);
+                            ) {
+                                Some(child_ph) => {
+                                    for j in 0..7 {
+                                        let eff = (child_ph[j] as i16 + parent_hand[j] as i16
+                                            - parent_hand[j] as i16).max(0) as u8;
+                                        and_ph[j] = and_ph[j].max(eff);
+                                    }
+                                }
+                                None => { all_succeeded = false; }
                             }
                         }
                         Observation::Captured { .. } | Observation::NoCapture => {
@@ -1412,40 +1419,48 @@ impl TsuitateDfpnSolver {
                             let child_hand = actual_meta.positions.first()
                                 .map(|p| p.hand(Color::Sente).counts_array())
                                 .unwrap_or(parent_hand);
-                            // depth + 2: 攻め方の手 + 玉方の応手
                             let mut child_path = path.to_vec();
                             child_path.push(hash);
-                            let child_ph = self.try_replay_proof(
+                            match self.try_replay_proof(
                                 actual_meta, sub_proof, child_hash, &child_path, depth + 2,
-                            )?;
-                            for j in 0..7 {
-                                let eff = (child_ph[j] as i16 + parent_hand[j] as i16
-                                    - child_hand[j] as i16).max(0) as u8;
-                                and_ph[j] = and_ph[j].max(eff);
+                            ) {
+                                Some(child_ph) => {
+                                    for j in 0..7 {
+                                        let eff = (child_ph[j] as i16 + parent_hand[j] as i16
+                                            - child_hand[j] as i16).max(0) as u8;
+                                        and_ph[j] = and_ph[j].max(eff);
+                                    }
+                                }
+                                None => { all_succeeded = false; }
                             }
                         }
                     }
                 }
 
-                // 全分岐成功 → OR ノードの proof_hand
-                let or_ph = and_ph;
-
-                self.or_table.insert(hash, PnDn { pn: 0, dn: INF });
-                self.or_proof_hands.insert(hash, or_ph);
-                self.record_proven_dominance(meta, or_ph);
-
-                // move_hints にも記録（フォールバック時のため）
+                // move_hints は部分成功でも記録（df-pn フォールバック時に候補手ソートで有効）
                 if !meta.positions.is_empty() {
                     let board_only_hash = meta_board_only_hash(meta);
-                    self.move_hints.insert(board_only_hash, *mv);
+                    self.move_hints.entry(board_only_hash).or_insert(*mv);
                 }
 
-                // and_table にも記録
-                let and_key = Self::and_key(hash, mv);
-                self.and_table.insert(and_key, PnDn { pn: 0, dn: INF });
-                self.and_proof_hands.insert(and_key, and_ph);
+                if all_succeeded {
+                    // 全分岐成功 → OR ノードの proof_hand
+                    let or_ph = and_ph;
 
-                Some(or_ph)
+                    self.or_table.insert(hash, PnDn { pn: 0, dn: INF });
+                    self.or_proof_hands.insert(hash, or_ph);
+                    self.record_proven_dominance(meta, or_ph);
+
+                    // and_table にも記録
+                    let and_key = Self::and_key(hash, mv);
+                    self.and_table.insert(and_key, PnDn { pn: 0, dn: INF });
+                    self.and_proof_hands.insert(and_key, and_ph);
+
+                    Some(or_ph)
+                } else {
+                    // 部分失敗: 成功したサブ分岐は再帰呼び出し内で転置表に記録済み
+                    None
+                }
             }
         }
     }
