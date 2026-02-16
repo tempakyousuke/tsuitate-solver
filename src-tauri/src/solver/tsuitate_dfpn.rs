@@ -713,11 +713,11 @@ impl TsuitateDfpnSolver {
     /// 3 つ以上の同一観測グループがある場合のみマージ（少数グループではコスト対効果が悪い）
     /// 同一観測タイプの分岐をマージ（sente_hand_hash グループ統合）
     /// マージ条件:
-    ///   1. 同一観測タイプが 3 グループ以上存在する
+    ///   1. 同一観測タイプが 2 グループ以上存在する
     ///   2. マージ対象の合計 position 数が MAX_MERGE_POSITIONS 以下
     /// 条件2により、深い探索でのcompound merging（マージ→展開→再マージ）による
     /// MetaPosition サイズの指数的膨張を防ぐ
-    const MAX_MERGE_POSITIONS: usize = 7;
+    const MAX_MERGE_POSITIONS: usize = 100;
 
     fn merge_observation_branches(
         branches: Vec<(Observation, MetaPosition)>,
@@ -736,7 +736,7 @@ impl TsuitateDfpnSolver {
         for (obs, meta) in branches {
             let count = obs_counts.get(&obs).copied().unwrap_or(0);
             let total_pos = obs_total_positions.get(&obs).copied().unwrap_or(0);
-            if count >= 3 && total_pos <= Self::MAX_MERGE_POSITIONS {
+            if count >= 2 && total_pos <= Self::MAX_MERGE_POSITIONS {
                 // マージ対象: 同一観測の既存分岐に統合（重複排除つき）
                 if let Some(existing) = result.iter_mut().find(|(o, _)| *o == obs) {
                     let mut seen: HashSet<u64> = existing.1.positions.iter()
@@ -882,35 +882,34 @@ impl TsuitateDfpnSolver {
             }
         }
 
-        // 候補手のソート
+        // 候補手のソート用の情報を事前計算
         let king_sq = meta.positions[0].find_king(Color::Gote);
-        let sort_key = |mv: &Move| -> (u8, u8, u8, u8, u8, u8) {
-            let is_drop = if mv.drop_piece.is_some() { 0u8 } else { 1u8 };
-            let dist = if let Some(ksq) = king_sq {
-                let df = (mv.to.file as i8 - ksq.file as i8).unsigned_abs();
-                let dr = (mv.to.rank as i8 - ksq.rank as i8).unsigned_abs();
-                df.max(dr)
-            } else {
-                0
-            };
+        let mut move_info = Vec::with_capacity(check_moves.len());
+
+        for mv in &check_moves {
             let piece_kind = if let Some(drop_kind) = mv.drop_piece {
                 drop_kind
             } else if let Some(from) = mv.from {
-                meta.positions
-                    .iter()
-                    .find_map(|pos| {
-                        pos.piece_at(from).map(|p| {
-                            if mv.promotion {
-                                p.kind.promoted().unwrap_or(p.kind)
-                            } else {
-                                p.kind
-                            }
-                        })
-                    })
-                    .unwrap_or(PieceKind::Pawn)
+                // meta.positions の全探索を避け、最初の局面から取得（攻め方の駒配置は全局面で共通）
+                meta.positions[0].piece_at(from).map(|p| {
+                    if mv.promotion {
+                        p.kind.promoted().unwrap_or(p.kind)
+                    } else {
+                        p.kind
+                    }
+                }).unwrap_or(PieceKind::Pawn)
             } else {
                 PieceKind::Pawn
             };
+
+            let is_drop = if mv.drop_piece.is_some() { 0u8 } else { 1u8 };
+            let dist = if let Some(ksq) = king_sq {
+                (mv.to.file as i8 - ksq.file as i8).unsigned_abs()
+                    .max((mv.to.rank as i8 - ksq.rank as i8).unsigned_abs())
+            } else {
+                0
+            };
+
             let is_slider = matches!(
                 piece_kind,
                 PieceKind::Rook
@@ -934,58 +933,33 @@ impl TsuitateDfpnSolver {
                 PieceKind::Pawn => 6,
                 _ => 7,
             };
-            (
+
+            move_info.push((
                 is_drop,
                 dist,
                 interposition,
                 piece_priority,
                 mv.to.file,
                 mv.to.rank,
-            )
-        };
-        check_moves.sort_by_key(|mv| sort_key(mv));
+                is_slider,
+            ));
+        }
 
-        // 合駒可能マスが多い長距離王手を除外
-        let king_sq_for_filter = meta.positions[0].find_king(Color::Gote);
-        check_moves.retain(|mv| {
-            let piece_kind = if let Some(drop_kind) = mv.drop_piece {
-                drop_kind
-            } else if let Some(from) = mv.from {
-                meta.positions
-                    .iter()
-                    .find_map(|pos| {
-                        pos.piece_at(from).map(|p| {
-                            if mv.promotion {
-                                p.kind.promoted().unwrap_or(p.kind)
-                            } else {
-                                p.kind
-                            }
-                        })
-                    })
-                    .unwrap_or(PieceKind::Pawn)
-            } else {
-                PieceKind::Pawn
-            };
-            let is_slider = matches!(
-                piece_kind,
-                PieceKind::Rook
-                    | PieceKind::PromotedRook
-                    | PieceKind::Bishop
-                    | PieceKind::PromotedBishop
-                    | PieceKind::Lance
-            );
-            if !is_slider {
+        // move_info を使ってソートとフィルタリングを一気に行う
+        let mut combined: Vec<(Move, _)> = check_moves.into_iter().zip(move_info.into_iter()).collect();
+
+        // フィルタリング: 合駒可能マスが多い長距離王手を除外
+        combined.retain(|(_, info)| {
+            if !info.6 { // is_slider
                 return true;
             }
-            if let Some(ksq) = king_sq_for_filter {
-                let dist = ((mv.to.file as i8 - ksq.file as i8).unsigned_abs())
-                    .max((mv.to.rank as i8 - ksq.rank as i8).unsigned_abs());
-                let interp = if dist > 1 { dist - 1 } else { 0 };
-                interp <= 4
-            } else {
-                true
-            }
+            info.2 <= 4 // interposition
         });
+
+        // ソート
+        combined.sort_by_key(|(_, info)| (info.0, info.1, info.2, info.3, info.4, info.5));
+
+        check_moves = combined.into_iter().map(|(mv, _)| mv).collect();
 
         // メタポジションが1つならプローブ不要
         if n <= 1 {
