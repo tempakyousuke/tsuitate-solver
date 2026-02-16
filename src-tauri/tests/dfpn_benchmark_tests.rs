@@ -613,6 +613,36 @@ fn dfpn_debug_aigoma() {
     }
 }
 
+/// aigoma2.json デバッグテスト（取った駒を使わないと詰まない問題）
+#[test]
+#[ignore]
+fn dfpn_debug_aigoma2() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("aigoma2.json");
+    let pos = load_question(&path);
+
+    println!("=== aigoma2.json デバッグ ===");
+    print_position(&pos);
+
+    let meta = MetaPosition::new(pos.clone());
+    let cancel = cancel_after(120);
+    let mut solver = TsuitateDfpnSolver::new(50_000_000, cancel);
+    let result = solver.solve_to_solution(&meta, false);
+    println!(
+        "Result: found={}, nodes={}, dominance_hits={}, msg={}",
+        result.found,
+        solver.nodes_searched,
+        solver.dominance_hits,
+        result.message,
+    );
+    if let Some(ref tree) = result.tree {
+        println!("  解の手順木:");
+        print_solution_tree(tree, 2);
+    }
+}
+
 /// 全問一括ベンチマーク（サマリー表付き）
 /// cargo test --release --test dfpn_benchmark_tests dfpn_bench_all -- --ignored --nocapture
 #[test]

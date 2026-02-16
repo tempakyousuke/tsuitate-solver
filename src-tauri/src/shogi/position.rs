@@ -220,6 +220,7 @@ impl Position {
     }
 
     /// sente_hand を除外したハッシュ（優越関係の判定用）
+    /// gote_hand は含む（衝立詰将棋では観測構造が gote_hand に依存するため）
     pub fn hash_without_sente_hand(&self) -> u64 {
         let mut h = DefaultHasher::new();
         self.board.hash(&mut h);

@@ -43,13 +43,18 @@ fn meta_position_hash(meta: &MetaPosition) -> u64 {
 }
 
 /// MetaPosition の盤面セットハッシュ（sente_hand を除外）
-/// 優越関係の判定用: 同じ盤面セットで sente_hand が異なるメタポジションを同一グループにまとめる
+/// 優越関係の判定用: 同じ盤面配置で sente_hand のみ異なるメタポジションを同一グループにまとめる
+/// ソートしてから結合することで XOR より衝突に強いハッシュを生成
 fn meta_board_set_hash(meta: &MetaPosition) -> u64 {
-    let mut xor_hash: u64 = 0;
-    for pos in &meta.positions {
-        xor_hash ^= pos.hash_without_sente_hand();
-    }
-    xor_hash
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hashes: Vec<u64> = meta.positions.iter()
+        .map(|pos| pos.hash_without_sente_hand())
+        .collect();
+    hashes.sort();
+    let mut h = DefaultHasher::new();
+    hashes.hash(&mut h);
+    h.finish()
 }
 
 /// 衝立詰将棋 df-pn ソルバー
@@ -80,6 +85,7 @@ pub struct TsuitateDfpnSolver {
     /// 深さ上限（None = 制限なし）
     depth_limit: Option<u32>,
     /// 優越関係テーブル: board_set_hash → Vec<[u8; 7]> (Pareto最小の proof_hand)
+    /// proof_hand <= sente_hand (要素ごと) で判定: 証明に必要な持ち駒が揃っていれば証明済み
     dominance_table: HashMap<u64, Vec<[u8; 7]>>,
     /// OR ノードの証明駒: meta_hash → proof_hand (証明に必要な最小の攻め方持ち駒)
     or_proof_hands: HashMap<u64, [u8; 7]>,
@@ -162,8 +168,9 @@ impl TsuitateDfpnSolver {
             let proof_hand = [0u8; 7];
             self.or_proof_hands.insert(hash, proof_hand);
             if !meta.positions.is_empty() {
+                let sente_hand = meta.positions[0].hand(Color::Sente).counts_array();
                 let board_hash = meta_board_set_hash(meta);
-                self.add_dominance_entry(board_hash, proof_hand);
+                self.add_dominance_entry(board_hash, sente_hand);
             }
             return;
         }
@@ -180,14 +187,15 @@ impl TsuitateDfpnSolver {
             }
         }
 
-        // 優越関係チェック
+        // 優越関係チェック: proof_hand <= sente_hand (要素ごと)
+        // 同じ盤面セット + 同じ gote_hand で、sente_hand が proof_hand 以上なら証明済み
         if !meta.positions.is_empty() {
             let board_hash = meta_board_set_hash(meta);
             let sente_hand = meta.positions[0].hand(Color::Sente).counts_array();
             if let Some(entries) = self.dominance_table.get(&board_hash) {
                 if let Some(matched_ph) = entries
                     .iter()
-                    .find(|proven| proven.iter().zip(sente_hand.iter()).all(|(p, s)| p <= s))
+                    .find(|ph| ph.iter().zip(sente_hand.iter()).all(|(p, s)| p <= s))
                 {
                     self.or_table.insert(hash, PnDn { pn: 0, dn: INF });
                     self.or_proof_hands.insert(hash, *matched_ph);
@@ -241,10 +249,6 @@ impl TsuitateDfpnSolver {
             let pn_n = children.iter().map(|c| c.2).min().unwrap_or(INF);
             let dn_n = children.iter().map(|c| c.3).fold(0u32, |a, d| a.saturating_add(d));
 
-            if pn_n >= pn_limit || dn_n >= dn_limit {
-                self.or_table.insert(hash, PnDn { pn: pn_n, dn: dn_n });
-                return;
-            }
             if pn_n == 0 || dn_n == 0 {
                 self.or_table.insert(hash, PnDn { pn: pn_n, dn: dn_n });
                 if pn_n == 0 {
@@ -268,6 +272,11 @@ impl TsuitateDfpnSolver {
                     self.or_proof_hands.insert(hash, or_ph);
                     self.record_proven_dominance(meta, or_ph);
                 }
+                return;
+            }
+
+            if pn_n >= pn_limit || dn_n >= dn_limit {
+                self.or_table.insert(hash, PnDn { pn: pn_n, dn: dn_n });
                 return;
             }
 
@@ -391,6 +400,7 @@ impl TsuitateDfpnSolver {
                 obs_depth_inc.push(0); // 終端: 再帰しない
             } else {
                 let branches = legal_meta.expand_defense_moves(mv);
+
                 for (obs, branch_meta) in branches {
                     match obs {
                         Observation::Checkmate => {
@@ -446,10 +456,6 @@ impl TsuitateDfpnSolver {
             let pn_n = obs_pn.iter().fold(0u32, |a, &p| a.saturating_add(p));
             let dn_n = obs_dn.iter().copied().min().unwrap_or(INF);
 
-            if pn_n >= pn_limit || dn_n >= dn_limit {
-                self.and_table.insert(and_key, PnDn { pn: pn_n, dn: dn_n });
-                return;
-            }
             if pn_n == 0 || dn_n == 0 {
                 self.and_table.insert(and_key, PnDn { pn: pn_n, dn: dn_n });
                 if pn_n == 0 {
@@ -472,6 +478,11 @@ impl TsuitateDfpnSolver {
                     }
                     self.and_proof_hands.insert(and_key, and_ph);
                 }
+                return;
+            }
+
+            if pn_n >= pn_limit || dn_n >= dn_limit {
+                self.and_table.insert(and_key, PnDn { pn: pn_n, dn: dn_n });
                 return;
             }
 
@@ -537,7 +548,8 @@ impl TsuitateDfpnSolver {
         }
     }
 
-    /// 優越関係テーブルに証明駒で記録する
+    /// 優越関係テーブルに proof_hand（証明に必要な最小の攻め方持ち駒）を記録する
+    /// gote_hand を含むハッシュと組み合わせて使用: 同じ盤面+同じgote_hand で proof_hand <= S_new
     fn record_proven_dominance(&mut self, meta: &MetaPosition, proof_hand: [u8; 7]) {
         if meta.positions.is_empty() {
             return;
