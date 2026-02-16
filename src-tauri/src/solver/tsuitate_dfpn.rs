@@ -713,11 +713,11 @@ impl TsuitateDfpnSolver {
     /// 3 つ以上の同一観測グループがある場合のみマージ（少数グループではコスト対効果が悪い）
     /// 同一観測タイプの分岐をマージ（sente_hand_hash グループ統合）
     /// マージ条件:
-    ///   1. 同一観測タイプが 2 グループ以上存在する
+    ///   1. 同一観測タイプが 2 グループ以上存在する（または単一グループでも全マージを促進）
     ///   2. マージ対象の合計 position 数が MAX_MERGE_POSITIONS 以下
     /// 条件2により、深い探索でのcompound merging（マージ→展開→再マージ）による
     /// MetaPosition サイズの指数的膨張を防ぐ
-    const MAX_MERGE_POSITIONS: usize = 100;
+    const MAX_MERGE_POSITIONS: usize = 500;
 
     fn merge_observation_branches(
         branches: Vec<(Observation, MetaPosition)>,
@@ -734,9 +734,8 @@ impl TsuitateDfpnSolver {
 
         let mut result: Vec<(Observation, MetaPosition)> = Vec::new();
         for (obs, meta) in branches {
-            let count = obs_counts.get(&obs).copied().unwrap_or(0);
             let total_pos = obs_total_positions.get(&obs).copied().unwrap_or(0);
-            if count >= 2 && total_pos <= Self::MAX_MERGE_POSITIONS {
+            if total_pos <= Self::MAX_MERGE_POSITIONS {
                 // マージ対象: 同一観測の既存分岐に統合（重複排除つき）
                 if let Some(existing) = result.iter_mut().find(|(o, _)| *o == obs) {
                     let mut seen: HashSet<u64> = existing.1.positions.iter()
@@ -949,11 +948,14 @@ impl TsuitateDfpnSolver {
         let mut combined: Vec<(Move, _)> = check_moves.into_iter().zip(move_info.into_iter()).collect();
 
         // フィルタリング: 合駒可能マスが多い長距離王手を除外
+        // 以前は info.2 <= 4 としていたが、aigoma_93.json のように遠くからの王手が
+        // 正解の場合があるため、制限を緩和（または完全に除去）する。
+        // 盤面サイズ 9x9 なので 8 あれば十分。
         combined.retain(|(_, info)| {
             if !info.6 { // is_slider
                 return true;
             }
-            info.2 <= 4 // interposition
+            info.2 <= 8 // interposition
         });
 
         // ソート
