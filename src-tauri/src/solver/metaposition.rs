@@ -5,7 +5,7 @@ use std::hash::{Hash, Hasher};
 use crate::shogi::position::Position;
 use crate::shogi::types::*;
 
-fn position_hash(pos: &Position) -> u64 {
+pub fn position_hash(pos: &Position) -> u64 {
     let mut h = DefaultHasher::new();
     pos.hash(&mut h);
     h.finish()

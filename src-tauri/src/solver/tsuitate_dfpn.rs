@@ -498,9 +498,8 @@ impl TsuitateDfpnSolver {
                 return;
             }
 
-            let parent_hand = meta.positions.first()
-                .map(|p| p.hand(Color::Sente).counts_array())
-                .unwrap_or([0; 7]);
+            // 持ち駒取得: 全 position 同一なら正確値、混合なら成分最大値（保守的推定）
+            let parent_hand = Self::parent_sente_hand(meta, [0; 7]);
 
             let mut obs_terminal: Vec<bool> = Vec::new();
             let mut obs_hash: Vec<u64> = Vec::new();
@@ -535,14 +534,18 @@ impl TsuitateDfpnSolver {
                     obs_depth_inc.push(0);
                 } else {
                     self.expand_defense_calls += 1;
-                    let branches = legal_meta.expand_defense_moves(mv);
+                    let raw_branches = legal_meta.expand_defense_moves(mv);
+
+                    // 同一観測タイプの分岐をマージ
+                    // sente_hand_hash で分かれた分岐を統合し、AND の分岐数を削減
+                    // 異なる合駒で生じた持ち駒の違いは legal/illegal split で処理される
+                    let branches = Self::merge_observation_branches(raw_branches);
 
                     for (obs, branch_meta) in branches {
                         match obs {
                             Observation::Checkmate => {
-                                let branch_hand = branch_meta.positions.first()
-                                    .map(|p| p.hand(Color::Sente).counts_array())
-                                    .unwrap_or(parent_hand);
+                                // 持ち駒の成分最小値を使用（混合対応）
+                                let branch_hand = Self::child_sente_hand(&branch_meta, parent_hand);
                                 obs_terminal.push(true);
                                 obs_hash.push(0);
                                 obs_hands.push(branch_hand);
@@ -555,9 +558,8 @@ impl TsuitateDfpnSolver {
                                         .insert(and_key, PnDn { pn: INF, dn: 0 });
                                     return;
                                 }
-                                let branch_hand = branch_meta.positions.first()
-                                    .map(|p| p.hand(Color::Sente).counts_array())
-                                    .unwrap_or(parent_hand);
+                                // 持ち駒の成分最小値を使用（混合対応、保守的推定）
+                                let branch_hand = Self::child_sente_hand(&branch_meta, parent_hand);
                                 let bh = meta_position_hash(&branch_meta);
                                 obs_terminal.push(false);
                                 obs_hash.push(bh);
@@ -704,6 +706,107 @@ impl TsuitateDfpnSolver {
         } else {
             (1, 1)
         }
+    }
+
+    /// 同一観測タイプの分岐をマージ（sente_hand_hash グループ統合）
+    /// 異なる合駒で生じた持ち駒の違いは、後続の legal/illegal split で正しく処理される
+    /// 3 つ以上の同一観測グループがある場合のみマージ（少数グループではコスト対効果が悪い）
+    /// 同一観測タイプの分岐をマージ（sente_hand_hash グループ統合）
+    /// マージ条件:
+    ///   1. 同一観測タイプが 3 グループ以上存在する
+    ///   2. マージ対象の合計 position 数が MAX_MERGE_POSITIONS 以下
+    /// 条件2により、深い探索でのcompound merging（マージ→展開→再マージ）による
+    /// MetaPosition サイズの指数的膨張を防ぐ
+    const MAX_MERGE_POSITIONS: usize = 7;
+
+    fn merge_observation_branches(
+        branches: Vec<(Observation, MetaPosition)>,
+    ) -> Vec<(Observation, MetaPosition)> {
+        use super::metaposition::position_hash;
+
+        // 各観測タイプの出現回数と合計 position 数をカウント
+        let mut obs_counts: HashMap<Observation, usize> = HashMap::new();
+        let mut obs_total_positions: HashMap<Observation, usize> = HashMap::new();
+        for (obs, meta) in &branches {
+            *obs_counts.entry(obs.clone()).or_default() += 1;
+            *obs_total_positions.entry(obs.clone()).or_default() += meta.positions.len();
+        }
+
+        let mut result: Vec<(Observation, MetaPosition)> = Vec::new();
+        for (obs, meta) in branches {
+            let count = obs_counts.get(&obs).copied().unwrap_or(0);
+            let total_pos = obs_total_positions.get(&obs).copied().unwrap_or(0);
+            if count >= 3 && total_pos <= Self::MAX_MERGE_POSITIONS {
+                // マージ対象: 同一観測の既存分岐に統合（重複排除つき）
+                if let Some(existing) = result.iter_mut().find(|(o, _)| *o == obs) {
+                    let mut seen: HashSet<u64> = existing.1.positions.iter()
+                        .map(|p| position_hash(p))
+                        .collect();
+                    for pos in meta.positions {
+                        if seen.insert(position_hash(&pos)) {
+                            existing.1.positions.push(pos);
+                        }
+                    }
+                } else {
+                    result.push((obs, meta));
+                }
+            } else {
+                // マージ対象外: そのまま保持
+                result.push((obs, meta));
+            }
+        }
+        result
+    }
+
+    /// MetaPosition の sente_hand を取得（proof_hand 計算用）
+    /// 全 position が同一の sente_hand を持つ場合はその値を返す（正確）
+    /// 混合 sente_hand の場合（マージ後）は成分最小値を返す（保守的: proof_hand を大きくする方向）
+    fn child_sente_hand(meta: &MetaPosition, default: [u8; 7]) -> [u8; 7] {
+        if meta.positions.is_empty() {
+            return default;
+        }
+        let first = meta.positions[0].hand(Color::Sente).counts_array();
+        // 全 position が同一かチェック（ほとんどの場合 true → 高速パス）
+        let all_same = meta.positions[1..].iter().all(|pos| {
+            pos.hand(Color::Sente).counts_array() == first
+        });
+        if all_same {
+            return first;
+        }
+        // 混合の場合: 成分最小値（proof_hand を大きくする保守的推定）
+        let mut result = first;
+        for pos in &meta.positions[1..] {
+            let h = pos.hand(Color::Sente).counts_array();
+            for j in 0..7 {
+                result[j] = result[j].min(h[j]);
+            }
+        }
+        result
+    }
+
+    /// MetaPosition の sente_hand を取得（parent_hand 計算用）
+    /// 全 position が同一の sente_hand を持つ場合はその値を返す（正確）
+    /// 混合 sente_hand の場合（マージ後）は成分最大値を返す（保守的: proof_hand を大きくする方向）
+    fn parent_sente_hand(meta: &MetaPosition, default: [u8; 7]) -> [u8; 7] {
+        if meta.positions.is_empty() {
+            return default;
+        }
+        let first = meta.positions[0].hand(Color::Sente).counts_array();
+        let all_same = meta.positions[1..].iter().all(|pos| {
+            pos.hand(Color::Sente).counts_array() == first
+        });
+        if all_same {
+            return first;
+        }
+        // 混合の場合: 成分最大値（proof_hand を大きくする保守的推定）
+        let mut result = first;
+        for pos in &meta.positions {
+            let h = pos.hand(Color::Sente).counts_array();
+            for j in 0..7 {
+                result[j] = result[j].max(h[j]);
+            }
+        }
+        result
     }
 
     /// 優越関係テーブルに proof_hand（証明に必要な最小の攻め方持ち駒）を記録する
@@ -1269,8 +1372,9 @@ impl TsuitateDfpnSolver {
             return Some(branches);
         }
 
-        // 玉方の応手を展開
-        let obs_branches = legal_meta.expand_defense_moves(mv);
+        // 玉方の応手を展開（mid_and と同じマージを適用）
+        let raw_obs_branches = legal_meta.expand_defense_moves(mv);
+        let obs_branches = Self::merge_observation_branches(raw_obs_branches);
         for (obs, branch_meta) in obs_branches {
             match obs {
                 Observation::Checkmate => {
@@ -1363,7 +1467,8 @@ impl TsuitateDfpnSolver {
             return Some(branches);
         }
 
-        let obs_branches = legal_meta.expand_defense_moves(mv);
+        let raw_obs_branches = legal_meta.expand_defense_moves(mv);
+        let obs_branches = Self::merge_observation_branches(raw_obs_branches);
         for (obs, branch_meta) in obs_branches {
             match obs {
                 Observation::Checkmate => {
@@ -1443,7 +1548,8 @@ impl TsuitateDfpnSolver {
                     if legal_meta.all_effectively_checkmate() {
                         actual_branches.push((Observation::Checkmate, MetaPosition { positions: Vec::new() }));
                     } else {
-                        let obs = legal_meta.expand_defense_moves(*mv);
+                        let raw_obs = legal_meta.expand_defense_moves(*mv);
+                        let obs = Self::merge_observation_branches(raw_obs);
                         actual_branches.extend(obs);
                     }
                 }
