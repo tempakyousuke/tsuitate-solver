@@ -1,4 +1,4 @@
-# tsuitate-resolver
+# tsuitate-solver
 
 衝立詰将棋（ついたてつめしょうぎ）ソルバー。Tauri v2 + Svelte 5 + Rust。
 

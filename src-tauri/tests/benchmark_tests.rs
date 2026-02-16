@@ -4,10 +4,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use serde::Deserialize;
-use tsuitate_resolver_lib::shogi::position::Position;
-use tsuitate_resolver_lib::shogi::types::*;
-use tsuitate_resolver_lib::solver::metaposition::MetaPosition;
-use tsuitate_resolver_lib::solver::solver::TsuitateSolver;
+use tsuitate_solver_lib::shogi::position::Position;
+use tsuitate_solver_lib::shogi::types::*;
+use tsuitate_solver_lib::solver::metaposition::MetaPosition;
+use tsuitate_solver_lib::solver::solver::TsuitateSolver;
 
 /// sample-questions の JSON 形式
 #[derive(Debug, Deserialize)]
@@ -219,8 +219,8 @@ fn print_position(pos: &Position) {
 }
 
 /// 解の手順木を再帰的に表示
-fn print_solution_tree(node: &tsuitate_resolver_lib::solver::solution::SolutionNode, indent: usize) {
-    use tsuitate_resolver_lib::solver::solution::{Observation, SolutionNode};
+fn print_solution_tree(node: &tsuitate_solver_lib::solver::solution::SolutionNode, indent: usize) {
+    use tsuitate_solver_lib::solver::solution::{Observation, SolutionNode};
     let pad = " ".repeat(indent);
     match node {
         SolutionNode::Checkmate { depth } => {

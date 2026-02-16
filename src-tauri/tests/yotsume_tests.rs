@@ -4,11 +4,11 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use serde::Deserialize;
-use tsuitate_resolver_lib::shogi::position::Position;
-use tsuitate_resolver_lib::shogi::types::*;
-use tsuitate_resolver_lib::solver::metaposition::MetaPosition;
-use tsuitate_resolver_lib::solver::solution::{Observation, SolutionNode};
-use tsuitate_resolver_lib::solver::solver::TsuitateSolver;
+use tsuitate_solver_lib::shogi::position::Position;
+use tsuitate_solver_lib::shogi::types::*;
+use tsuitate_solver_lib::solver::metaposition::MetaPosition;
+use tsuitate_solver_lib::solver::solution::{Observation, SolutionNode};
+use tsuitate_solver_lib::solver::solver::TsuitateSolver;
 
 /// sample-questions の JSON 形式
 #[derive(Debug, Deserialize)]

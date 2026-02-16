@@ -1,5 +1,5 @@
-use tsuitate_resolver_lib::shogi::position::Position;
-use tsuitate_resolver_lib::shogi::types::*;
+use tsuitate_solver_lib::shogi::position::Position;
+use tsuitate_solver_lib::shogi::types::*;
 
 /// ヘルパー: 簡単に局面を作成
 fn setup_position(pieces: &[(Square, Piece)]) -> Position {

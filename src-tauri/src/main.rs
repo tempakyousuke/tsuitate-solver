@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    tsuitate_resolver_lib::run()
+    tsuitate_solver_lib::run()
 }

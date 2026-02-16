@@ -6,7 +6,7 @@ authors = ["you"]
 edition = "2021"
 
 [lib]
-name = "tsuitate_resolver_lib"
+name = "tsuitate_solver_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [build-dependencies]

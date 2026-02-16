@@ -1,10 +1,10 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use tsuitate_resolver_lib::shogi::position::Position;
-use tsuitate_resolver_lib::shogi::types::*;
-use tsuitate_resolver_lib::solver::metaposition::MetaPosition;
-use tsuitate_resolver_lib::solver::solver::TsuitateSolver;
+use tsuitate_solver_lib::shogi::position::Position;
+use tsuitate_solver_lib::shogi::types::*;
+use tsuitate_solver_lib::solver::metaposition::MetaPosition;
+use tsuitate_solver_lib::solver::solver::TsuitateSolver;
 
 fn no_cancel() -> Arc<AtomicBool> {
     Arc::new(AtomicBool::new(false))
