@@ -39,7 +39,7 @@ enum ProofNode {
     Checkmate,
     Attack {
         mv: Move,
-        branches: Vec<(ProofObs, ProofNode)>,
+        branches: Vec<(ProofObs, Arc<ProofNode>)>,
     },
 }
 
@@ -150,7 +150,7 @@ pub struct TsuitateDfpnSolver {
     /// 盤面のみのハッシュ → 証明された手（手順ヒント用）
     move_hints: HashMap<u64, Move>,
     /// 盤面のみのハッシュ → 証明木リスト（リプレイキャッシュ、複数手順対応）
-    proof_cache: HashMap<u64, Vec<ProofNode>>,
+    proof_cache: HashMap<u64, Vec<Arc<ProofNode>>>,
     /// AND ノードの展開結果キャッシュ: and_key → 構造データ
     /// mid_and が同一 AND ノードを再訪問する際の expand_defense_moves 再計算を回避
     and_expansion_cache: HashMap<u64, CachedAndExpansion>,
@@ -863,19 +863,19 @@ impl TsuitateDfpnSolver {
 
         let mut seen = HashSet::new();
         let mut check_moves = Vec::new();
+        let mut check_move_counts: HashMap<Move, usize> = HashMap::new();
 
         // 全盤面から王手の手を収集（union）
         for (i, pos) in meta.positions.iter().enumerate() {
             let opponent = pos.side_to_move.opponent();
             let mut test_pos = pos.clone();
             for mv in &legal_move_sets[i] {
-                if seen.contains(mv) {
-                    continue;
-                }
                 let undo = test_pos.make_move(*mv);
                 if test_pos.is_in_check(opponent) {
-                    seen.insert(*mv);
-                    check_moves.push(*mv);
+                    *check_move_counts.entry(*mv).or_insert(0) += 1;
+                    if seen.insert(*mv) {
+                        check_moves.push(*mv);
+                    }
                 }
                 test_pos.unmake_move(&undo);
             }
@@ -933,7 +933,12 @@ impl TsuitateDfpnSolver {
                 _ => 7,
             };
 
+            let check_count = check_move_counts.get(mv).copied().unwrap_or(0);
+            // 多くの局面で王手になる手を最優先 (Max-Check Heuristic)
+            let check_score = (n - check_count) as u32;
+
             move_info.push((
+                check_score,
                 is_drop,
                 dist,
                 interposition,
@@ -948,18 +953,15 @@ impl TsuitateDfpnSolver {
         let mut combined: Vec<(Move, _)> = check_moves.into_iter().zip(move_info.into_iter()).collect();
 
         // フィルタリング: 合駒可能マスが多い長距離王手を除外
-        // 以前は info.2 <= 4 としていたが、aigoma_93.json のように遠くからの王手が
-        // 正解の場合があるため、制限を緩和（または完全に除去）する。
-        // 盤面サイズ 9x9 なので 8 あれば十分。
         combined.retain(|(_, info)| {
-            if !info.6 { // is_slider
+            if !info.7 { // is_slider (index shifted by 1)
                 return true;
             }
-            info.2 <= 8 // interposition
+            info.3 <= 8 // interposition (index shifted by 1)
         });
 
-        // ソート
-        combined.sort_by_key(|(_, info)| (info.0, info.1, info.2, info.3, info.4, info.5));
+        // ソート: check_score (昇順=王手局面数降順) を最優先
+        combined.sort_by_key(|(_, info)| (info.0, info.1, info.2, info.3, info.4, info.5, info.6));
 
         check_moves = combined.into_iter().map(|(mv, _)| mv).collect();
 
@@ -1381,9 +1383,9 @@ impl TsuitateDfpnSolver {
     // ========================================================================
 
     /// コンパクト証明木を抽出（リプレイキャッシュ用）
-    fn extract_compact_or(&self, meta: &MetaPosition) -> Option<ProofNode> {
+    fn extract_compact_or(&self, meta: &MetaPosition) -> Option<Arc<ProofNode>> {
         if meta.is_empty() { return None; }
-        if meta.all_effectively_checkmate() { return Some(ProofNode::Checkmate); }
+        if meta.all_effectively_checkmate() { return Some(Arc::new(ProofNode::Checkmate)); }
 
         let hash = meta_position_hash(meta);
         let entry = self.or_table.get(&hash)?;
@@ -1407,7 +1409,7 @@ impl TsuitateDfpnSolver {
             if let Some(e) = self.and_table.get(&ak) {
                 if e.pn == 0 {
                     if let Some(branches) = self.extract_compact_and(meta, *mv, &legal_move_sets) {
-                        return Some(ProofNode::Attack { mv: *mv, branches });
+                        return Some(Arc::new(ProofNode::Attack { mv: *mv, branches }));
                     }
                 }
             }
@@ -1416,7 +1418,7 @@ impl TsuitateDfpnSolver {
         // dominance で証明されたノード: 各候補手で直接試す
         for mv in &all_moves {
             if let Some(branches) = self.extract_compact_and(meta, *mv, &legal_move_sets) {
-                return Some(ProofNode::Attack { mv: *mv, branches });
+                return Some(Arc::new(ProofNode::Attack { mv: *mv, branches }));
             }
         }
         None
@@ -1427,7 +1429,7 @@ impl TsuitateDfpnSolver {
         meta: &MetaPosition,
         mv: Move,
         legal_move_sets: &[HashSet<Move>],
-    ) -> Option<Vec<(ProofObs, ProofNode)>> {
+    ) -> Option<Vec<(ProofObs, Arc<ProofNode>)>> {
         let (legal_meta, illegal_meta) = meta.apply_attack_move_split_with_sets(mv, legal_move_sets);
         let mut branches = Vec::new();
 
@@ -1439,7 +1441,7 @@ impl TsuitateDfpnSolver {
             return if branches.is_empty() { None } else { Some(branches) };
         }
         if legal_meta.all_effectively_checkmate() {
-            branches.push((ProofObs::Checkmate, ProofNode::Checkmate));
+            branches.push((ProofObs::Checkmate, Arc::new(ProofNode::Checkmate)));
             return Some(branches);
         }
 
@@ -1448,7 +1450,7 @@ impl TsuitateDfpnSolver {
         for (obs, branch_meta) in obs_branches {
             match obs {
                 Observation::Checkmate => {
-                    branches.push((ProofObs::Checkmate, ProofNode::Checkmate));
+                    branches.push((ProofObs::Checkmate, Arc::new(ProofNode::Checkmate)));
                 }
                 Observation::Captured { file, rank } => {
                     let node = self.extract_compact_or(&branch_meta)?;
