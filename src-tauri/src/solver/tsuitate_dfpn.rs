@@ -32,6 +32,38 @@ struct PnDn {
     dn: u32,
 }
 
+/// コンパクトな証明木ノード（リプレイキャッシュ用）
+/// SolutionNode と異なり String を持たず、Move を直接格納
+#[derive(Debug, Clone)]
+enum ProofNode {
+    Checkmate,
+    Attack {
+        mv: Move,
+        branches: Vec<(ProofObs, ProofNode)>,
+    },
+}
+
+/// 証明木の観測タイプ（Observation の軽量版）
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ProofObs {
+    Checkmate,
+    Captured(u8, u8),
+    NoCapture,
+    Illegal,
+}
+
+impl ProofObs {
+    fn matches(&self, obs: &Observation) -> bool {
+        match (self, obs) {
+            (ProofObs::Checkmate, Observation::Checkmate) => true,
+            (ProofObs::Captured(f, r), Observation::Captured { file, rank }) => f == file && r == rank,
+            (ProofObs::NoCapture, Observation::NoCapture) => true,
+            (ProofObs::Illegal, Observation::Illegal) => true,
+            _ => false,
+        }
+    }
+}
+
 fn meta_position_hash(meta: &MetaPosition) -> u64 {
     let mut xor_hash: u64 = 0;
     for pos in &meta.positions {
@@ -105,6 +137,8 @@ pub struct TsuitateDfpnSolver {
     and_proof_hands: HashMap<u64, [u8; 7]>,
     /// 盤面のみのハッシュ → 証明された手（手順ヒント用）
     move_hints: HashMap<u64, Move>,
+    /// 盤面のみのハッシュ → 証明木（リプレイキャッシュ）
+    proof_cache: HashMap<u64, ProofNode>,
 }
 
 impl TsuitateDfpnSolver {
@@ -123,6 +157,7 @@ impl TsuitateDfpnSolver {
             or_proof_hands: HashMap::new(),
             and_proof_hands: HashMap::new(),
             move_hints: HashMap::new(),
+            proof_cache: HashMap::new(),
         }
     }
 
@@ -220,6 +255,16 @@ impl TsuitateDfpnSolver {
             }
         }
 
+        // 証明木リプレイ: board-only hash でキャッシュされた証明木を試す
+        if !meta.positions.is_empty() {
+            let board_only_hash = meta_board_only_hash(meta);
+            if let Some(proof) = self.proof_cache.get(&board_only_hash).cloned() {
+                if let Some(_or_ph) = self.try_replay_proof(meta, &proof, hash, path, depth) {
+                    return;
+                }
+            }
+        }
+
         // 候補手を生成
         let (mut candidates, legal_move_sets) = self.generate_attack_candidates(meta);
         if self.should_stop() {
@@ -304,6 +349,12 @@ impl TsuitateDfpnSolver {
                         let board_only_hash = meta_board_only_hash(meta);
                         if let Some(proven_child) = children.iter().find(|c| c.2 == 0) {
                             self.move_hints.insert(board_only_hash, proven_child.0);
+                        }
+                        // 証明木をキャッシュ（リプレイ用）
+                        if !self.proof_cache.contains_key(&board_only_hash) {
+                            if let Some(proof) = self.extract_compact_or(meta) {
+                                self.proof_cache.insert(board_only_hash, proof);
+                            }
                         }
                     }
                 }
@@ -918,6 +969,7 @@ impl TsuitateDfpnSolver {
             self.or_proof_hands.clear();
             self.and_proof_hands.clear();
             self.move_hints.clear();
+            self.proof_cache.clear();
             self.nodes_searched = 0;
             self.depth_limit = Some(mid);
 
@@ -1003,6 +1055,7 @@ impl TsuitateDfpnSolver {
         self.or_proof_hands.clear();
         self.and_proof_hands.clear();
         self.move_hints.clear();
+        self.proof_cache.clear();
         self.nodes_searched = 0;
         self.excluded_root_moves = excluded;
 
@@ -1166,5 +1219,234 @@ impl TsuitateDfpnSolver {
         }
 
         Some(branches)
+    }
+
+    // ========================================================================
+    // コンパクト証明木の抽出（リプレイキャッシュ用）
+    // ========================================================================
+
+    /// コンパクト証明木を抽出（リプレイキャッシュ用）
+    fn extract_compact_or(&self, meta: &MetaPosition) -> Option<ProofNode> {
+        if meta.is_empty() { return None; }
+        if meta.all_effectively_checkmate() { return Some(ProofNode::Checkmate); }
+
+        let hash = meta_position_hash(meta);
+        let entry = self.or_table.get(&hash)?;
+        if entry.pn != 0 { return None; }
+
+        // 全合法手を収集（extract_or と同じ）
+        let legal_move_sets: Vec<HashSet<Move>> = meta.positions.iter()
+            .map(|pos| pos.generate_legal_moves().into_iter().collect())
+            .collect();
+        let mut seen = HashSet::new();
+        let mut all_moves = Vec::new();
+        for set in &legal_move_sets {
+            for mv in set {
+                if seen.insert(*mv) { all_moves.push(*mv); }
+            }
+        }
+
+        // pn=0 の手を探す
+        for mv in &all_moves {
+            let ak = Self::and_key(hash, mv);
+            if let Some(e) = self.and_table.get(&ak) {
+                if e.pn == 0 {
+                    if let Some(branches) = self.extract_compact_and(meta, *mv, &legal_move_sets) {
+                        return Some(ProofNode::Attack { mv: *mv, branches });
+                    }
+                }
+            }
+        }
+
+        // dominance で証明されたノード: 各候補手で直接試す
+        for mv in &all_moves {
+            if let Some(branches) = self.extract_compact_and(meta, *mv, &legal_move_sets) {
+                return Some(ProofNode::Attack { mv: *mv, branches });
+            }
+        }
+        None
+    }
+
+    fn extract_compact_and(
+        &self,
+        meta: &MetaPosition,
+        mv: Move,
+        legal_move_sets: &[HashSet<Move>],
+    ) -> Option<Vec<(ProofObs, ProofNode)>> {
+        let (legal_meta, illegal_meta) = meta.apply_attack_move_split_with_sets(mv, legal_move_sets);
+        let mut branches = Vec::new();
+
+        if !illegal_meta.is_empty() {
+            let node = self.extract_compact_or(&illegal_meta)?;
+            branches.push((ProofObs::Illegal, node));
+        }
+        if legal_meta.is_empty() {
+            return if branches.is_empty() { None } else { Some(branches) };
+        }
+        if legal_meta.all_effectively_checkmate() {
+            branches.push((ProofObs::Checkmate, ProofNode::Checkmate));
+            return Some(branches);
+        }
+
+        let obs_branches = legal_meta.expand_defense_moves(mv);
+        for (obs, branch_meta) in obs_branches {
+            match obs {
+                Observation::Checkmate => {
+                    branches.push((ProofObs::Checkmate, ProofNode::Checkmate));
+                }
+                Observation::Captured { file, rank } => {
+                    let node = self.extract_compact_or(&branch_meta)?;
+                    branches.push((ProofObs::Captured(file, rank), node));
+                }
+                Observation::NoCapture => {
+                    let node = self.extract_compact_or(&branch_meta)?;
+                    branches.push((ProofObs::NoCapture, node));
+                }
+                Observation::Illegal => {}
+            }
+        }
+        Some(branches)
+    }
+
+    // ========================================================================
+    // 証明木リプレイ
+    // ========================================================================
+
+    /// 証明木のリプレイを試みる
+    /// 成功: Some(proof_hand) — 転置表を更新済み
+    /// 失敗: None — フォールバック
+    fn try_replay_proof(
+        &mut self,
+        meta: &MetaPosition,
+        proof: &ProofNode,
+        hash: u64,
+        path: &[u64],
+        depth: u32,
+    ) -> Option<[u8; 7]> {
+        // ループ検出
+        if path.contains(&hash) { return None; }
+        // 深さ制限チェック
+        if let Some(limit) = self.depth_limit {
+            if depth >= limit { return None; }
+        }
+        // should_stop チェック
+        if self.should_stop() { return None; }
+
+        match proof {
+            ProofNode::Checkmate => {
+                if meta.all_effectively_checkmate() {
+                    let proof_hand = [0u8; 7];
+                    self.or_table.insert(hash, PnDn { pn: 0, dn: INF });
+                    self.or_proof_hands.insert(hash, proof_hand);
+                    Some(proof_hand)
+                } else {
+                    None
+                }
+            }
+            ProofNode::Attack { mv, branches: proof_branches } => {
+                // 高速分割（全合法手生成をスキップ）
+                let (legal_meta, illegal_meta) = meta.apply_attack_move_split_fast(*mv);
+
+                // 全合法盤面で王手がかかっているか（毎手王手の要件）
+                if !legal_meta.is_empty()
+                    && !legal_meta.positions.iter()
+                        .all(|pos| pos.is_in_check(pos.side_to_move))
+                {
+                    return None;
+                }
+
+                // 実際の観測分岐を構築
+                let mut actual_branches: Vec<(Observation, MetaPosition)> = Vec::new();
+
+                // Illegal 分岐
+                if !illegal_meta.is_empty() {
+                    actual_branches.push((Observation::Illegal, illegal_meta));
+                }
+
+                // 合法分岐
+                if !legal_meta.is_empty() {
+                    if legal_meta.all_effectively_checkmate() {
+                        actual_branches.push((Observation::Checkmate, MetaPosition { positions: Vec::new() }));
+                    } else {
+                        let obs = legal_meta.expand_defense_moves(*mv);
+                        actual_branches.extend(obs);
+                    }
+                }
+
+                if actual_branches.is_empty() { return None; }
+
+                // 各実際の分岐に対応する証明分岐を探してリプレイ
+                let parent_hand = meta.positions.first()
+                    .map(|p| p.hand(Color::Sente).counts_array())
+                    .unwrap_or([0; 7]);
+                let mut and_ph = [0u8; 7];
+
+                for (actual_obs, actual_meta) in &actual_branches {
+                    // 証明分岐から一致するものを探す
+                    let matched = proof_branches.iter().find(|(po, _)| po.matches(actual_obs));
+                    let sub_proof = match matched {
+                        Some((_, sp)) => sp,
+                        None => return None, // 証明木にない観測 → 失敗
+                    };
+
+                    match actual_obs {
+                        Observation::Checkmate => {
+                            // Checkmate は proof_hand 寄与 0
+                        }
+                        Observation::Illegal => {
+                            let child_hash = meta_position_hash(actual_meta);
+                            let mut child_path = path.to_vec();
+                            child_path.push(hash);
+                            let child_ph = self.try_replay_proof(
+                                actual_meta, sub_proof, child_hash, &child_path, depth,
+                            )?;
+                            // Illegal: 手が実行されていないので hand は親と同じ
+                            for j in 0..7 {
+                                let eff = (child_ph[j] as i16 + parent_hand[j] as i16
+                                    - parent_hand[j] as i16).max(0) as u8;
+                                and_ph[j] = and_ph[j].max(eff);
+                            }
+                        }
+                        Observation::Captured { .. } | Observation::NoCapture => {
+                            let child_hash = meta_position_hash(actual_meta);
+                            let child_hand = actual_meta.positions.first()
+                                .map(|p| p.hand(Color::Sente).counts_array())
+                                .unwrap_or(parent_hand);
+                            // depth + 2: 攻め方の手 + 玉方の応手
+                            let mut child_path = path.to_vec();
+                            child_path.push(hash);
+                            let child_ph = self.try_replay_proof(
+                                actual_meta, sub_proof, child_hash, &child_path, depth + 2,
+                            )?;
+                            for j in 0..7 {
+                                let eff = (child_ph[j] as i16 + parent_hand[j] as i16
+                                    - child_hand[j] as i16).max(0) as u8;
+                                and_ph[j] = and_ph[j].max(eff);
+                            }
+                        }
+                    }
+                }
+
+                // 全分岐成功 → OR ノードの proof_hand
+                let or_ph = and_ph;
+
+                self.or_table.insert(hash, PnDn { pn: 0, dn: INF });
+                self.or_proof_hands.insert(hash, or_ph);
+                self.record_proven_dominance(meta, or_ph);
+
+                // move_hints にも記録（フォールバック時のため）
+                if !meta.positions.is_empty() {
+                    let board_only_hash = meta_board_only_hash(meta);
+                    self.move_hints.insert(board_only_hash, *mv);
+                }
+
+                // and_table にも記録
+                let and_key = Self::and_key(hash, mv);
+                self.and_table.insert(and_key, PnDn { pn: 0, dn: INF });
+                self.and_proof_hands.insert(and_key, and_ph);
+
+                Some(or_ph)
+            }
+        }
     }
 }

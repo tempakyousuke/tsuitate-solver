@@ -168,6 +168,56 @@ impl MetaPosition {
         )
     }
 
+    /// 攻め方の手を指す（合法/不正に分割、特定の手の合法性のみをチェック）
+    /// 証明木リプレイ用: generate_legal_moves の代わりに特定手の合法性のみ確認
+    pub fn apply_attack_move_split_fast(&self, mv: Move) -> (MetaPosition, MetaPosition) {
+        let mut legal_positions = Vec::new();
+        let mut illegal_positions = Vec::new();
+        let mut legal_seen: HashSet<u64> = HashSet::new();
+        let mut illegal_seen: HashSet<u64> = HashSet::new();
+
+        for pos in &self.positions {
+            let color = pos.side_to_move;
+
+            // 手の適用可能性を事前チェック（make_move のパニック防止）
+            let can_apply = if let Some(drop_kind) = mv.drop_piece {
+                pos.hand(color).count(drop_kind) > 0 && pos.piece_at(mv.to).is_none()
+            } else if let Some(from) = mv.from {
+                pos.piece_at(from).map_or(false, |p| p.color == color)
+            } else {
+                false
+            };
+
+            if !can_apply {
+                if illegal_seen.insert(position_hash(pos)) {
+                    illegal_positions.push(pos.clone());
+                }
+                continue;
+            }
+
+            // 合法性チェック: 手を指して自玉が王手されていないか
+            let mut test_pos = pos.clone();
+            let undo = test_pos.make_move(mv);
+            let is_legal = !test_pos.is_in_check(color);
+            test_pos.unmake_move(&undo);
+
+            if is_legal {
+                let mut new_pos = pos.clone();
+                new_pos.make_move(mv);
+                if legal_seen.insert(position_hash(&new_pos)) {
+                    legal_positions.push(new_pos);
+                }
+            } else if illegal_seen.insert(position_hash(pos)) {
+                illegal_positions.push(pos.clone());
+            }
+        }
+
+        (
+            MetaPosition { positions: legal_positions },
+            MetaPosition { positions: illegal_positions },
+        )
+    }
+
     /// 玉方の全応手を展開し、観測結果で分類する
     /// 攻め方が指した手のmvの結果について、各盤面で玉方の応手を列挙し、
     /// 駒が取られたか/取られなかったかで分類する
