@@ -1548,7 +1548,7 @@ impl TsuitateDfpnSolver {
                     // 証明分岐から一致するもの全てを収集（sente_hand_hash グループ化対応）
                     let matching_proofs: Vec<&ProofNode> = proof_branches.iter()
                         .filter(|(po, _)| po.matches(actual_obs))
-                        .map(|(_, sp)| sp)
+                        .map(|(_, sp)| sp.as_ref())
                         .collect();
                     if matching_proofs.is_empty() {
                         all_succeeded = false;
