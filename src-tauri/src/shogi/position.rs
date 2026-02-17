@@ -174,6 +174,12 @@ impl Position {
     pub fn generate_legal_moves(&self) -> Vec<Move> {
         let color = self.side_to_move;
         let pseudo_moves = movegen::generate_pseudo_legal_moves(self, color);
+
+        // 自玉がなければ全擬似合法手が合法（詰将棋の先手に該当）
+        if self.find_king(color).is_none() {
+            return pseudo_moves;
+        }
+
         let mut legal_moves = Vec::new();
 
         let mut test_pos = self.clone();

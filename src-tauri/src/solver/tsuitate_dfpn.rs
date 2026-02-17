@@ -912,15 +912,22 @@ impl TsuitateDfpnSolver {
         let mut check_moves = Vec::new();
 
         // 全盤面から王手の手を収集（union）
+        // 後手玉の位置を事前キャッシュし、is_in_check の 81マススキャンを回避
         for (i, pos) in meta.positions.iter().enumerate() {
-            let opponent = pos.side_to_move.opponent();
+            let attacker = pos.side_to_move;
+            let gote_king_sq = pos.find_king(attacker.opponent());
             let mut test_pos = pos.clone();
             for mv in &legal_move_sets[i] {
                 if seen.contains(mv) {
                     continue;
                 }
                 let undo = test_pos.make_move(*mv);
-                if test_pos.is_in_check(opponent) {
+                let is_check = match gote_king_sq {
+                    // 玉を取る手は王手ではない（玉取りは別処理）
+                    Some(ksq) if mv.to != ksq => test_pos.is_attacked(ksq, attacker),
+                    _ => false,
+                };
+                if is_check {
                     seen.insert(*mv);
                     check_moves.push(*mv);
                 }
