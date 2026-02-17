@@ -300,8 +300,29 @@ impl Position {
                 return true;
             }
 
-            // 取り返し後の全応手も無駄合いなら、元の合駒も無駄合い
+            // 取り返し後の全応手を生成
             let responses = pos_after.generate_legal_moves();
+
+            // 広義の無駄合い判定（打ち合駒の場合）:
+            // 取り返しが盤上の駒による手で、後手がそのマスに取り返せず、
+            // かつ取り返しが味方スライダーの利きを遮断しない場合は無駄合い
+            if def_mv.from.is_none() {
+                if let Some(cap_from) = cap_mv.from {
+                    let defender_can_recapture =
+                        responses.iter().any(|m| m.to == capture_sq);
+                    if !defender_can_recapture
+                        && !self.recapture_blocks_friendly_slider(
+                            cap_from,
+                            capture_sq,
+                            attacker_color,
+                        )
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            // 取り返し後の全応手も無駄合いなら、元の合駒も無駄合い
             let all_futile = !responses.is_empty()
                 && responses.iter().all(|dm| {
                     pos_after.is_futile_interposition_impl(dm, remaining_depth - 1)
@@ -312,6 +333,98 @@ impl Position {
             }
 
             pos_after.unmake_move(&undo_cap);
+        }
+
+        false
+    }
+
+    /// 攻め方の盤上の駒が from_sq から to_sq に移動した場合に、
+    /// 味方の飛び駒（飛/竜/角/馬/香）の利きを遮断するかどうかを判定する。
+    /// ただし、from_sq がスライダーと to_sq の間にある場合は
+    /// 既に遮断していたため false を返す。
+    fn recapture_blocks_friendly_slider(
+        &self,
+        from_sq: Square,
+        to_sq: Square,
+        attacker_color: Color,
+    ) -> bool {
+        // 十字方向（飛車/竜 + 香車）
+        for &(df, dr) in &[(0i8, -1i8), (0, 1), (-1, 0), (1, 0)] {
+            if self.check_slider_line_blocked(from_sq, to_sq, df, dr, attacker_color, true) {
+                return true;
+            }
+        }
+        // 斜め方向（角/馬）
+        for &(df, dr) in &[(-1i8, -1i8), (-1, 1), (1, -1), (1, 1)] {
+            if self.check_slider_line_blocked(from_sq, to_sq, df, dr, attacker_color, false) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// to_sq から (df, dr) 方向にスキャンして味方スライダーを探す。
+    /// from_sq は移動予定の駒なので空きマスとして扱う。
+    /// スライダーが見つかり、かつ from_sq がスライダーと to_sq の間に
+    /// なければ true（遮断発生）を返す。
+    fn check_slider_line_blocked(
+        &self,
+        from_sq: Square,
+        to_sq: Square,
+        df: i8,
+        dr: i8,
+        attacker_color: Color,
+        is_orthogonal: bool,
+    ) -> bool {
+        let slider_kinds: &[PieceKind] = if is_orthogonal {
+            &[PieceKind::Rook, PieceKind::PromotedRook]
+        } else {
+            &[PieceKind::Bishop, PieceKind::PromotedBishop]
+        };
+
+        let mut f = to_sq.file as i8 + df;
+        let mut r = to_sq.rank as i8 + dr;
+        let mut from_sq_on_line = false;
+
+        while Square::is_valid(f, r) {
+            let sq = Square::new(f as u8, r as u8);
+
+            if sq == from_sq {
+                // from_sq は移動予定 → 空きマスとして扱いスキップ
+                from_sq_on_line = true;
+                f += df;
+                r += dr;
+                continue;
+            }
+
+            if let Some(piece) = self.piece_at(sq) {
+                if piece.color == attacker_color {
+                    // 味方の飛び駒かチェック
+                    if slider_kinds.contains(&piece.kind) {
+                        // from_sq が間にあれば既に遮断済み → 新たな遮断なし
+                        return !from_sq_on_line;
+                    }
+                    // 香車の特殊判定（十字方向のうち特定方向のみ）
+                    if is_orthogonal
+                        && piece.kind == PieceKind::Lance
+                        && df == 0
+                    {
+                        // 先手香は (0,-1) 方向に攻撃 → (0,1) スキャンで見つかる
+                        // 後手香は (0,1) 方向に攻撃 → (0,-1) スキャンで見つかる
+                        let lance_matches =
+                            (attacker_color == Color::Sente && dr == 1)
+                                || (attacker_color == Color::Gote && dr == -1);
+                        if lance_matches {
+                            return !from_sq_on_line;
+                        }
+                    }
+                }
+                // 別の駒で遮断されている → このライン上の問題なし
+                return false;
+            }
+
+            f += df;
+            r += dr;
         }
 
         false
