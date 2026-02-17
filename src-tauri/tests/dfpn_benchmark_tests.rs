@@ -894,3 +894,44 @@ fn run_all_questions(find_shortest: bool) {
         output_path.display()
     );
 }
+
+/// 単手数で遅い問題の診断テスト
+/// cargo test --release --test dfpn_benchmark_tests dfpn_diag_slow -- --ignored --nocapture
+#[test]
+#[ignore]
+fn dfpn_diag_slow_short_problems() {
+    let slow_problems = [4, 14, 25, 27, 31, 35, 38];
+    let dir = sample_questions_dir();
+
+    println!("{:<6} {:<6} {:<10} {:<10} {:<10} {:<10} {:<12} {:<12} {:<12} {:<12}",
+        "問題", "手数", "時間(ms)", "nodes", "and_calls", "exp_def",
+        "max_meta", "gen_cand(ms)", "exp_def(ms)", "aec(ms)");
+    println!("{}", "-".repeat(120));
+
+    for &num in &slow_problems {
+        let path = dir.join(format!("{}.json", num));
+        let pos = load_question(&path);
+        let meta = MetaPosition::new(pos);
+        let cancel = cancel_after(120);
+        let mut solver = TsuitateDfpnSolver::new(50_000_000, cancel);
+
+        let start = std::time::Instant::now();
+        let result = solver.solve_to_solution(&meta, false);
+        let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+        let depth = result.tree.as_ref().map_or(0, |t| t.max_moves());
+
+        println!("{:<6} {:<6} {:<10.1} {:<10} {:<10} {:<10} {:<12} {:<12.1} {:<12.1} {:<12.1}",
+            num,
+            depth,
+            elapsed_ms,
+            solver.nodes_searched,
+            solver.mid_and_calls,
+            solver.expand_defense_calls,
+            solver.max_meta_size,
+            solver.gen_candidates_nanos as f64 / 1_000_000.0,
+            solver.expand_defense_nanos as f64 / 1_000_000.0,
+            solver.aec_nanos as f64 / 1_000_000.0,
+        );
+    }
+}

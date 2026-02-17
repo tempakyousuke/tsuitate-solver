@@ -101,6 +101,13 @@ fn meta_board_only_hash(meta: &MetaPosition) -> u64 {
     h.finish()
 }
 
+/// OR ノードの候補手生成結果キャッシュ
+/// mid_or が同一 OR ノードを再訪問する際の generate_attack_candidates 再計算を回避
+struct CachedOrCandidates {
+    candidates: Vec<Move>,
+    legal_move_sets: Vec<HashSet<Move>>,
+}
+
 /// AND ノードの展開結果キャッシュ
 /// mid_and が同一 AND ノードを再訪問する際の expand_defense_moves 再計算を回避
 #[derive(Clone)]
@@ -154,6 +161,9 @@ pub struct TsuitateDfpnSolver {
     /// AND ノードの展開結果キャッシュ: and_key → 構造データ
     /// mid_and が同一 AND ノードを再訪問する際の expand_defense_moves 再計算を回避
     and_expansion_cache: HashMap<u64, CachedAndExpansion>,
+    /// OR ノードの候補手キャッシュ: meta_hash → 候補手 + 合法手セット
+    /// mid_or が同一 OR ノードを再訪問する際の generate_attack_candidates 再計算を回避
+    or_candidate_cache: HashMap<u64, CachedOrCandidates>,
     /// 診断用カウンタ
     pub proof_replay_attempts: u64,
     pub proof_replay_full_success: u64,
@@ -161,6 +171,14 @@ pub struct TsuitateDfpnSolver {
     pub proof_replay_fail: u64,
     pub expand_defense_calls: u64,
     pub mid_and_calls: u64,
+    /// 診断: 探索中に遭遇した最大 MetaPosition サイズ
+    pub max_meta_size: usize,
+    /// 診断: generate_attack_candidates の累計時間 (ナノ秒)
+    pub gen_candidates_nanos: u64,
+    /// 診断: expand_defense_moves の累計時間 (ナノ秒)
+    pub expand_defense_nanos: u64,
+    /// 診断: all_effectively_checkmate の累計時間 (ナノ秒)
+    pub aec_nanos: u64,
 }
 
 impl TsuitateDfpnSolver {
@@ -181,12 +199,17 @@ impl TsuitateDfpnSolver {
             move_hints: HashMap::new(),
             proof_cache: HashMap::new(),
             and_expansion_cache: HashMap::new(),
+            or_candidate_cache: HashMap::new(),
             proof_replay_attempts: 0,
             proof_replay_full_success: 0,
             proof_replay_partial: 0,
             proof_replay_fail: 0,
             expand_defense_calls: 0,
             mid_and_calls: 0,
+            max_meta_size: 0,
+            gen_candidates_nanos: 0,
+            expand_defense_nanos: 0,
+            aec_nanos: 0,
         }
     }
 
@@ -237,12 +260,20 @@ impl TsuitateDfpnSolver {
         self.nodes_searched += 1;
         let hash = meta_position_hash(meta);
 
+        // MetaPosition サイズ記録
+        if meta.positions.len() > self.max_meta_size {
+            self.max_meta_size = meta.positions.len();
+        }
+
         // 終端チェック
         if meta.is_empty() {
             self.or_table.insert(hash, PnDn { pn: INF, dn: 0 });
             return;
         }
-        if meta.all_effectively_checkmate() {
+        let aec_start = std::time::Instant::now();
+        let is_aec = meta.all_effectively_checkmate();
+        self.aec_nanos += aec_start.elapsed().as_nanos() as u64;
+        if is_aec {
             self.or_table.insert(hash, PnDn { pn: 0, dn: INF });
             let proof_hand = [0u8; 7];
             self.or_proof_hands.insert(hash, proof_hand);
@@ -310,11 +341,20 @@ impl TsuitateDfpnSolver {
             }
         }
 
-        // 候補手を生成
-        let (mut candidates, legal_move_sets) = self.generate_attack_candidates(meta);
+        // 候補手を生成（キャッシュ活用、remove/re-insert パターン）
+        let (candidates_raw, legal_move_sets) = if let Some(cached) = self.or_candidate_cache.remove(&hash) {
+            (cached.candidates, cached.legal_move_sets)
+        } else {
+            let gen_start = std::time::Instant::now();
+            let result = self.generate_attack_candidates(meta);
+            self.gen_candidates_nanos += gen_start.elapsed().as_nanos() as u64;
+            result
+        };
         if self.should_stop() {
+            self.or_candidate_cache.insert(hash, CachedOrCandidates { candidates: candidates_raw.clone(), legal_move_sets });
             return;
         }
+        let mut candidates = candidates_raw.clone();
 
         // ルートノードでは除外手をフィルタ
         if self.root_hash == Some(hash) && !self.excluded_root_moves.is_empty() {
@@ -330,6 +370,7 @@ impl TsuitateDfpnSolver {
 
         if candidates.is_empty() {
             self.or_table.insert(hash, PnDn { pn: INF, dn: 0 });
+            self.or_candidate_cache.insert(hash, CachedOrCandidates { candidates: candidates_raw.clone(), legal_move_sets });
             return;
         }
 
@@ -360,6 +401,7 @@ impl TsuitateDfpnSolver {
 
         loop {
             if self.should_stop() {
+                self.or_candidate_cache.insert(hash, CachedOrCandidates { candidates: candidates_raw.clone(), legal_move_sets });
                 return;
             }
 
@@ -411,11 +453,13 @@ impl TsuitateDfpnSolver {
                         }
                     }
                 }
+                self.or_candidate_cache.insert(hash, CachedOrCandidates { candidates: candidates_raw.clone(), legal_move_sets });
                 return;
             }
 
             if pn_n >= pn_limit || dn_n >= dn_limit {
                 self.or_table.insert(hash, PnDn { pn: pn_n, dn: dn_n });
+                self.or_candidate_cache.insert(hash, CachedOrCandidates { candidates: candidates_raw.clone(), legal_move_sets });
                 return;
             }
 
@@ -534,7 +578,9 @@ impl TsuitateDfpnSolver {
                     obs_depth_inc.push(0);
                 } else {
                     self.expand_defense_calls += 1;
+                    let ed_start = std::time::Instant::now();
                     let raw_branches = legal_meta.expand_defense_moves(mv);
+                    self.expand_defense_nanos += ed_start.elapsed().as_nanos() as u64;
 
                     // 同一観測タイプの分岐をマージ
                     // sente_hand_hash で分かれた分岐を統合し、AND の分岐数を削減
@@ -1146,6 +1192,7 @@ impl TsuitateDfpnSolver {
             self.move_hints.clear();
             self.proof_cache.clear();
             self.and_expansion_cache.clear();
+            self.or_candidate_cache.clear();
 
             self.nodes_searched = 0;
             self.depth_limit = Some(mid);
@@ -1234,6 +1281,7 @@ impl TsuitateDfpnSolver {
         self.move_hints.clear();
         self.proof_cache.clear();
         self.and_expansion_cache.clear();
+        self.or_candidate_cache.clear();
         self.nodes_searched = 0;
         self.excluded_root_moves = excluded;
 
