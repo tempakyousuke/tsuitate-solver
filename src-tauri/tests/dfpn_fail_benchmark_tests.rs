@@ -229,6 +229,7 @@ macro_rules! dfpn_fail_test {
 }
 
 dfpn_fail_test!(dfpn_fail_question_01, 1);
+dfpn_fail_test!(dfpn_fail_question_02, 2);
 
 /// 全問一括ベンチマーク（不詰問題）
 /// cargo test --release --test dfpn_fail_benchmark_tests dfpn_fail_bench_all -- --ignored --nocapture
