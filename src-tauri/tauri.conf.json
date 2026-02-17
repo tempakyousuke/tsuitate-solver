@@ -1,7 +1,7 @@
 {
-  "productName": "tsuitate-resolver",
+  "productName": "tsuitate-solver",
   "version": "0.1.0",
-  "identifier": "com.tsuitate-resolver.app",
+  "identifier": "com.tsuitate-solver.app",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -23,9 +23,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "resources": [
-      "../sample-questions/*"
-    ],
+    "resources": ["../sample-questions/*"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

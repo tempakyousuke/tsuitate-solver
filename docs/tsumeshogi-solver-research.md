@@ -46,7 +46,7 @@
 
 | アプローチ | 説明 | 採用例 |
 |-----------|------|--------|
-| **A: 探索中の事前フィルタリング**（柿木方式） | 応手生成時に各合駒候補の無駄合いをテスト。取り返し→再王手→取った駒未使用で詰みかを再帰的に確認し、無駄合いを探索木から枝刈り | tsuitate-resolver（深さ3制限）|
+| **A: 探索中の事前フィルタリング**（柿木方式） | 応手生成時に各合駒候補の無駄合いをテスト。取り返し→再王手→取った駒未使用で詰みかを再帰的に確認し、無駄合いを探索木から枝刈り | tsuitate-solver（深さ3制限）|
 | **B: 探索後のバリデーション** | 全合駒候補を探索に含め、証明木を得た後に無駄合いを検証。無駄合いが見つかれば該当分岐を破棄 | sugyan/tsumeshogi-solver |
 | **C: 無駄合い判定なし** | 無駄合いを含む最短解を返す | KomoringHeights v1.0.0 |
 
@@ -104,7 +104,7 @@ proof_pieces(node) = ∪(子のproof_pieces) ∪ A_n
 
 #### 無駄合いキャッシュ（マスベース）
 
-マスSへの駒Xの打ち込みが無駄合いと判定された場合、同じマスSへの駒Yの打ち込みも無駄合い（打ち駒に限る）。tsuitate-resolverの`futile_drop_squares: HashSet<Square>`で実装。
+マスSへの駒Xの打ち込みが無駄合いと判定された場合、同じマスSへの駒Yの打ち込みも無駄合い（打ち駒に限る）。tsuitate-solverの`futile_drop_squares: HashSet<Square>`で実装。
 
 #### 合駒マス数制限
 
@@ -119,7 +119,7 @@ N手詰みを発見後、N-2手以内の解を再探索。短い解が見つか�
 
 **参考**: [詰将棋アルゴリズムdf-pnのすべて | やねうら王](https://yaneuraou.yaneu.com/2024/05/08/all-about-df-pn/)
 
-#### 観測分岐マージ（tsuitate-resolver固有）
+#### 観測分岐マージ（tsuitate-solver固有）
 
 衝立詰将棋では、異なる合駒種が同じ観測タイプ（NoCapture等）を生むが先手持ち駒状態が異なる場合がある。`merge_observation_branches`で3分岐以上を1分岐にマージし、指数爆発（7^k → 1）を防止。
 
@@ -239,7 +239,7 @@ N手詰みを発見後、N-2手以内の解を再探索。短い解が見つか�
 #### Sakuta & Iida の衝立詰将棋ソルバー
 - **アルゴリズム**: 二重反復深化探索 + メタポジション概念
 - **論文**: [Solving Problems with Uncertainty: A case study using Tsuitate-Tsume-Shogi](https://www.researchgate.net/publication/241918197_Solving_Problems_with_Uncertainty_A_case_study_using_Tsuitate-Tsume-Shogi) (1999/2000)
-- **備考**: 衝立詰将棋をコンピュータで解く最初の学術研究。メタポジション概念を導入。tsuitate-resolverのアプローチの学術的先駆者。
+- **備考**: 衝立詰将棋をコンピュータで解く最初の学術研究。メタポジション概念を導入。tsuitate-solverのアプローチの学術的先駆者。
 
 ### 2.4 まとめ表
 
@@ -262,5 +262,5 @@ N手詰みを発見後、N-2手以内の解を再探索。短い解が見つか�
 1. **df-pnが事実上の標準**: 現代のほぼ全ての本格的詰将棋ソルバーがNagaiのdf-pnアルゴリズムの変種を使用
 2. **Rustの台頭**: C++が依然として主流だが、Rust実装が複数登場（sugyan, semiexp）
 3. **トップ2ソルバー**: KomoringHeights（最も高度な枝刈り技術）とshtsume（最速、ミクロコスモス約1分）
-4. **公開された衝立詰将棋ソルバーはtsuitate-resolverのみ**: Sakuta & Iidaの学術的コード以外に公開実装は存在しない
+4. **公開された衝立詰将棋ソルバーはtsuitate-solverのみ**: Sakuta & Iidaの学術的コード以外に公開実装は存在しない
 5. **無駄合い判定は最難関**: 専門開発者でも厳密な実装を避けるほどの複雑さ。KomoringHeightsはv1.0.0で無駄合い判定を削除した

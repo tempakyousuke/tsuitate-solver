@@ -1,5 +1,5 @@
 [package]
-name = "tsuitate-resolver"
+name = "tsuitate-solver"
 version = "0.1.0"
 description = "Tsuitate Tsumeshogi Solver"
 authors = ["you"]
