@@ -1171,6 +1171,15 @@ impl TsuitateDfpnSolver {
     }
 
     /// 二分探索で最短の深さを求める
+    ///
+    /// 最適化:
+    /// - 深さ非依存のキャッシュ（and_expansion_cache, or_candidate_cache, move_hints,
+    ///   proof_cache）は全反復で保持
+    /// - 深さを増やす方向（前回失敗→より深い制限で再挑戦）の場合:
+    ///   - or_table/and_table の証明済みエントリ (pn=0) を保持（浅い深さの証明は深い深さでも有効）
+    ///   - dominance_table, or_proof_hands, and_proof_hands も保持
+    /// - 深さを減らす方向（前回成功→より浅い制限で再挑戦）の場合:
+    ///   - 全ての証明依存テーブルをクリア（深い証明は浅い深さで無効の可能性あり）
     fn shorten_solution(
         &mut self,
         meta: &MetaPosition,
@@ -1182,6 +1191,7 @@ impl TsuitateDfpnSolver {
         let mut best_tree = initial_tree;
         let mut best_depth = initial_depth;
         let mut total_nodes: u64 = 0;
+        let mut prev_depth_limit: Option<u32> = None;
 
         while low <= high {
             if self.should_stop() {
@@ -1190,19 +1200,35 @@ impl TsuitateDfpnSolver {
 
             let mid = low + (high - low) / 2;
 
-            // 転置表クリア、深さ制限付きで再探索
-            self.or_table.clear();
-            self.and_table.clear();
-            self.dominance_table.clear();
-            self.or_proof_hands.clear();
-            self.and_proof_hands.clear();
-            self.move_hints.clear();
-            self.proof_cache.clear();
-            self.and_expansion_cache.clear();
-            self.or_candidate_cache.clear();
+            // 方向に応じた選択的テーブルクリア
+            let going_deeper = prev_depth_limit.map_or(false, |prev| mid > prev);
+
+            if going_deeper {
+                // 深さを増やす方向: 証明済みエントリのみ保持（浅い証明は深い深さでも有効）
+                // 反証・中間値は深さ制限起因の可能性があるため除去
+                self.or_table.retain(|_, v| v.pn == 0);
+                self.and_table.retain(|_, v| v.pn == 0);
+                // dominance_table, or_proof_hands, and_proof_hands は保持
+                // （浅い深さでの証明駒は深い深さでも有効）
+            } else {
+                // 深さを減らす方向 or 初回: 証明依存テーブルを全クリア
+                // （深い証明は浅い深さで達成できない可能性あり）
+                self.or_table.clear();
+                self.and_table.clear();
+                self.dominance_table.clear();
+                self.or_proof_hands.clear();
+                self.and_proof_hands.clear();
+            }
+
+            // 深さ非依存のキャッシュは常に保持:
+            // - and_expansion_cache: AND ノード展開の構造データ（深さ無関係）
+            // - or_candidate_cache: 攻め手候補リスト（深さ無関係）
+            // - move_hints: 手順ヒント（ヒューリスティック、安全に再利用可能）
+            // - proof_cache: 証明木（try_replay_proof が深さ制限をチェック）
 
             self.nodes_searched = 0;
             self.depth_limit = Some(mid);
+            prev_depth_limit = Some(mid);
 
             let result = self.solve(meta);
             total_nodes += self.nodes_searched;
