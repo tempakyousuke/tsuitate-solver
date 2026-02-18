@@ -76,6 +76,49 @@
     event.stopPropagation();
     selectObservation(parentPath, branchIdx);
   }
+
+  let copiedPath = $state<string | null>(null);
+  let copiedTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  function collectMovesForPath(tree: SolutionNode, path: string): string[] {
+    const parts = path.split('/');
+    const branchIndices = parts.slice(1).map(Number);
+    const moves: string[] = [];
+    let current: SolutionNode = tree;
+
+    if (isAttackMove(current)) {
+      moves.push(current.AttackMove.mv.notation);
+    }
+
+    for (const idx of branchIndices) {
+      if (!isAttackMove(current)) break;
+      const branch = current.AttackMove.branches[idx];
+      if (!branch) break;
+      current = branch.continuation;
+      if (isAttackMove(current)) {
+        moves.push(current.AttackMove.mv.notation);
+      }
+    }
+
+    return moves;
+  }
+
+  async function handleCheckmateClick(path: string, event: MouseEvent) {
+    event.stopPropagation();
+    const sol = $solution;
+    if (!sol) return;
+
+    const tree = path.startsWith("s") ? sol.second_tree : sol.tree;
+    if (!tree) return;
+
+    const moves = collectMovesForPath(tree, path);
+    if (moves.length > 0) {
+      await navigator.clipboard.writeText(moves.join(' '));
+      if (copiedTimeout) clearTimeout(copiedTimeout);
+      copiedPath = path;
+      copiedTimeout = setTimeout(() => { copiedPath = null; }, 1500);
+    }
+  }
 </script>
 
 {#if $solution}
@@ -88,7 +131,10 @@
     {#snippet nodeDisplay(node: SolutionNode, depth: number, path: string)}
       {#if isCheckmate(node)}
         <div class="line" style="padding-left: {depth * 20 + 24}px">
-          <span class="checkmate">詰み（{node.Checkmate.depth}手）</span>
+          <span class="checkmate copy-target" role="button" tabindex="0" onclick={(e) => handleCheckmateClick(path, e)}>詰み（{node.Checkmate.depth}手）</span>
+          {#if copiedPath === path}
+            <span class="copied-badge">コピーしました</span>
+          {/if}
         </div>
       {:else if isAttackMove(node)}
         {@const branchCount = node.AttackMove.branches.length}
@@ -125,7 +171,10 @@
                 onclick={(e) => handleObservationClick(path, i, e)}
               >[{observationLabel(branch.observation)}]</span>
               {#if branch.observation === "Checkmate" && isCheckmate(branch.continuation)}
-                <span class="checkmate-inline"> → 詰み（{branch.continuation.Checkmate.depth}手）</span>
+                <span class="checkmate-inline copy-target" role="button" tabindex="0" onclick={(e) => handleCheckmateClick(`${path}/${i}`, e)}> → 詰み（{branch.continuation.Checkmate.depth}手）</span>
+                {#if copiedPath === `${path}/${i}`}
+                  <span class="copied-badge">コピーしました</span>
+                {/if}
               {/if}
             </div>
             {#if branch.observation !== "Checkmate"}
@@ -350,6 +399,27 @@
     color: #c33;
     font-weight: bold;
     font-size: 13px;
+  }
+
+  .copy-target {
+    cursor: pointer;
+    border-radius: 3px;
+    padding: 0 4px;
+  }
+
+  .copy-target:hover {
+    background: rgba(204, 51, 51, 0.1);
+  }
+
+  .copied-badge {
+    margin-left: 8px;
+    padding: 0 6px;
+    font-size: 11px;
+    color: #2e7d32;
+    background: #e8f5e9;
+    border-radius: 3px;
+    line-height: 18px;
+    font-weight: normal;
   }
 
   .branch-line {
