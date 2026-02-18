@@ -6,9 +6,7 @@ use crate::shogi::position::Position;
 use crate::shogi::types::*;
 
 pub fn position_hash(pos: &Position) -> u64 {
-    let mut h = DefaultHasher::new();
-    pos.hash(&mut h);
-    h.finish()
+    pos.zobrist_hash
 }
 
 /// 攻め方の持ち駒のハッシュ（攻め方は自分の持ち駒を観測できる）
@@ -29,7 +27,8 @@ pub struct MetaPosition {
 
 impl MetaPosition {
     /// 初期状態（1つの盤面から開始）
-    pub fn new(initial: Position) -> Self {
+    pub fn new(mut initial: Position) -> Self {
+        initial.init_zobrist_hash();
         Self {
             positions: vec![initial],
         }
@@ -152,11 +151,11 @@ impl MetaPosition {
             if legal_move_sets[i].contains(&mv) {
                 let mut new_pos = pos.clone();
                 new_pos.make_move(mv);
-                if legal_seen.insert(position_hash(&new_pos)) {
+                if legal_seen.insert(new_pos.zobrist_hash) {
                     legal_positions.push(new_pos);
                 }
             } else {
-                if illegal_seen.insert(position_hash(pos)) {
+                if illegal_seen.insert(pos.zobrist_hash) {
                     illegal_positions.push(pos.clone());
                 }
             }
@@ -189,7 +188,7 @@ impl MetaPosition {
             };
 
             if !can_apply {
-                if illegal_seen.insert(position_hash(pos)) {
+                if illegal_seen.insert(pos.zobrist_hash) {
                     illegal_positions.push(pos.clone());
                 }
                 continue;
@@ -199,16 +198,16 @@ impl MetaPosition {
             let mut test_pos = pos.clone();
             let undo = test_pos.make_move(mv);
             let is_legal = !test_pos.is_in_check(color);
-            test_pos.unmake_move(&undo);
 
             if is_legal {
-                let mut new_pos = pos.clone();
-                new_pos.make_move(mv);
-                if legal_seen.insert(position_hash(&new_pos)) {
-                    legal_positions.push(new_pos);
+                if legal_seen.insert(test_pos.zobrist_hash) {
+                    legal_positions.push(test_pos);
                 }
-            } else if illegal_seen.insert(position_hash(pos)) {
-                illegal_positions.push(pos.clone());
+            } else {
+                test_pos.unmake_move(&undo);
+                if illegal_seen.insert(pos.zobrist_hash) {
+                    illegal_positions.push(pos.clone());
+                }
             }
         }
 
@@ -247,39 +246,38 @@ impl MetaPosition {
 
             if !in_check {
                 // 王手でない場合（プローブ手など）: 玉方の全合法手を展開する。
-                // 異なる応手は異なる盤面状態を生み出し、将来の手の合法性に影響するため、
-                // 全応手を展開して正確なメタポジションを維持する必要がある。
-                // （重複排除はハッシュで行い、同一局面は自動的に除外される）
                 let legal_moves = pos.generate_legal_moves();
                 if legal_moves.is_empty() {
-                    // 合法手がない（ステイルメイト - 将棋では通常起きないが安全のため）
                     checkmate_positions.push(pos.clone());
                     continue;
                 }
 
                 let attacker_color = defender_color.opponent();
+                // 遅延クローン: scratch で make_move/unmake_move し、ユニーク時のみクローン
+                let mut scratch = pos.clone();
                 for def_mv in &legal_moves {
                     let captured = pos.piece_at(def_mv.to)
                         .map_or(false, |p| p.color == attacker_color);
+
+                    let undo = scratch.make_move(*def_mv);
+
                     if captured {
-                        let mut new_pos = pos.clone();
-                        new_pos.make_move(*def_mv);
                         let (seen, positions) = capture_groups
                             .entry((def_mv.to, hand_hash))
                             .or_insert_with(|| (HashSet::new(), Vec::new()));
-                        if seen.insert(position_hash(&new_pos)) {
-                            positions.push(new_pos);
+                        if seen.insert(scratch.zobrist_hash) {
+                            positions.push(scratch.clone());
                         }
                     } else {
-                        let mut new_pos = pos.clone();
-                        new_pos.make_move(*def_mv);
                         let (seen, positions) = no_capture_groups
                             .entry(hand_hash)
                             .or_insert_with(|| (HashSet::new(), Vec::new()));
-                        if seen.insert(position_hash(&new_pos)) {
-                            positions.push(new_pos);
+                        if seen.insert(scratch.zobrist_hash) {
+                            positions.push(scratch.clone());
                         }
                     }
+
+                    scratch.unmake_move(&undo);
                 }
                 continue;
             }
@@ -294,9 +292,11 @@ impl MetaPosition {
             }
 
             // 無駄合い判定のキャッシュ（打ち駒のみ、マス目ごと）
-            // 盤上の駒の移動は移動元マスが空くことで防御手が変わる可能性があるため
-            // キャッシュ対象外とする
             let mut futile_drop_squares: HashSet<Square> = HashSet::new();
+            let attacker_color = defender_color.opponent();
+
+            // 遅延クローン: scratch で make_move/unmake_move し、ユニーク時のみクローン
+            let mut scratch = pos.clone();
 
             for def_mv in &legal_moves {
                 // 無駄合い判定
@@ -323,11 +323,8 @@ impl MetaPosition {
                     continue;
                 }
 
-                let mut new_pos = pos.clone();
-                new_pos.make_move(*def_mv);
+                let undo = scratch.make_move(*def_mv);
 
-                // 攻め方のどの駒でも取られたらCaptured観測（地点ごとに分類）
-                let attacker_color = defender_color.opponent();
                 let captured = pos.piece_at(def_mv.to)
                     .map_or(false, |p| p.color == attacker_color);
 
@@ -335,17 +332,19 @@ impl MetaPosition {
                     let (seen, positions) = capture_groups
                         .entry((def_mv.to, hand_hash))
                         .or_insert_with(|| (HashSet::new(), Vec::new()));
-                    if seen.insert(position_hash(&new_pos)) {
-                        positions.push(new_pos);
+                    if seen.insert(scratch.zobrist_hash) {
+                        positions.push(scratch.clone());
                     }
                 } else {
                     let (seen, positions) = no_capture_groups
                         .entry(hand_hash)
                         .or_insert_with(|| (HashSet::new(), Vec::new()));
-                    if seen.insert(position_hash(&new_pos)) {
-                        positions.push(new_pos);
+                    if seen.insert(scratch.zobrist_hash) {
+                        positions.push(scratch.clone());
                     }
                 }
+
+                scratch.unmake_move(&undo);
             }
         }
 

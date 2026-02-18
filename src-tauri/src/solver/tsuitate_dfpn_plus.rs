@@ -217,13 +217,14 @@ impl<T: TtEntry + Clone + Copy> TransTable<T> {
 // ============================================================================
 
 fn meta_position_hash(meta: &MetaPosition) -> u64 {
-    let mut xor_hash: u64 = 0;
-    for pos in &meta.positions {
-        let mut h = DefaultHasher::new();
-        pos.hash(&mut h);
-        xor_hash ^= h.finish();
-    }
-    xor_hash
+    use std::collections::hash_map::DefaultHasher;
+    let mut hashes: Vec<u64> = meta.positions.iter()
+        .map(|p| p.zobrist_hash)
+        .collect();
+    hashes.sort();
+    let mut h = DefaultHasher::new();
+    hashes.hash(&mut h);
+    h.finish()
 }
 
 fn meta_board_set_hash(meta: &MetaPosition) -> u64 {

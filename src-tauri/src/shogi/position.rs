@@ -1,11 +1,114 @@
-use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use super::movegen;
 use super::types::*;
 
+// === Zobrist Hashing ===
+
+struct ZobristKeys {
+    piece: [[[u64; 81]; 14]; 2], // [color][kind][square]
+    hand: [[[u64; 20]; 7]; 2],   // [color][hand_kind_idx][count]
+    color: u64,                   // XOR when side changes
+}
+
+const fn splitmix64_next(state: u64) -> (u64, u64) {
+    let s = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = s;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z = z ^ (z >> 31);
+    (z, s)
+}
+
+const fn piece_kind_zobrist_index(kind: PieceKind) -> usize {
+    match kind {
+        PieceKind::King => 0,
+        PieceKind::Rook => 1,
+        PieceKind::Bishop => 2,
+        PieceKind::Gold => 3,
+        PieceKind::Silver => 4,
+        PieceKind::Knight => 5,
+        PieceKind::Lance => 6,
+        PieceKind::Pawn => 7,
+        PieceKind::PromotedRook => 8,
+        PieceKind::PromotedBishop => 9,
+        PieceKind::PromotedSilver => 10,
+        PieceKind::PromotedKnight => 11,
+        PieceKind::PromotedLance => 12,
+        PieceKind::PromotedPawn => 13,
+    }
+}
+
+const fn color_zobrist_index(color: Color) -> usize {
+    match color {
+        Color::Sente => 0,
+        Color::Gote => 1,
+    }
+}
+
+const fn hand_kind_zobrist_index(kind: PieceKind) -> usize {
+    match kind {
+        PieceKind::Rook => 0,
+        PieceKind::Bishop => 1,
+        PieceKind::Gold => 2,
+        PieceKind::Silver => 3,
+        PieceKind::Knight => 4,
+        PieceKind::Lance => 5,
+        PieceKind::Pawn => 6,
+        _ => 0, // unreachable in normal use
+    }
+}
+
+const fn generate_zobrist_keys() -> ZobristKeys {
+    let mut keys = ZobristKeys {
+        piece: [[[0u64; 81]; 14]; 2],
+        hand: [[[0u64; 20]; 7]; 2],
+        color: 0,
+    };
+    let mut state: u64 = 0x85A3_08D3_1319_8A2E;
+
+    let mut c = 0usize;
+    while c < 2 {
+        let mut k = 0usize;
+        while k < 14 {
+            let mut s = 0usize;
+            while s < 81 {
+                let (val, new_state) = splitmix64_next(state);
+                keys.piece[c][k][s] = val;
+                state = new_state;
+                s += 1;
+            }
+            k += 1;
+        }
+        c += 1;
+    }
+
+    c = 0;
+    while c < 2 {
+        let mut k = 0usize;
+        while k < 7 {
+            let mut n = 0usize;
+            while n < 20 {
+                let (val, new_state) = splitmix64_next(state);
+                keys.hand[c][k][n] = val;
+                state = new_state;
+                n += 1;
+            }
+            k += 1;
+        }
+        c += 1;
+    }
+
+    let (val, _) = splitmix64_next(state);
+    keys.color = val;
+
+    keys
+}
+
+static ZOBRIST: ZobristKeys = generate_zobrist_keys();
+
 /// 盤面状態
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone)]
 pub struct Position {
     /// 9x9の盤面 (board[file-1][rank-1])
     board: [Option<Piece>; 81],
@@ -15,7 +118,33 @@ pub struct Position {
     pub gote_hand: HandPieces,
     /// 手番
     pub side_to_move: Color,
+    /// Zobrist ハッシュ値（インクリメンタル更新）
+    pub zobrist_hash: u64,
+    /// Zobrist ハッシュの先手持ち駒コンポーネント
+    zobrist_sente_hand: u64,
+    /// Zobrist ハッシュの後手持ち駒コンポーネント
+    zobrist_gote_hand: u64,
 }
+
+impl Hash for Position {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.board.hash(state);
+        self.sente_hand.hash(state);
+        self.gote_hand.hash(state);
+        self.side_to_move.hash(state);
+    }
+}
+
+impl PartialEq for Position {
+    fn eq(&self, other: &Self) -> bool {
+        self.board == other.board
+            && self.sente_hand == other.sente_hand
+            && self.gote_hand == other.gote_hand
+            && self.side_to_move == other.side_to_move
+    }
+}
+
+impl Eq for Position {}
 
 /// 指し手の取消に必要な情報
 #[derive(Debug, Clone)]
@@ -28,11 +157,21 @@ pub struct UndoInfo {
 impl Position {
     /// 空の盤面作成
     pub fn new() -> Self {
+        // 空盤面の初期 Zobrist ハッシュ: 全持ち駒カウント0のキーを XOR
+        let mut sente_hand_hash = 0u64;
+        let mut gote_hand_hash = 0u64;
+        for hi in 0..7 {
+            sente_hand_hash ^= ZOBRIST.hand[0][hi][0];
+            gote_hand_hash ^= ZOBRIST.hand[1][hi][0];
+        }
         Self {
             board: [None; 81],
             sente_hand: HandPieces::new(),
             gote_hand: HandPieces::new(),
             side_to_move: Color::Sente,
+            zobrist_hash: sente_hand_hash ^ gote_hand_hash,
+            zobrist_sente_hand: sente_hand_hash,
+            zobrist_gote_hand: gote_hand_hash,
         }
     }
 
@@ -81,32 +220,67 @@ impl Position {
         None
     }
 
+    /// Zobrist 持ち駒ハッシュ更新ヘルパー
+    #[inline]
+    fn update_hand_zobrist(&mut self, color: Color, kind: PieceKind, old_count: usize, new_count: usize) {
+        let ci = color_zobrist_index(color);
+        let hi = hand_kind_zobrist_index(kind);
+        let delta = ZOBRIST.hand[ci][hi][old_count] ^ ZOBRIST.hand[ci][hi][new_count];
+        self.zobrist_hash ^= delta;
+        match color {
+            Color::Sente => self.zobrist_sente_hand ^= delta,
+            Color::Gote => self.zobrist_gote_hand ^= delta,
+        }
+    }
+
     /// 指し手の実行
     pub fn make_move(&mut self, mv: Move) -> UndoInfo {
         let color = self.side_to_move;
+        let ci = color_zobrist_index(color);
 
         if let Some(drop_kind) = mv.drop_piece {
             // 駒を打つ
             let piece = Piece::new(color, drop_kind);
+
+            // Zobrist: 持ち駒から除去
+            let old_count = self.hand(color).count(drop_kind) as usize;
+            self.update_hand_zobrist(color, drop_kind, old_count, old_count - 1);
             self.hand_mut(color).remove(drop_kind);
+
+            // Zobrist: 盤面に配置
+            let ki = piece_kind_zobrist_index(drop_kind);
+            self.zobrist_hash ^= ZOBRIST.piece[ci][ki][mv.to.index()];
             self.set_piece(mv.to, piece);
-            let undo = UndoInfo {
-                mv,
-                captured: None,
-                moved_piece: piece,
-            };
+
+            // Zobrist: 手番変更
+            self.zobrist_hash ^= ZOBRIST.color;
             self.side_to_move = color.opponent();
-            undo
+
+            UndoInfo { mv, captured: None, moved_piece: piece }
         } else {
             // 盤上の駒を移動
             let from = mv.from.unwrap();
             let moved = self.piece_at(from).unwrap();
+
+            // Zobrist: 移動先の捕獲駒を除去
             let captured = self.remove_piece(mv.to);
+            if let Some(cap) = captured {
+                let cap_ci = color_zobrist_index(cap.color);
+                let cap_ki = piece_kind_zobrist_index(cap.kind);
+                self.zobrist_hash ^= ZOBRIST.piece[cap_ci][cap_ki][mv.to.index()];
+            }
+
+            // Zobrist: 移動元の駒を除去
             self.remove_piece(from);
+            let moved_ki = piece_kind_zobrist_index(moved.kind);
+            self.zobrist_hash ^= ZOBRIST.piece[ci][moved_ki][from.index()];
 
             // 駒を取った場合、持ち駒に加える（玉は持ち駒にできない）
             if let Some(cap) = captured {
                 if cap.kind != PieceKind::King {
+                    let unpromoted = cap.kind.unpromoted();
+                    let old_count = self.hand(color).count(unpromoted) as usize;
+                    self.update_hand_zobrist(color, unpromoted, old_count, old_count + 1);
                     self.hand_mut(color).add(cap.kind);
                 }
             }
@@ -117,39 +291,71 @@ impl Position {
             } else {
                 moved.kind
             };
+
+            // Zobrist: 移動先に配置
+            let new_ki = piece_kind_zobrist_index(new_kind);
+            self.zobrist_hash ^= ZOBRIST.piece[ci][new_ki][mv.to.index()];
             self.set_piece(mv.to, Piece::new(color, new_kind));
 
-            let undo = UndoInfo {
-                mv,
-                captured,
-                moved_piece: moved,
-            };
+            // Zobrist: 手番変更
+            self.zobrist_hash ^= ZOBRIST.color;
             self.side_to_move = color.opponent();
-            undo
+
+            UndoInfo { mv, captured, moved_piece: moved }
         }
     }
 
     /// 指し手の取消
     pub fn unmake_move(&mut self, undo: &UndoInfo) {
+        // Zobrist: 手番変更（取消）
+        self.zobrist_hash ^= ZOBRIST.color;
+
         self.side_to_move = self.side_to_move.opponent();
         let color = self.side_to_move;
+        let ci = color_zobrist_index(color);
         let mv = undo.mv;
 
         if mv.drop_piece.is_some() {
             // 打ちの取消
             let kind = mv.drop_piece.unwrap();
+
+            // Zobrist: 盤面から除去
+            let ki = piece_kind_zobrist_index(kind);
+            self.zobrist_hash ^= ZOBRIST.piece[ci][ki][mv.to.index()];
             self.remove_piece(mv.to);
+
+            // Zobrist: 持ち駒に追加
+            let old_count = self.hand(color).count(kind) as usize;
+            self.update_hand_zobrist(color, kind, old_count, old_count + 1);
             self.hand_mut(color).add(kind);
         } else {
             // 移動の取消
             let from = mv.from.unwrap();
+
+            // Zobrist: 移動先の駒を除去（成り後の駒）
+            let piece_at_to = self.piece_at(mv.to).unwrap();
+            let ki_at_to = piece_kind_zobrist_index(piece_at_to.kind);
+            self.zobrist_hash ^= ZOBRIST.piece[ci][ki_at_to][mv.to.index()];
             self.remove_piece(mv.to);
+
+            // Zobrist: 移動元に元の駒を復元
+            let moved_ki = piece_kind_zobrist_index(undo.moved_piece.kind);
+            self.zobrist_hash ^= ZOBRIST.piece[ci][moved_ki][from.index()];
             self.set_piece(from, undo.moved_piece);
 
             // 取った駒を元に戻す
             if let Some(cap) = undo.captured {
+                // Zobrist: 捕獲駒を盤面に復元
+                let cap_ci = color_zobrist_index(cap.color);
+                let cap_ki = piece_kind_zobrist_index(cap.kind);
+                self.zobrist_hash ^= ZOBRIST.piece[cap_ci][cap_ki][mv.to.index()];
                 self.set_piece(mv.to, cap);
+
                 if cap.kind != PieceKind::King {
+                    // Zobrist: 持ち駒から除去
+                    let unpromoted = cap.kind.unpromoted();
+                    let cur_count = self.hand(color).count(unpromoted) as usize;
+                    self.update_hand_zobrist(color, unpromoted, cur_count, cur_count - 1);
                     self.hand_mut(color).remove(cap.kind);
                 }
             }
@@ -228,20 +434,47 @@ impl Position {
     /// sente_hand を除外したハッシュ（優越関係の判定用）
     /// gote_hand は含む（衝立詰将棋では観測構造が gote_hand に依存するため）
     pub fn hash_without_sente_hand(&self) -> u64 {
-        let mut h = DefaultHasher::new();
-        self.board.hash(&mut h);
-        self.gote_hand.hash(&mut h);
-        self.side_to_move.hash(&mut h);
-        h.finish()
+        self.zobrist_hash ^ self.zobrist_sente_hand
     }
 
     /// 盤面と手番のみのハッシュ（持ち駒を全て除外）
     /// 手順ヒント用: 盤面配置が同じなら証明手順が同じ可能性が高い
     pub fn hash_board_only(&self) -> u64 {
-        let mut h = DefaultHasher::new();
-        self.board.hash(&mut h);
-        self.side_to_move.hash(&mut h);
-        h.finish()
+        self.zobrist_hash ^ self.zobrist_sente_hand ^ self.zobrist_gote_hand
+    }
+
+    /// Zobrist ハッシュをスクラッチから計算して設定する
+    /// Position のセットアップ完了後に一度呼び出す
+    pub fn init_zobrist_hash(&mut self) {
+        let mut board_hash = 0u64;
+        for idx in 0..81 {
+            if let Some(piece) = self.board[idx] {
+                let ci = color_zobrist_index(piece.color);
+                let ki = piece_kind_zobrist_index(piece.kind);
+                board_hash ^= ZOBRIST.piece[ci][ki][idx];
+            }
+        }
+
+        let mut sente_hand_hash = 0u64;
+        let mut gote_hand_hash = 0u64;
+        const HAND_KINDS: [PieceKind; 7] = [
+            PieceKind::Rook, PieceKind::Bishop, PieceKind::Gold,
+            PieceKind::Silver, PieceKind::Knight, PieceKind::Lance, PieceKind::Pawn,
+        ];
+        for &kind in &HAND_KINDS {
+            let hi = hand_kind_zobrist_index(kind);
+            sente_hand_hash ^= ZOBRIST.hand[0][hi][self.sente_hand.count(kind) as usize];
+            gote_hand_hash ^= ZOBRIST.hand[1][hi][self.gote_hand.count(kind) as usize];
+        }
+
+        let mut hash = board_hash ^ sente_hand_hash ^ gote_hand_hash;
+        if self.side_to_move == Color::Gote {
+            hash ^= ZOBRIST.color;
+        }
+
+        self.zobrist_hash = hash;
+        self.zobrist_sente_hand = sente_hand_hash;
+        self.zobrist_gote_hand = gote_hand_hash;
     }
 
     /// 無駄合い判定（詰将棋ルール）

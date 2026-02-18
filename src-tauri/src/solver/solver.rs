@@ -8,16 +8,16 @@ use super::solution::*;
 use crate::shogi::types::*;
 
 /// MetaPosition のハッシュキー（転置表用）
-/// 各 Position のハッシュを XOR で結合し、順序に依存しないキーを生成（O(N)）
+/// 各 Position の Zobrist ハッシュをソートし DefaultHasher で結合（衝突耐性が高い）
 fn meta_position_hash(meta: &MetaPosition) -> u64 {
     use std::collections::hash_map::DefaultHasher;
-    let mut xor_hash: u64 = 0;
-    for pos in &meta.positions {
-        let mut h = DefaultHasher::new();
-        pos.hash(&mut h);
-        xor_hash ^= h.finish();
-    }
-    xor_hash
+    let mut hashes: Vec<u64> = meta.positions.iter()
+        .map(|p| p.zobrist_hash)
+        .collect();
+    hashes.sort();
+    let mut h = DefaultHasher::new();
+    hashes.hash(&mut h);
+    h.finish()
 }
 
 /// メタポジションのサイズ上限（これを超える分岐は枝刈り）
