@@ -237,14 +237,42 @@ impl MetaPosition {
         // NoCapture グループ: 攻め方持ち駒ハッシュ → (重複排除用ハッシュ集合, 局面リスト)
         let mut no_capture_groups: HashMap<u64, (HashSet<u64>, Vec<Position>)> = HashMap::new();
 
+        // パス1: 全王手局面で王手回避手を収集し、各手が全局面で無駄合いか判定
+        let mut move_futile_counts: HashMap<Move, (usize, usize)> = HashMap::new();
+        let mut cached_evasions: Vec<Option<Vec<Move>>> = Vec::with_capacity(self.positions.len());
+
         for pos in &self.positions {
+            let defender_color = pos.side_to_move;
+            if !pos.is_in_check(defender_color) {
+                cached_evasions.push(None);
+                continue;
+            }
+            let evasions = pos.generate_check_evasions();
+            for def_mv in &evasions {
+                let entry = move_futile_counts.entry(*def_mv).or_insert((0, 0));
+                entry.1 += 1;
+                if pos.is_futile_interposition(def_mv) {
+                    entry.0 += 1;
+                }
+            }
+            cached_evasions.push(Some(evasions));
+        }
+
+        // 全出現局面で無駄合いの手のみ除外可能（衝立詰将棋: いずれかの局面で有効なら有効）
+        let globally_futile: HashSet<Move> = move_futile_counts
+            .into_iter()
+            .filter(|&(_, (futile, total))| futile == total && total > 0)
+            .map(|(mv, _)| mv)
+            .collect();
+
+        // パス2: 各局面の応手を展開し、観測結果で分類（王手局面はキャッシュ使用＋グローバル無駄合い除外）
+        for (i, pos) in self.positions.iter().enumerate() {
             // posは既に攻め方の手を指した後の状態（玉方手番）
             let defender_color = pos.side_to_move;
-            let in_check = pos.is_in_check(defender_color);
             // 攻め方の持ち駒ハッシュ（玉方の応手では攻め方の持ち駒は変わらない）
             let hand_hash = sente_hand_hash(pos);
 
-            if !in_check {
+            if cached_evasions[i].is_none() {
                 // 王手でない場合（プローブ手など）: 玉方の全合法手を展開する。
                 let legal_moves = pos.generate_legal_moves();
                 if legal_moves.is_empty() {
@@ -282,8 +310,8 @@ impl MetaPosition {
                 continue;
             }
 
-            // 王手回避専用ジェネレータで高速に合法手を生成
-            let legal_moves = pos.generate_check_evasions();
+            // 王手局面: パス1のキャッシュを使用
+            let legal_moves = cached_evasions[i].as_ref().unwrap();
 
             if legal_moves.is_empty() {
                 // 玉方に合法手がない = 詰み
@@ -291,17 +319,19 @@ impl MetaPosition {
                 continue;
             }
 
-            // 衝立詰将棋では、無駄合い判定を個別局面レベルで行わない。
-            // 攻め方は個々の局面を区別できないため、一部の局面で無駄合いでも
-            // 他の局面で有効な応手であれば、その応手は観測分岐に含まれるべき。
-            // MetaPosition全体が実質詰みかどうかは all_effectively_checkmate() で
-            // expand_defense_moves() の呼び出し前に判定済み。
             let attacker_color = defender_color.opponent();
 
             // 遅延クローン: scratch で make_move/unmake_move し、ユニーク時のみクローン
             let mut scratch = pos.clone();
+            let mut has_non_futile = false;
 
-            for def_mv in &legal_moves {
+            for def_mv in legal_moves {
+                // グローバル無駄合い（全局面で無駄合いの手）をスキップ
+                if globally_futile.contains(def_mv) {
+                    continue;
+                }
+                has_non_futile = true;
+
                 let undo = scratch.make_move(*def_mv);
 
                 let captured = pos.piece_at(def_mv.to)
@@ -324,6 +354,11 @@ impl MetaPosition {
                 }
 
                 scratch.unmake_move(&undo);
+            }
+
+            // 全手がグローバル無駄合いで除外された場合: 実質詰み
+            if !has_non_futile {
+                checkmate_positions.push(pos.clone());
             }
         }
 

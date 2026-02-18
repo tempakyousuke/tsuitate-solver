@@ -1111,7 +1111,7 @@ fn dfpn_debug_aigoma_93() {
     print_position(&pos);
 
     let meta = MetaPosition::new(pos.clone());
-    let cancel = cancel_after(120);
+    let cancel = cancel_after(100);
     let mut solver = TsuitateDfpnSolver::new(50_000_000, cancel);
     let result = solver.solve_to_solution(&meta, false);
     println!(

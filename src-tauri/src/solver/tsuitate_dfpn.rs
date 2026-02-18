@@ -998,33 +998,19 @@ impl TsuitateDfpnSolver {
         };
         check_moves.sort_by_key(|mv| sort_key(mv));
 
-        // 合駒可能マスが多い長距離王手を除外
+        // 合駒可能マスが多い長距離王手を除外（打ち駒のみ）
+        // 盤上の駒を動かす手は持ち駒を消費しないため除外しない
         let king_sq_for_filter = meta.positions[0].find_king(Color::Gote);
         check_moves.retain(|mv| {
-            let piece_kind = if let Some(drop_kind) = mv.drop_piece {
-                drop_kind
-            } else if let Some(from) = mv.from {
-                meta.positions
-                    .iter()
-                    .find_map(|pos| {
-                        pos.piece_at(from).map(|p| {
-                            if mv.promotion {
-                                p.kind.promoted().unwrap_or(p.kind)
-                            } else {
-                                p.kind
-                            }
-                        })
-                    })
-                    .unwrap_or(PieceKind::Pawn)
-            } else {
-                PieceKind::Pawn
-            };
+            // 盤上の駒を動かす手は常に候補に残す
+            if mv.drop_piece.is_none() {
+                return true;
+            }
+            let piece_kind = mv.drop_piece.unwrap();
             let is_slider = matches!(
                 piece_kind,
                 PieceKind::Rook
-                    | PieceKind::PromotedRook
                     | PieceKind::Bishop
-                    | PieceKind::PromotedBishop
                     | PieceKind::Lance
             );
             if !is_slider {

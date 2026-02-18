@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 
 use super::movegen;
@@ -477,6 +478,89 @@ impl Position {
         self.zobrist_gote_hand = gote_hand_hash;
     }
 
+    /// 玉が逃げられるマスの集合を返す（8方向チェック: 盤内・自駒なし・相手の利きなし）
+    /// X-ray 効果は無視するが、前後比較では同じバイアスなので問題なし
+    fn king_escape_squares(&self, king_sq: Square, defender_color: Color) -> HashSet<Square> {
+        let attacker_color = defender_color.opponent();
+        let mut escapes = HashSet::new();
+        for &(df, dr) in &[
+            (-1i8, -1i8), (0, -1), (1, -1),
+            (-1, 0), (1, 0),
+            (-1, 1), (0, 1), (1, 1),
+        ] {
+            let nf = king_sq.file as i8 + df;
+            let nr = king_sq.rank as i8 + dr;
+            if !Square::is_valid(nf, nr) {
+                continue;
+            }
+            let sq = Square::new(nf as u8, nr as u8);
+            // 味方の駒がいたら移動不可
+            if let Some(piece) = self.piece_at(sq) {
+                if piece.color == defender_color {
+                    continue;
+                }
+            }
+            // 相手の利きがあれば移動不可
+            if self.is_attacked(sq, attacker_color) {
+                continue;
+            }
+            escapes.insert(sq);
+        }
+        escapes
+    }
+
+    /// slider_from → capture_sq → king_sq が一直線上にあり、
+    /// 駒種が該当方向のスライダーかどうかを判定する。
+    /// 取り返しがスライダーの王手ラインに沿った移動であることの確認用。
+    fn is_slider_line_recapture(
+        &self,
+        cap_from: Square,
+        capture_sq: Square,
+        king_sq: Square,
+        attacker_color: Color,
+    ) -> bool {
+        let piece = match self.piece_at(cap_from) {
+            Some(p) => p,
+            None => return false,
+        };
+
+        // capture_sq → king_sq の方向
+        let df_ck = (king_sq.file as i8 - capture_sq.file as i8).signum();
+        let dr_ck = (king_sq.rank as i8 - capture_sq.rank as i8).signum();
+
+        // slider_from → capture_sq の方向
+        let df_sc = (capture_sq.file as i8 - cap_from.file as i8).signum();
+        let dr_sc = (capture_sq.rank as i8 - cap_from.rank as i8).signum();
+
+        // 同じ直線上でなければ不適格
+        if df_ck != df_sc || dr_ck != dr_sc {
+            return false;
+        }
+
+        // slider_from → capture_sq が実際に直線移動か確認（斜めまたは十字）
+        let abs_df = (capture_sq.file as i8 - cap_from.file as i8).abs();
+        let abs_dr = (capture_sq.rank as i8 - cap_from.rank as i8).abs();
+        if abs_df != abs_dr && abs_df != 0 && abs_dr != 0 {
+            return false; // 直線でも斜めでもない
+        }
+
+        let is_orthogonal = df_ck == 0 || dr_ck == 0;
+
+        match piece.kind {
+            PieceKind::Rook | PieceKind::PromotedRook => is_orthogonal,
+            PieceKind::Bishop | PieceKind::PromotedBishop => !is_orthogonal,
+            PieceKind::Lance => {
+                if !is_orthogonal || df_ck != 0 {
+                    return false; // 香車は縦方向のみ
+                }
+                // 先手香: rank 減少方向 (dr < 0)、後手香: rank 増加方向 (dr > 0)
+                (attacker_color == Color::Sente && dr_sc < 0)
+                    || (attacker_color == Color::Gote && dr_sc > 0)
+            }
+            _ => false,
+        }
+    }
+
     /// 無駄合い判定（詰将棋ルール）
     /// 王手に対する合駒（玉以外の応手）が無駄かどうかを判定する。
     /// 合駒を取り返して再び王手＋詰みになる場合、無駄合いとみなす。
@@ -537,6 +621,35 @@ impl Position {
             // 取り返し後に即詰みなら無駄合い
             if pos_after.is_checkmate() {
                 return true;
+            }
+
+            // スライダー筋の無駄合い判定（打ち合駒のみ）:
+            // 条件A: 取り返しが王手ラインに沿ったスライダー移動
+            // 条件B: 取り返し後も王手（上で検証済み）
+            // 条件C: 取り返し後の玉の逃げ場 ⊆ 合駒前の玉の逃げ場
+            // 条件D: 後手が新位置のスライダーを取れない
+            // 全条件満たせば合駒は玉方にとって厳密に損（逃げ場不変＋先手駒得）
+            if def_mv.from.is_none() {
+                if let Some(cap_from) = cap_mv.from {
+                    if let Some(king_sq) = pos_after.find_king(defender_color) {
+                        // 条件A: スライダーラインに沿った取り返しか
+                        if self.is_slider_line_recapture(
+                            cap_from, capture_sq, king_sq, attacker_color,
+                        ) {
+                            // 条件D: 後手がスライダーの新位置を取れないか
+                            if !pos_after.is_attacked(capture_sq, defender_color) {
+                                // 条件C: 逃げ場が減っていないか
+                                let escapes_before =
+                                    self.king_escape_squares(king_sq, defender_color);
+                                let escapes_after =
+                                    pos_after.king_escape_squares(king_sq, defender_color);
+                                if escapes_after.is_subset(&escapes_before) {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             // 取り返し後の全応手を生成
