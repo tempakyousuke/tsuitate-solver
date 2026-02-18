@@ -94,6 +94,7 @@
       if (!isAttackMove(current)) break;
       const branch = current.AttackMove.branches[idx];
       if (!branch) break;
+      moves.push(observationLabel(branch.observation));
       current = branch.continuation;
       if (isAttackMove(current)) {
         moves.push(current.AttackMove.mv.notation);
