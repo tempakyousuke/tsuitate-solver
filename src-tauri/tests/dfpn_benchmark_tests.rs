@@ -150,6 +150,45 @@ fn run_question_shortest(number: u32, node_limit: u64, time_limit_secs: u64) {
     run_question_with_options(number, node_limit, time_limit_secs, true);
 }
 
+/// 1問を余詰めチェック付きで解いて結果を表示するヘルパー
+fn run_question_second(number: u32, node_limit: u64, time_limit_secs: u64) {
+    let path = sample_questions_dir().join(format!("{}.json", number));
+    let pos = load_question(&path);
+
+    println!("=== 問題 {} (余詰めチェック) ===", number);
+    print_position(&pos);
+
+    let meta = MetaPosition::new(pos);
+    let cancel = cancel_after(time_limit_secs);
+
+    let mut solver = TsuitateDfpnSolver::new(node_limit, cancel);
+
+    let start = Instant::now();
+    let result = solver.solve_to_solution_with_second(&meta, false);
+    let elapsed = start.elapsed();
+
+    let depth = result.tree.as_ref().map_or(0, |t| t.max_moves());
+    let has_second = result.second_tree.is_some();
+    let second_depth = result.second_tree.as_ref().map_or(0, |t| t.max_moves());
+
+    println!(
+        "問題{}: found={}, depth={}, has_second={}, second_depth={}, time={:.3}s, nodes={}, msg={}",
+        number, result.found, depth, has_second, second_depth,
+        elapsed.as_secs_f64(), solver.nodes_searched, result.message,
+    );
+    if let Some(ref tree) = result.tree {
+        println!("  主解:");
+        print_solution_tree(tree, 2);
+    }
+    if let Some(ref second) = result.second_tree {
+        println!("  余詰め:");
+        print_solution_tree(second, 2);
+    } else if result.found {
+        println!("  余詰めなし（完全作）");
+    }
+    println!();
+}
+
 fn run_question_with_options(number: u32, node_limit: u64, time_limit_secs: u64, find_shortest: bool) {
     let path = sample_questions_dir().join(format!("{}.json", number));
     let pos = load_question(&path);
@@ -716,6 +755,164 @@ dfpn_shortest_test!(dfpn_bench_shortest_question_145, 145);
 dfpn_shortest_test!(dfpn_bench_shortest_question_146, 146);
 dfpn_shortest_test!(dfpn_bench_shortest_question_147, 147);
 
+// === 個別テスト（余詰めチェック） ===
+
+macro_rules! dfpn_second_test {
+    ($name:ident, $num:expr) => {
+        #[test]
+        #[ignore]
+        fn $name() { run_question_second($num, NODE_LIMIT, TIME_LIMIT); }
+    };
+}
+
+dfpn_second_test!(dfpn_bench_second_question_01, 1);
+dfpn_second_test!(dfpn_bench_second_question_02, 2);
+dfpn_second_test!(dfpn_bench_second_question_03, 3);
+dfpn_second_test!(dfpn_bench_second_question_04, 4);
+dfpn_second_test!(dfpn_bench_second_question_05, 5);
+dfpn_second_test!(dfpn_bench_second_question_06, 6);
+dfpn_second_test!(dfpn_bench_second_question_07, 7);
+dfpn_second_test!(dfpn_bench_second_question_08, 8);
+dfpn_second_test!(dfpn_bench_second_question_09, 9);
+dfpn_second_test!(dfpn_bench_second_question_10, 10);
+dfpn_second_test!(dfpn_bench_second_question_11, 11);
+dfpn_second_test!(dfpn_bench_second_question_12, 12);
+dfpn_second_test!(dfpn_bench_second_question_13, 13);
+dfpn_second_test!(dfpn_bench_second_question_14, 14);
+dfpn_second_test!(dfpn_bench_second_question_15, 15);
+dfpn_second_test!(dfpn_bench_second_question_16, 16);
+dfpn_second_test!(dfpn_bench_second_question_17, 17);
+dfpn_second_test!(dfpn_bench_second_question_18, 18);
+dfpn_second_test!(dfpn_bench_second_question_19, 19);
+dfpn_second_test!(dfpn_bench_second_question_20, 20);
+dfpn_second_test!(dfpn_bench_second_question_21, 21);
+dfpn_second_test!(dfpn_bench_second_question_22, 22);
+dfpn_second_test!(dfpn_bench_second_question_23, 23);
+dfpn_second_test!(dfpn_bench_second_question_24, 24);
+dfpn_second_test!(dfpn_bench_second_question_25, 25);
+dfpn_second_test!(dfpn_bench_second_question_26, 26);
+dfpn_second_test!(dfpn_bench_second_question_27, 27);
+dfpn_second_test!(dfpn_bench_second_question_28, 28);
+dfpn_second_test!(dfpn_bench_second_question_29, 29);
+dfpn_second_test!(dfpn_bench_second_question_30, 30);
+dfpn_second_test!(dfpn_bench_second_question_31, 31);
+dfpn_second_test!(dfpn_bench_second_question_32, 32);
+dfpn_second_test!(dfpn_bench_second_question_33, 33);
+dfpn_second_test!(dfpn_bench_second_question_34, 34);
+dfpn_second_test!(dfpn_bench_second_question_35, 35);
+dfpn_second_test!(dfpn_bench_second_question_36, 36);
+dfpn_second_test!(dfpn_bench_second_question_37, 37);
+dfpn_second_test!(dfpn_bench_second_question_38, 38);
+dfpn_second_test!(dfpn_bench_second_question_39, 39);
+dfpn_second_test!(dfpn_bench_second_question_40, 40);
+dfpn_second_test!(dfpn_bench_second_question_41, 41);
+dfpn_second_test!(dfpn_bench_second_question_42, 42);
+dfpn_second_test!(dfpn_bench_second_question_43, 43);
+dfpn_second_test!(dfpn_bench_second_question_44, 44);
+dfpn_second_test!(dfpn_bench_second_question_45, 45);
+dfpn_second_test!(dfpn_bench_second_question_46, 46);
+dfpn_second_test!(dfpn_bench_second_question_47, 47);
+dfpn_second_test!(dfpn_bench_second_question_48, 48);
+dfpn_second_test!(dfpn_bench_second_question_49, 49);
+dfpn_second_test!(dfpn_bench_second_question_50, 50);
+dfpn_second_test!(dfpn_bench_second_question_51, 51);
+dfpn_second_test!(dfpn_bench_second_question_52, 52);
+dfpn_second_test!(dfpn_bench_second_question_53, 53);
+dfpn_second_test!(dfpn_bench_second_question_54, 54);
+dfpn_second_test!(dfpn_bench_second_question_55, 55);
+dfpn_second_test!(dfpn_bench_second_question_56, 56);
+dfpn_second_test!(dfpn_bench_second_question_57, 57);
+dfpn_second_test!(dfpn_bench_second_question_58, 58);
+dfpn_second_test!(dfpn_bench_second_question_59, 59);
+dfpn_second_test!(dfpn_bench_second_question_60, 60);
+dfpn_second_test!(dfpn_bench_second_question_61, 61);
+dfpn_second_test!(dfpn_bench_second_question_62, 62);
+dfpn_second_test!(dfpn_bench_second_question_63, 63);
+dfpn_second_test!(dfpn_bench_second_question_64, 64);
+dfpn_second_test!(dfpn_bench_second_question_65, 65);
+dfpn_second_test!(dfpn_bench_second_question_66, 66);
+dfpn_second_test!(dfpn_bench_second_question_67, 67);
+dfpn_second_test!(dfpn_bench_second_question_68, 68);
+dfpn_second_test!(dfpn_bench_second_question_69, 69);
+dfpn_second_test!(dfpn_bench_second_question_70, 70);
+dfpn_second_test!(dfpn_bench_second_question_71, 71);
+dfpn_second_test!(dfpn_bench_second_question_72, 72);
+dfpn_second_test!(dfpn_bench_second_question_73, 73);
+dfpn_second_test!(dfpn_bench_second_question_74, 74);
+dfpn_second_test!(dfpn_bench_second_question_75, 75);
+dfpn_second_test!(dfpn_bench_second_question_76, 76);
+dfpn_second_test!(dfpn_bench_second_question_77, 77);
+dfpn_second_test!(dfpn_bench_second_question_78, 78);
+dfpn_second_test!(dfpn_bench_second_question_79, 79);
+dfpn_second_test!(dfpn_bench_second_question_80, 80);
+dfpn_second_test!(dfpn_bench_second_question_81, 81);
+dfpn_second_test!(dfpn_bench_second_question_82, 82);
+dfpn_second_test!(dfpn_bench_second_question_83, 83);
+dfpn_second_test!(dfpn_bench_second_question_84, 84);
+dfpn_second_test!(dfpn_bench_second_question_85, 85);
+dfpn_second_test!(dfpn_bench_second_question_86, 86);
+dfpn_second_test!(dfpn_bench_second_question_87, 87);
+dfpn_second_test!(dfpn_bench_second_question_88, 88);
+dfpn_second_test!(dfpn_bench_second_question_89, 89);
+dfpn_second_test!(dfpn_bench_second_question_90, 90);
+dfpn_second_test!(dfpn_bench_second_question_91, 91);
+dfpn_second_test!(dfpn_bench_second_question_92, 92);
+dfpn_second_test!(dfpn_bench_second_question_93, 93);
+dfpn_second_test!(dfpn_bench_second_question_94, 94);
+dfpn_second_test!(dfpn_bench_second_question_95, 95);
+dfpn_second_test!(dfpn_bench_second_question_96, 96);
+dfpn_second_test!(dfpn_bench_second_question_97, 97);
+dfpn_second_test!(dfpn_bench_second_question_98, 98);
+dfpn_second_test!(dfpn_bench_second_question_99, 99);
+dfpn_second_test!(dfpn_bench_second_question_100, 100);
+dfpn_second_test!(dfpn_bench_second_question_101, 101);
+dfpn_second_test!(dfpn_bench_second_question_102, 102);
+dfpn_second_test!(dfpn_bench_second_question_103, 103);
+dfpn_second_test!(dfpn_bench_second_question_104, 104);
+dfpn_second_test!(dfpn_bench_second_question_105, 105);
+dfpn_second_test!(dfpn_bench_second_question_106, 106);
+dfpn_second_test!(dfpn_bench_second_question_107, 107);
+dfpn_second_test!(dfpn_bench_second_question_108, 108);
+dfpn_second_test!(dfpn_bench_second_question_109, 109);
+dfpn_second_test!(dfpn_bench_second_question_110, 110);
+dfpn_second_test!(dfpn_bench_second_question_111, 111);
+dfpn_second_test!(dfpn_bench_second_question_112, 112);
+dfpn_second_test!(dfpn_bench_second_question_113, 113);
+dfpn_second_test!(dfpn_bench_second_question_114, 114);
+dfpn_second_test!(dfpn_bench_second_question_115, 115);
+dfpn_second_test!(dfpn_bench_second_question_116, 116);
+dfpn_second_test!(dfpn_bench_second_question_117, 117);
+dfpn_second_test!(dfpn_bench_second_question_118, 118);
+dfpn_second_test!(dfpn_bench_second_question_119, 119);
+dfpn_second_test!(dfpn_bench_second_question_120, 120);
+dfpn_second_test!(dfpn_bench_second_question_121, 121);
+dfpn_second_test!(dfpn_bench_second_question_122, 122);
+dfpn_second_test!(dfpn_bench_second_question_123, 123);
+dfpn_second_test!(dfpn_bench_second_question_124, 124);
+dfpn_second_test!(dfpn_bench_second_question_125, 125);
+dfpn_second_test!(dfpn_bench_second_question_126, 126);
+dfpn_second_test!(dfpn_bench_second_question_127, 127);
+dfpn_second_test!(dfpn_bench_second_question_128, 128);
+dfpn_second_test!(dfpn_bench_second_question_129, 129);
+dfpn_second_test!(dfpn_bench_second_question_130, 130);
+dfpn_second_test!(dfpn_bench_second_question_131, 131);
+dfpn_second_test!(dfpn_bench_second_question_132, 132);
+dfpn_second_test!(dfpn_bench_second_question_133, 133);
+dfpn_second_test!(dfpn_bench_second_question_134, 134);
+dfpn_second_test!(dfpn_bench_second_question_135, 135);
+dfpn_second_test!(dfpn_bench_second_question_136, 136);
+dfpn_second_test!(dfpn_bench_second_question_137, 137);
+dfpn_second_test!(dfpn_bench_second_question_138, 138);
+dfpn_second_test!(dfpn_bench_second_question_139, 139);
+dfpn_second_test!(dfpn_bench_second_question_140, 140);
+dfpn_second_test!(dfpn_bench_second_question_141, 141);
+dfpn_second_test!(dfpn_bench_second_question_142, 142);
+dfpn_second_test!(dfpn_bench_second_question_143, 143);
+dfpn_second_test!(dfpn_bench_second_question_144, 144);
+dfpn_second_test!(dfpn_bench_second_question_145, 145);
+dfpn_second_test!(dfpn_bench_second_question_146, 146);
+dfpn_second_test!(dfpn_bench_second_question_147, 147);
+
 /// aigoma.json デバッグテスト
 #[test]
 #[ignore]
@@ -1132,6 +1329,182 @@ fn run_all_questions(find_shortest: bool) {
             },
             r.time_secs,
             r.nodes,
+        ));
+    }
+
+    std::fs::write(&output_path, &md)
+        .unwrap_or_else(|e| panic!("Failed to write {}: {}", output_path.display(), e));
+    println!(
+        "\nベンチマーク結果を {} に出力しました",
+        output_path.display()
+    );
+}
+
+/// 全問一括ベンチマーク（余詰めチェック）
+/// cargo test --release --test dfpn_benchmark_tests dfpn_bench_all_second -- --ignored --nocapture
+#[test]
+#[ignore]
+fn dfpn_bench_all_second_questions() {
+    let dir = sample_questions_dir();
+    let node_limit: u64 = NODE_LIMIT;
+    let time_limit_secs: u64 = TIME_LIMIT;
+
+    println!(
+        "=== 衝立df-pn 全問ベンチマーク [余詰めチェック] (node_limit={}, time_limit={}s) ===\n",
+        node_limit, time_limit_secs
+    );
+
+    #[allow(dead_code)]
+    struct Result {
+        number: u32,
+        found: bool,
+        depth: u32,
+        has_second: bool,
+        second_depth: u32,
+        time_secs: f64,
+        nodes: u64,
+        message: String,
+    }
+
+    let mut results = Vec::new();
+
+    for number in 1..=147 {
+        let path = dir.join(format!("{}.json", number));
+        if !path.exists() {
+            continue;
+        }
+
+        let pos = match std::panic::catch_unwind(|| load_question(&path)) {
+            Ok(pos) => pos,
+            Err(_) => {
+                println!("問題{:3}: ファイル読み込みエラー（スキップ）", number);
+                continue;
+            }
+        };
+        let meta = MetaPosition::new(pos);
+        let cancel = cancel_after(time_limit_secs);
+
+        let mut solver = TsuitateDfpnSolver::new(node_limit, cancel);
+
+        let start = Instant::now();
+        let result = solver.solve_to_solution_with_second(&meta, false);
+        let elapsed = start.elapsed();
+
+        let depth = result.tree.as_ref().map_or(0, |t| t.max_moves());
+        let has_second = result.second_tree.is_some();
+        let second_depth = result.second_tree.as_ref().map_or(0, |t| t.max_moves());
+        let time_secs = elapsed.as_secs_f64();
+        let nodes = solver.nodes_searched;
+
+        let second_info = if has_second {
+            format!("余詰め{}手", second_depth)
+        } else if result.found {
+            "完全作".to_string()
+        } else {
+            "-".to_string()
+        };
+
+        println!(
+            "問題{:3}: found={:<5} depth={:2} second={:<10} time={:8.3}s nodes={:>12} | {}",
+            number, result.found, depth, second_info, time_secs, nodes, result.message,
+        );
+
+        results.push(Result {
+            number,
+            found: result.found,
+            depth,
+            has_second,
+            second_depth,
+            time_secs,
+            nodes,
+            message: result.message.clone(),
+        });
+    }
+
+    // サマリー
+    let total = results.len();
+    let solved = results.iter().filter(|r| r.found).count();
+    let perfect = results.iter().filter(|r| r.found && !r.has_second).count();
+    let has_second = results.iter().filter(|r| r.has_second).count();
+    let total_time: f64 = results.iter().map(|r| r.time_secs).sum();
+    let total_nodes: u64 = results.iter().map(|r| r.nodes).sum();
+
+    println!("\n=== サマリー [余詰めチェック] ===");
+    println!("解けた問題: {}/{}", solved, total);
+    println!("完全作: {}", perfect);
+    println!("余詰めあり: {}", has_second);
+    println!("合計時間: {:.3}s", total_time);
+    println!("合計ノード数: {}", total_nodes);
+    println!();
+    println!(
+        "{:<8} {:<8} {:<6} {:<10} {:<10} {:<12} {:<14}",
+        "問題", "結果", "手数", "余詰め", "余詰手数", "時間(s)", "ノード数"
+    );
+    println!("{}", "-".repeat(72));
+    for r in &results {
+        let result_str = if r.found { "OK" } else { "NG" };
+        let depth_str = if r.found { format!("{}", r.depth) } else { "-".to_string() };
+        let second_str = if r.has_second {
+            "あり"
+        } else if r.found {
+            "なし"
+        } else {
+            "-"
+        };
+        let second_depth_str = if r.has_second {
+            format!("{}", r.second_depth)
+        } else {
+            "-".to_string()
+        };
+        println!(
+            "{:<8} {:<8} {:<6} {:<10} {:<10} {:<12.3} {:<14}",
+            r.number, result_str, depth_str, second_str, second_depth_str,
+            r.time_secs, r.nodes,
+        );
+    }
+
+    // Markdown ファイル出力
+    let output_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("dfpn-benchmark-results-second.md");
+
+    let now = chrono::Local::now();
+    let mut md = String::new();
+    md.push_str("# 衝立df-pn ベンチマーク結果 [余詰めチェック]\n\n");
+    md.push_str(&format!(
+        "- 実行日時: {}\n",
+        now.format("%Y-%m-%d %H:%M:%S")
+    ));
+    md.push_str(&format!("- ノード上限: {}\n", node_limit));
+    md.push_str(&format!("- 制限時間: {}秒/問\n", time_limit_secs));
+    md.push_str(&format!("- 解けた問題: {}/{}\n", solved, total));
+    md.push_str(&format!("- 完全作: {}\n", perfect));
+    md.push_str(&format!("- 余詰めあり: {}\n", has_second));
+    md.push_str(&format!("- 合計時間: {:.3}秒\n", total_time));
+    md.push_str(&format!("- 合計ノード数: {}\n\n", total_nodes));
+
+    md.push_str("| 問題 | 結果 | 手数 | 余詰め | 余詰手数 | 時間(秒) | ノード数 |\n");
+    md.push_str("|-----:|:----:|-----:|:------:|---------:|---------:|---------:|\n");
+    for r in &results {
+        let result_str = if r.found { "OK" } else { "NG" };
+        let depth_str = if r.found { format!("{}", r.depth) } else { "-".to_string() };
+        let second_str = if r.has_second {
+            "あり"
+        } else if r.found {
+            "なし"
+        } else {
+            "-"
+        };
+        let second_depth_str = if r.has_second {
+            format!("{}", r.second_depth)
+        } else {
+            "-".to_string()
+        };
+        md.push_str(&format!(
+            "| {} | {} | {} | {} | {} | {:.3} | {} |\n",
+            r.number, result_str, depth_str, second_str, second_depth_str,
+            r.time_secs, r.nodes,
         ));
     }
 
