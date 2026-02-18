@@ -1170,86 +1170,70 @@ impl TsuitateDfpnSolver {
         }
     }
 
-    /// 二分探索で最短の深さを求める
+    /// 線形スキャンで最短の深さを求める
+    ///
+    /// 浅い深さから順に探索し、最初に証明に成功した深さが最短解。
+    /// 常に「深くなる方向」に進むため、前回の証明済みエントリを常に再利用でき、
+    /// 二分探索のような「浅くなる方向」での全テーブルクリアが不要。
     ///
     /// 最適化:
     /// - 深さ非依存のキャッシュ（and_expansion_cache, or_candidate_cache, move_hints,
     ///   proof_cache）は全反復で保持
-    /// - 深さを増やす方向（前回失敗→より深い制限で再挑戦）の場合:
-    ///   - or_table/and_table の証明済みエントリ (pn=0) を保持（浅い深さの証明は深い深さでも有効）
-    ///   - dominance_table, or_proof_hands, and_proof_hands も保持
-    /// - 深さを減らす方向（前回成功→より浅い制限で再挑戦）の場合:
-    ///   - 全ての証明依存テーブルをクリア（深い証明は浅い深さで無効の可能性あり）
+    /// - or_table/and_table の証明済みエントリ (pn=0) を毎回保持
+    ///   （浅い深さの証明は深い深さでも有効）
+    /// - dominance_table, or_proof_hands, and_proof_hands も保持
+    /// - OR ノードは偶数深さにのみ存在するため、奇数 depth_limit のみ試行
+    ///   （depth_limit=2k と 2k+1 は同一結果 → step=2 で探索）
     fn shorten_solution(
         &mut self,
         meta: &MetaPosition,
         initial_tree: Option<SolutionNode>,
         initial_depth: u32,
     ) -> (Option<SolutionNode>, u32, u64) {
-        let mut low: u32 = 1;
-        let mut high: u32 = initial_depth - 1;
         let mut best_tree = initial_tree;
         let mut best_depth = initial_depth;
         let mut total_nodes: u64 = 0;
-        let mut prev_depth_limit: Option<u32> = None;
 
-        while low <= high {
+        // 初回: 無限深さから有限深さへの遷移。証明依存テーブルをクリア。
+        // 深さ非依存キャッシュ（and_expansion_cache, or_candidate_cache,
+        // move_hints, proof_cache）は保持。
+        self.or_table.clear();
+        self.and_table.clear();
+        self.dominance_table.clear();
+        self.or_proof_hands.clear();
+        self.and_proof_hands.clear();
+
+        // 浅い深さから順に探索（常に深くなる方向 → テーブル再利用可能）
+        let mut depth: u32 = 1;
+        while depth < best_depth {
             if self.should_stop() {
                 break;
             }
 
-            let mid = low + (high - low) / 2;
-
-            // 方向に応じた選択的テーブルクリア
-            let going_deeper = prev_depth_limit.map_or(false, |prev| mid > prev);
-
-            if going_deeper {
-                // 深さを増やす方向: 証明済みエントリのみ保持（浅い証明は深い深さでも有効）
-                // 反証・中間値は深さ制限起因の可能性があるため除去
+            // 前回より深い → 証明済みエントリ(pn=0)のみ保持、反証・中間値は除去
+            // dominance_table, or_proof_hands, and_proof_hands は保持
+            if depth > 1 {
                 self.or_table.retain(|_, v| v.pn == 0);
                 self.and_table.retain(|_, v| v.pn == 0);
-                // dominance_table, or_proof_hands, and_proof_hands は保持
-                // （浅い深さでの証明駒は深い深さでも有効）
-            } else {
-                // 深さを減らす方向 or 初回: 証明依存テーブルを全クリア
-                // （深い証明は浅い深さで達成できない可能性あり）
-                self.or_table.clear();
-                self.and_table.clear();
-                self.dominance_table.clear();
-                self.or_proof_hands.clear();
-                self.and_proof_hands.clear();
             }
 
-            // 深さ非依存のキャッシュは常に保持:
-            // - and_expansion_cache: AND ノード展開の構造データ（深さ無関係）
-            // - or_candidate_cache: 攻め手候補リスト（深さ無関係）
-            // - move_hints: 手順ヒント（ヒューリスティック、安全に再利用可能）
-            // - proof_cache: 証明木（try_replay_proof が深さ制限をチェック）
-
             self.nodes_searched = 0;
-            self.depth_limit = Some(mid);
-            prev_depth_limit = Some(mid);
+            self.depth_limit = Some(depth);
 
             let result = self.solve(meta);
             total_nodes += self.nodes_searched;
 
-            match result {
-                TsuitateDfpnResult::Proven => {
-                    let tree = self.extract_solution(meta);
-                    let actual_depth = tree.as_ref().map(|t| t.max_moves()).unwrap_or(0);
-                    if actual_depth < best_depth {
-                        best_tree = tree;
-                        best_depth = actual_depth;
-                    }
-                    if actual_depth <= 1 {
-                        break;
-                    }
-                    high = actual_depth - 1;
+            if result == TsuitateDfpnResult::Proven {
+                let tree = self.extract_solution(meta);
+                let actual_depth = tree.as_ref().map(|t| t.max_moves()).unwrap_or(0);
+                if actual_depth < best_depth {
+                    best_tree = tree;
+                    best_depth = actual_depth;
                 }
-                _ => {
-                    low = mid + 1;
-                }
+                break; // 最初に見つかった深さが最短
             }
+
+            depth += 2; // OR ノードは偶数深さのみ → 奇数 depth_limit のみ意味がある
         }
 
         self.depth_limit = None;
