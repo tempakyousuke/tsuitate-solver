@@ -490,6 +490,60 @@ fn bench_question_41() {
     run_question(41, 15, 60);
 }
 
+#[test]
+#[ignore]
+fn bench_question_42() {
+    run_question(42, 15, 60);
+}
+
+#[test]
+#[ignore]
+fn bench_question_43() {
+    run_question(43, 15, 60);
+}
+
+#[test]
+#[ignore]
+fn bench_question_44() {
+    run_question(44, 15, 60);
+}
+
+#[test]
+#[ignore]
+fn bench_question_45() {
+    run_question(45, 15, 60);
+}
+
+#[test]
+#[ignore]
+fn bench_question_46() {
+    run_question(46, 15, 60);
+}
+
+#[test]
+#[ignore]
+fn bench_question_47() {
+    run_question(47, 15, 60);
+}
+
+#[test]
+#[ignore]
+fn bench_question_48() {
+    run_question(48, 15, 60);
+}
+
+#[test]
+#[ignore]
+fn bench_question_49() {
+    run_question(49, 15, 60);
+}
+
+#[test]
+#[ignore]
+fn bench_question_50() {
+    run_question(50, 15, 60);
+}
+
 /// 全問一括ベンチマーク（サマリー表付き）
 /// cargo test --release -- --ignored bench_all_questions --nocapture
 #[test]
@@ -515,7 +569,7 @@ fn bench_all_questions() {
 
     let mut results = Vec::new();
 
-    for number in 1..=41 {
+    for number in 1..=50 {
         let path = dir.join(format!("{}.json", number));
         if !path.exists() {
             println!("問題{}: ファイルが見つかりません", number);

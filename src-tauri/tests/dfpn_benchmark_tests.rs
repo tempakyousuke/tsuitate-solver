@@ -416,6 +416,42 @@ fn dfpn_bench_question_40() { run_question(40, NODE_LIMIT, TIME_LIMIT); }
 #[ignore]
 fn dfpn_bench_question_41() { run_question(41, NODE_LIMIT, TIME_LIMIT); }
 
+#[test]
+#[ignore]
+fn dfpn_bench_question_42() { run_question(42, NODE_LIMIT, TIME_LIMIT); }
+
+#[test]
+#[ignore]
+fn dfpn_bench_question_43() { run_question(43, NODE_LIMIT, TIME_LIMIT); }
+
+#[test]
+#[ignore]
+fn dfpn_bench_question_44() { run_question(44, NODE_LIMIT, TIME_LIMIT); }
+
+#[test]
+#[ignore]
+fn dfpn_bench_question_45() { run_question(45, NODE_LIMIT, TIME_LIMIT); }
+
+#[test]
+#[ignore]
+fn dfpn_bench_question_46() { run_question(46, NODE_LIMIT, TIME_LIMIT); }
+
+#[test]
+#[ignore]
+fn dfpn_bench_question_47() { run_question(47, NODE_LIMIT, TIME_LIMIT); }
+
+#[test]
+#[ignore]
+fn dfpn_bench_question_48() { run_question(48, NODE_LIMIT, TIME_LIMIT); }
+
+#[test]
+#[ignore]
+fn dfpn_bench_question_49() { run_question(49, NODE_LIMIT, TIME_LIMIT); }
+
+#[test]
+#[ignore]
+fn dfpn_bench_question_50() { run_question(50, NODE_LIMIT, TIME_LIMIT); }
+
 // === 個別テスト（最短経路探索あり） ===
 
 macro_rules! dfpn_shortest_test {
@@ -467,6 +503,15 @@ dfpn_shortest_test!(dfpn_bench_shortest_question_38, 38);
 dfpn_shortest_test!(dfpn_bench_shortest_question_39, 39);
 dfpn_shortest_test!(dfpn_bench_shortest_question_40, 40);
 dfpn_shortest_test!(dfpn_bench_shortest_question_41, 41);
+dfpn_shortest_test!(dfpn_bench_shortest_question_42, 42);
+dfpn_shortest_test!(dfpn_bench_shortest_question_43, 43);
+dfpn_shortest_test!(dfpn_bench_shortest_question_44, 44);
+dfpn_shortest_test!(dfpn_bench_shortest_question_45, 45);
+dfpn_shortest_test!(dfpn_bench_shortest_question_46, 46);
+dfpn_shortest_test!(dfpn_bench_shortest_question_47, 47);
+dfpn_shortest_test!(dfpn_bench_shortest_question_48, 48);
+dfpn_shortest_test!(dfpn_bench_shortest_question_49, 49);
+dfpn_shortest_test!(dfpn_bench_shortest_question_50, 50);
 
 /// aigoma.json デバッグテスト
 #[test]
@@ -779,7 +824,7 @@ fn run_all_questions(find_shortest: bool) {
 
     let mut results = Vec::new();
 
-    for number in 1..=41 {
+    for number in 1..=50 {
         let path = dir.join(format!("{}.json", number));
         if !path.exists() {
             println!("問題{}: ファイルが見つかりません", number);
