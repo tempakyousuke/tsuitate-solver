@@ -452,6 +452,112 @@ fn dfpn_bench_question_49() { run_question(49, NODE_LIMIT, TIME_LIMIT); }
 #[ignore]
 fn dfpn_bench_question_50() { run_question(50, NODE_LIMIT, TIME_LIMIT); }
 
+macro_rules! dfpn_test {
+    ($name:ident, $num:expr) => {
+        #[test]
+        #[ignore]
+        fn $name() { run_question($num, NODE_LIMIT, TIME_LIMIT); }
+    };
+}
+
+dfpn_test!(dfpn_bench_question_51, 51);
+dfpn_test!(dfpn_bench_question_52, 52);
+dfpn_test!(dfpn_bench_question_53, 53);
+dfpn_test!(dfpn_bench_question_54, 54);
+dfpn_test!(dfpn_bench_question_55, 55);
+dfpn_test!(dfpn_bench_question_56, 56);
+dfpn_test!(dfpn_bench_question_57, 57);
+dfpn_test!(dfpn_bench_question_58, 58);
+dfpn_test!(dfpn_bench_question_59, 59);
+dfpn_test!(dfpn_bench_question_60, 60);
+dfpn_test!(dfpn_bench_question_61, 61);
+dfpn_test!(dfpn_bench_question_62, 62);
+dfpn_test!(dfpn_bench_question_63, 63);
+dfpn_test!(dfpn_bench_question_64, 64);
+dfpn_test!(dfpn_bench_question_65, 65);
+dfpn_test!(dfpn_bench_question_66, 66);
+dfpn_test!(dfpn_bench_question_67, 67);
+dfpn_test!(dfpn_bench_question_68, 68);
+dfpn_test!(dfpn_bench_question_69, 69);
+dfpn_test!(dfpn_bench_question_70, 70);
+dfpn_test!(dfpn_bench_question_71, 71);
+dfpn_test!(dfpn_bench_question_72, 72);
+dfpn_test!(dfpn_bench_question_73, 73);
+dfpn_test!(dfpn_bench_question_74, 74);
+dfpn_test!(dfpn_bench_question_75, 75);
+dfpn_test!(dfpn_bench_question_76, 76);
+dfpn_test!(dfpn_bench_question_77, 77);
+dfpn_test!(dfpn_bench_question_78, 78);
+dfpn_test!(dfpn_bench_question_79, 79);
+dfpn_test!(dfpn_bench_question_80, 80);
+dfpn_test!(dfpn_bench_question_81, 81);
+dfpn_test!(dfpn_bench_question_82, 82);
+dfpn_test!(dfpn_bench_question_83, 83);
+dfpn_test!(dfpn_bench_question_84, 84);
+dfpn_test!(dfpn_bench_question_85, 85);
+dfpn_test!(dfpn_bench_question_86, 86);
+dfpn_test!(dfpn_bench_question_87, 87);
+dfpn_test!(dfpn_bench_question_88, 88);
+dfpn_test!(dfpn_bench_question_89, 89);
+dfpn_test!(dfpn_bench_question_90, 90);
+dfpn_test!(dfpn_bench_question_91, 91);
+dfpn_test!(dfpn_bench_question_92, 92);
+dfpn_test!(dfpn_bench_question_93, 93);
+dfpn_test!(dfpn_bench_question_94, 94);
+dfpn_test!(dfpn_bench_question_95, 95);
+dfpn_test!(dfpn_bench_question_96, 96);
+dfpn_test!(dfpn_bench_question_97, 97);
+dfpn_test!(dfpn_bench_question_98, 98);
+dfpn_test!(dfpn_bench_question_99, 99);
+dfpn_test!(dfpn_bench_question_100, 100);
+dfpn_test!(dfpn_bench_question_101, 101);
+dfpn_test!(dfpn_bench_question_102, 102);
+dfpn_test!(dfpn_bench_question_103, 103);
+dfpn_test!(dfpn_bench_question_104, 104);
+dfpn_test!(dfpn_bench_question_105, 105);
+dfpn_test!(dfpn_bench_question_106, 106);
+dfpn_test!(dfpn_bench_question_107, 107);
+dfpn_test!(dfpn_bench_question_108, 108);
+dfpn_test!(dfpn_bench_question_109, 109);
+dfpn_test!(dfpn_bench_question_110, 110);
+dfpn_test!(dfpn_bench_question_111, 111);
+dfpn_test!(dfpn_bench_question_112, 112);
+dfpn_test!(dfpn_bench_question_113, 113);
+dfpn_test!(dfpn_bench_question_114, 114);
+dfpn_test!(dfpn_bench_question_115, 115);
+dfpn_test!(dfpn_bench_question_116, 116);
+dfpn_test!(dfpn_bench_question_117, 117);
+dfpn_test!(dfpn_bench_question_118, 118);
+dfpn_test!(dfpn_bench_question_119, 119);
+dfpn_test!(dfpn_bench_question_120, 120);
+dfpn_test!(dfpn_bench_question_121, 121);
+dfpn_test!(dfpn_bench_question_122, 122);
+dfpn_test!(dfpn_bench_question_123, 123);
+dfpn_test!(dfpn_bench_question_124, 124);
+dfpn_test!(dfpn_bench_question_125, 125);
+dfpn_test!(dfpn_bench_question_126, 126);
+dfpn_test!(dfpn_bench_question_127, 127);
+dfpn_test!(dfpn_bench_question_128, 128);
+dfpn_test!(dfpn_bench_question_129, 129);
+dfpn_test!(dfpn_bench_question_130, 130);
+dfpn_test!(dfpn_bench_question_131, 131);
+dfpn_test!(dfpn_bench_question_132, 132);
+dfpn_test!(dfpn_bench_question_133, 133);
+dfpn_test!(dfpn_bench_question_134, 134);
+dfpn_test!(dfpn_bench_question_135, 135);
+dfpn_test!(dfpn_bench_question_136, 136);
+dfpn_test!(dfpn_bench_question_137, 137);
+dfpn_test!(dfpn_bench_question_138, 138);
+dfpn_test!(dfpn_bench_question_139, 139);
+dfpn_test!(dfpn_bench_question_140, 140);
+dfpn_test!(dfpn_bench_question_141, 141);
+dfpn_test!(dfpn_bench_question_142, 142);
+dfpn_test!(dfpn_bench_question_143, 143);
+dfpn_test!(dfpn_bench_question_144, 144);
+dfpn_test!(dfpn_bench_question_145, 145);
+dfpn_test!(dfpn_bench_question_146, 146);
+dfpn_test!(dfpn_bench_question_147, 147);
+
 // === 個別テスト（最短経路探索あり） ===
 
 macro_rules! dfpn_shortest_test {
@@ -512,6 +618,103 @@ dfpn_shortest_test!(dfpn_bench_shortest_question_47, 47);
 dfpn_shortest_test!(dfpn_bench_shortest_question_48, 48);
 dfpn_shortest_test!(dfpn_bench_shortest_question_49, 49);
 dfpn_shortest_test!(dfpn_bench_shortest_question_50, 50);
+dfpn_shortest_test!(dfpn_bench_shortest_question_51, 51);
+dfpn_shortest_test!(dfpn_bench_shortest_question_52, 52);
+dfpn_shortest_test!(dfpn_bench_shortest_question_53, 53);
+dfpn_shortest_test!(dfpn_bench_shortest_question_54, 54);
+dfpn_shortest_test!(dfpn_bench_shortest_question_55, 55);
+dfpn_shortest_test!(dfpn_bench_shortest_question_56, 56);
+dfpn_shortest_test!(dfpn_bench_shortest_question_57, 57);
+dfpn_shortest_test!(dfpn_bench_shortest_question_58, 58);
+dfpn_shortest_test!(dfpn_bench_shortest_question_59, 59);
+dfpn_shortest_test!(dfpn_bench_shortest_question_60, 60);
+dfpn_shortest_test!(dfpn_bench_shortest_question_61, 61);
+dfpn_shortest_test!(dfpn_bench_shortest_question_62, 62);
+dfpn_shortest_test!(dfpn_bench_shortest_question_63, 63);
+dfpn_shortest_test!(dfpn_bench_shortest_question_64, 64);
+dfpn_shortest_test!(dfpn_bench_shortest_question_65, 65);
+dfpn_shortest_test!(dfpn_bench_shortest_question_66, 66);
+dfpn_shortest_test!(dfpn_bench_shortest_question_67, 67);
+dfpn_shortest_test!(dfpn_bench_shortest_question_68, 68);
+dfpn_shortest_test!(dfpn_bench_shortest_question_69, 69);
+dfpn_shortest_test!(dfpn_bench_shortest_question_70, 70);
+dfpn_shortest_test!(dfpn_bench_shortest_question_71, 71);
+dfpn_shortest_test!(dfpn_bench_shortest_question_72, 72);
+dfpn_shortest_test!(dfpn_bench_shortest_question_73, 73);
+dfpn_shortest_test!(dfpn_bench_shortest_question_74, 74);
+dfpn_shortest_test!(dfpn_bench_shortest_question_75, 75);
+dfpn_shortest_test!(dfpn_bench_shortest_question_76, 76);
+dfpn_shortest_test!(dfpn_bench_shortest_question_77, 77);
+dfpn_shortest_test!(dfpn_bench_shortest_question_78, 78);
+dfpn_shortest_test!(dfpn_bench_shortest_question_79, 79);
+dfpn_shortest_test!(dfpn_bench_shortest_question_80, 80);
+dfpn_shortest_test!(dfpn_bench_shortest_question_81, 81);
+dfpn_shortest_test!(dfpn_bench_shortest_question_82, 82);
+dfpn_shortest_test!(dfpn_bench_shortest_question_83, 83);
+dfpn_shortest_test!(dfpn_bench_shortest_question_84, 84);
+dfpn_shortest_test!(dfpn_bench_shortest_question_85, 85);
+dfpn_shortest_test!(dfpn_bench_shortest_question_86, 86);
+dfpn_shortest_test!(dfpn_bench_shortest_question_87, 87);
+dfpn_shortest_test!(dfpn_bench_shortest_question_88, 88);
+dfpn_shortest_test!(dfpn_bench_shortest_question_89, 89);
+dfpn_shortest_test!(dfpn_bench_shortest_question_90, 90);
+dfpn_shortest_test!(dfpn_bench_shortest_question_91, 91);
+dfpn_shortest_test!(dfpn_bench_shortest_question_92, 92);
+dfpn_shortest_test!(dfpn_bench_shortest_question_93, 93);
+dfpn_shortest_test!(dfpn_bench_shortest_question_94, 94);
+dfpn_shortest_test!(dfpn_bench_shortest_question_95, 95);
+dfpn_shortest_test!(dfpn_bench_shortest_question_96, 96);
+dfpn_shortest_test!(dfpn_bench_shortest_question_97, 97);
+dfpn_shortest_test!(dfpn_bench_shortest_question_98, 98);
+dfpn_shortest_test!(dfpn_bench_shortest_question_99, 99);
+dfpn_shortest_test!(dfpn_bench_shortest_question_100, 100);
+dfpn_shortest_test!(dfpn_bench_shortest_question_101, 101);
+dfpn_shortest_test!(dfpn_bench_shortest_question_102, 102);
+dfpn_shortest_test!(dfpn_bench_shortest_question_103, 103);
+dfpn_shortest_test!(dfpn_bench_shortest_question_104, 104);
+dfpn_shortest_test!(dfpn_bench_shortest_question_105, 105);
+dfpn_shortest_test!(dfpn_bench_shortest_question_106, 106);
+dfpn_shortest_test!(dfpn_bench_shortest_question_107, 107);
+dfpn_shortest_test!(dfpn_bench_shortest_question_108, 108);
+dfpn_shortest_test!(dfpn_bench_shortest_question_109, 109);
+dfpn_shortest_test!(dfpn_bench_shortest_question_110, 110);
+dfpn_shortest_test!(dfpn_bench_shortest_question_111, 111);
+dfpn_shortest_test!(dfpn_bench_shortest_question_112, 112);
+dfpn_shortest_test!(dfpn_bench_shortest_question_113, 113);
+dfpn_shortest_test!(dfpn_bench_shortest_question_114, 114);
+dfpn_shortest_test!(dfpn_bench_shortest_question_115, 115);
+dfpn_shortest_test!(dfpn_bench_shortest_question_116, 116);
+dfpn_shortest_test!(dfpn_bench_shortest_question_117, 117);
+dfpn_shortest_test!(dfpn_bench_shortest_question_118, 118);
+dfpn_shortest_test!(dfpn_bench_shortest_question_119, 119);
+dfpn_shortest_test!(dfpn_bench_shortest_question_120, 120);
+dfpn_shortest_test!(dfpn_bench_shortest_question_121, 121);
+dfpn_shortest_test!(dfpn_bench_shortest_question_122, 122);
+dfpn_shortest_test!(dfpn_bench_shortest_question_123, 123);
+dfpn_shortest_test!(dfpn_bench_shortest_question_124, 124);
+dfpn_shortest_test!(dfpn_bench_shortest_question_125, 125);
+dfpn_shortest_test!(dfpn_bench_shortest_question_126, 126);
+dfpn_shortest_test!(dfpn_bench_shortest_question_127, 127);
+dfpn_shortest_test!(dfpn_bench_shortest_question_128, 128);
+dfpn_shortest_test!(dfpn_bench_shortest_question_129, 129);
+dfpn_shortest_test!(dfpn_bench_shortest_question_130, 130);
+dfpn_shortest_test!(dfpn_bench_shortest_question_131, 131);
+dfpn_shortest_test!(dfpn_bench_shortest_question_132, 132);
+dfpn_shortest_test!(dfpn_bench_shortest_question_133, 133);
+dfpn_shortest_test!(dfpn_bench_shortest_question_134, 134);
+dfpn_shortest_test!(dfpn_bench_shortest_question_135, 135);
+dfpn_shortest_test!(dfpn_bench_shortest_question_136, 136);
+dfpn_shortest_test!(dfpn_bench_shortest_question_137, 137);
+dfpn_shortest_test!(dfpn_bench_shortest_question_138, 138);
+dfpn_shortest_test!(dfpn_bench_shortest_question_139, 139);
+dfpn_shortest_test!(dfpn_bench_shortest_question_140, 140);
+dfpn_shortest_test!(dfpn_bench_shortest_question_141, 141);
+dfpn_shortest_test!(dfpn_bench_shortest_question_142, 142);
+dfpn_shortest_test!(dfpn_bench_shortest_question_143, 143);
+dfpn_shortest_test!(dfpn_bench_shortest_question_144, 144);
+dfpn_shortest_test!(dfpn_bench_shortest_question_145, 145);
+dfpn_shortest_test!(dfpn_bench_shortest_question_146, 146);
+dfpn_shortest_test!(dfpn_bench_shortest_question_147, 147);
 
 /// aigoma.json デバッグテスト
 #[test]
@@ -824,7 +1027,7 @@ fn run_all_questions(find_shortest: bool) {
 
     let mut results = Vec::new();
 
-    for number in 1..=50 {
+    for number in 1..=147 {
         let path = dir.join(format!("{}.json", number));
         if !path.exists() {
             println!("問題{}: ファイルが見つかりません", number);

@@ -1,0 +1,58 @@
+{
+  "board": [
+    {
+      "file": 6,
+      "rank": 4,
+      "color": "sente",
+      "kind": "bishop"
+    },
+    {
+      "file": 6,
+      "rank": 7,
+      "color": "sente",
+      "kind": "rook"
+    },
+    {
+      "file": 7,
+      "rank": 5,
+      "color": "sente",
+      "kind": "king"
+    },
+    {
+      "file": 7,
+      "rank": 7,
+      "color": "sente",
+      "kind": "gold"
+    },
+    {
+      "file": 8,
+      "rank": 6,
+      "color": "sente",
+      "kind": "gold"
+    },
+    {
+      "file": 8,
+      "rank": 8,
+      "color": "gote",
+      "kind": "promoted_pawn"
+    },
+    {
+      "file": 9,
+      "rank": 5,
+      "color": "gote",
+      "kind": "pawn"
+    },
+    {
+      "file": 9,
+      "rank": 7,
+      "color": "gote",
+      "kind": "king"
+    },
+    {
+      "file": 9,
+      "rank": 8,
+      "color": "gote",
+      "kind": "silver"
+    }
+  ]
+}

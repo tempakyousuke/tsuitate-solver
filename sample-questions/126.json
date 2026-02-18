@@ -1,0 +1,38 @@
+{
+  "board": [
+    {
+      "file": 6,
+      "rank": 4,
+      "color": "gote",
+      "kind": "silver"
+    },
+    {
+      "file": 8,
+      "rank": 1,
+      "color": "gote",
+      "kind": "king"
+    },
+    {
+      "file": 8,
+      "rank": 4,
+      "color": "sente",
+      "kind": "knight"
+    },
+    {
+      "file": 9,
+      "rank": 6,
+      "color": "gote",
+      "kind": "bishop"
+    }
+  ],
+  "sente_hand": [
+    {
+      "kind": "rook",
+      "count": 2
+    },
+    {
+      "kind": "bishop",
+      "count": 1
+    }
+  ]
+}

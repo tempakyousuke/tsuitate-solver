@@ -1,0 +1,96 @@
+{
+  "board": [
+    {
+      "file": 3,
+      "rank": 3,
+      "color": "gote",
+      "kind": "pawn"
+    },
+    {
+      "file": 5,
+      "rank": 3,
+      "color": "gote",
+      "kind": "silver"
+    },
+    {
+      "file": 5,
+      "rank": 4,
+      "color": "gote",
+      "kind": "pawn"
+    },
+    {
+      "file": 6,
+      "rank": 1,
+      "color": "sente",
+      "kind": "bishop"
+    },
+    {
+      "file": 6,
+      "rank": 3,
+      "color": "gote",
+      "kind": "king"
+    },
+    {
+      "file": 6,
+      "rank": 4,
+      "color": "gote",
+      "kind": "lance"
+    },
+    {
+      "file": 6,
+      "rank": 7,
+      "color": "sente",
+      "kind": "gold"
+    },
+    {
+      "file": 7,
+      "rank": 3,
+      "color": "gote",
+      "kind": "knight"
+    },
+    {
+      "file": 7,
+      "rank": 6,
+      "color": "sente",
+      "kind": "pawn"
+    },
+    {
+      "file": 8,
+      "rank": 2,
+      "color": "gote",
+      "kind": "gold"
+    },
+    {
+      "file": 8,
+      "rank": 4,
+      "color": "gote",
+      "kind": "pawn"
+    },
+    {
+      "file": 9,
+      "rank": 3,
+      "color": "gote",
+      "kind": "pawn"
+    },
+    {
+      "file": 9,
+      "rank": 7,
+      "color": "sente",
+      "kind": "knight"
+    }
+  ],
+  "sente_hand": [
+    {
+      "kind": "knight",
+      "count": 1
+    },
+    {
+      "kind": "silver",
+      "count": 1
+    },
+    {
+      "kind": "bishop",
+      "count": 1
+    }
+  ]
+}

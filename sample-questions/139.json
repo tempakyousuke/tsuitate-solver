@@ -1,0 +1,40 @@
+{
+  "board": [
+    {
+      "file": 2,
+      "rank": 2,
+      "color": "gote",
+      "kind": "king"
+    },
+    {
+      "file": 2,
+      "rank": 4,
+      "color": "sente",
+      "kind": "pawn"
+    },
+    {
+      "file": 3,
+      "rank": 2,
+      "color": "sente",
+      "kind": "silver"
+    },
+    {
+      "file": 5,
+      "rank": 2,
+      "color": "sente",
+      "kind": "rook"
+    },
+    {
+      "file": 6,
+      "rank": 1,
+      "color": "gote",
+      "kind": "gold"
+    },
+    {
+      "file": 8,
+      "rank": 2,
+      "color": "gote",
+      "kind": "rook"
+    }
+  ]
+}
