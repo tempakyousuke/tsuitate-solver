@@ -21,7 +21,7 @@
 
   function collapseAll(node: SolutionNode, prefix: string, keys: Set<string>) {
     if (isAttackMove(node)) {
-      if (node.AttackMove.branches.length > 0) {
+      if (node.AttackMove.branches.length > 1) {
         keys.add(prefix);
       }
       for (let i = 0; i < node.AttackMove.branches.length; i++) {
@@ -91,15 +91,17 @@
           <span class="checkmate">詰み（{node.Checkmate.depth}手）</span>
         </div>
       {:else if isAttackMove(node)}
-        {@const hasBranches = node.AttackMove.branches.length > 0}
-        {@const isFolded = collapsed.has(path)}
+        {@const branchCount = node.AttackMove.branches.length}
+        {@const isFoldable = branchCount > 1}
+        {@const isFolded = isFoldable && collapsed.has(path)}
         <div
-          class="line foldable"
+          class="line"
+          class:foldable={isFoldable}
           style="padding-left: {depth * 20}px"
-          onclick={() => hasBranches && toggle(path)}
+          onclick={() => isFoldable && toggle(path)}
         >
           <span class="gutter">
-            {#if hasBranches}
+            {#if isFoldable}
               <span class="chevron" class:folded={isFolded}></span>
             {:else}
               <span class="chevron-placeholder"></span>
@@ -111,7 +113,7 @@
             onclick={(e) => handleMoveClick(path, e)}
           >{node.AttackMove.mv.notation}</span>
           {#if isFolded}
-            <span class="fold-badge">{countBranches(node)} 分岐</span>
+            <span class="fold-badge">{branchCount} 分岐</span>
           {/if}
         </div>
         {#if !isFolded}
@@ -127,7 +129,7 @@
               {/if}
             </div>
             {#if branch.observation !== "Checkmate"}
-              {@render nodeDisplay(branch.continuation, depth + 1, `${path}/${i}`)}
+              {@render nodeDisplay(branch.continuation, isFoldable ? depth + 1 : depth, `${path}/${i}`)}
             {/if}
           {/each}
         {/if}
