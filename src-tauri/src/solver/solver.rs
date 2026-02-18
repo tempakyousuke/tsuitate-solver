@@ -601,7 +601,7 @@ impl TsuitateSolver {
     /// 攻め方の候補手を生成
     /// 全盤面から王手の手を収集し、さらに情報収集用のプローブ手を追加
     /// 返り値: (候補手リスト, 各盤面の合法手セット) - 合法手セットは再利用可能
-    fn generate_attack_candidates(&self, meta: &MetaPosition) -> (Vec<Move>, Vec<HashSet<Move>>) {
+    fn generate_attack_candidates(&self, meta: &MetaPosition) -> (Vec<Move>, Vec<Vec<Move>>) {
         if meta.positions.is_empty() {
             return (Vec::new(), Vec::new());
         }
@@ -609,14 +609,14 @@ impl TsuitateSolver {
         let n = meta.positions.len();
 
         // 各盤面の合法手セットを事前計算
-        let legal_move_sets: Vec<HashSet<Move>> = meta
+        let legal_move_sets: Vec<Vec<Move>> = meta
             .positions
             .iter()
             .map(|pos| {
                 if self.is_cancelled() {
-                    return HashSet::new();
+                    return Vec::new();
                 }
-                pos.generate_legal_moves().into_iter().collect()
+                pos.generate_legal_moves()
             })
             .collect();
 

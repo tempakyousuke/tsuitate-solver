@@ -139,7 +139,7 @@ impl MetaPosition {
     pub fn apply_attack_move_split_with_sets(
         &self,
         mv: Move,
-        legal_move_sets: &[HashSet<Move>],
+        legal_move_sets: &[Vec<Move>],
     ) -> (MetaPosition, MetaPosition) {
         let mut legal_positions = Vec::new();
         let mut illegal_positions = Vec::new();

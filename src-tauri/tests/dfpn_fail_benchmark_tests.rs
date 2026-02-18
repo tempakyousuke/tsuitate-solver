@@ -230,6 +230,69 @@ macro_rules! dfpn_fail_test {
 
 dfpn_fail_test!(dfpn_fail_question_01, 1);
 dfpn_fail_test!(dfpn_fail_question_02, 2);
+dfpn_fail_test!(dfpn_fail_question_03, 3);
+dfpn_fail_test!(dfpn_fail_question_04, 4);
+
+/// fail-questions/4.json 診断テスト
+#[test]
+#[ignore]
+fn dfpn_fail_question_04_diag() {
+    let path = fail_questions_dir().join("4.json");
+    let pos = load_question(&path);
+
+    println!("=== 不詰問題 4 診断 ===");
+    print_position(&pos);
+
+    let meta = MetaPosition::new(pos);
+    let cancel = cancel_after(TIME_LIMIT);
+
+    let mut solver = TsuitateDfpnSolver::new(NODE_LIMIT, cancel);
+
+    let start = Instant::now();
+    let result = solver.solve_to_solution(&meta, false);
+    let elapsed = start.elapsed();
+
+    println!(
+        "Result: found={}, nodes={}, time={:.3}s",
+        result.found, solver.nodes_searched, elapsed.as_secs_f64()
+    );
+    println!(
+        "Diagnostics: mid_and_calls={}, expand_defense_calls={}, max_meta_size={}",
+        solver.mid_and_calls, solver.expand_defense_calls, solver.max_meta_size,
+    );
+    println!(
+        "Time breakdown: gen_candidates={:.3}s, expand_defense={:.3}s, all_eff_checkmate={:.3}s",
+        solver.gen_candidates_nanos as f64 / 1e9,
+        solver.expand_defense_nanos as f64 / 1e9,
+        solver.aec_nanos as f64 / 1e9,
+    );
+    println!(
+        "Replay: attempts={}, full={}, partial={}, fail={}",
+        solver.proof_replay_attempts,
+        solver.proof_replay_full_success,
+        solver.proof_replay_partial,
+        solver.proof_replay_fail,
+    );
+    println!("Dominance hits: {}", solver.dominance_hits);
+    println!(
+        "gen_candidates: calls={}, total_positions={}, avg_positions={:.1}",
+        solver.gen_candidates_calls,
+        solver.gen_candidates_total_positions,
+        if solver.gen_candidates_calls > 0 {
+            solver.gen_candidates_total_positions as f64 / solver.gen_candidates_calls as f64
+        } else { 0.0 },
+    );
+    println!(
+        "legal_moves_cache: hits={}, misses={}, hit_rate={:.1}%",
+        solver.legal_moves_cache_hits,
+        solver.legal_moves_cache_misses,
+        if solver.legal_moves_cache_hits + solver.legal_moves_cache_misses > 0 {
+            100.0 * solver.legal_moves_cache_hits as f64
+                / (solver.legal_moves_cache_hits + solver.legal_moves_cache_misses) as f64
+        } else { 0.0 },
+    );
+    println!("msg: {}", result.message);
+}
 
 /// 全問一括ベンチマーク（不詰問題）
 /// cargo test --release --test dfpn_fail_benchmark_tests dfpn_fail_bench_all -- --ignored --nocapture

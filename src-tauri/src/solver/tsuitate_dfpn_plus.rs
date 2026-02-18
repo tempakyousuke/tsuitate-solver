@@ -721,7 +721,7 @@ impl TsuitateDfpnPlusSolver {
         &mut self,
         meta: &MetaPosition,
         mv: Move,
-        legal_move_sets: &[HashSet<Move>],
+        legal_move_sets: &[Vec<Move>],
         pn_limit: u32,
         dn_limit: u32,
         path: &mut Vec<u64>,
@@ -1228,21 +1228,21 @@ impl TsuitateDfpnPlusSolver {
     fn generate_attack_candidates(
         &self,
         meta: &MetaPosition,
-    ) -> (Vec<Move>, Vec<HashSet<Move>>) {
+    ) -> (Vec<Move>, Vec<Vec<Move>>) {
         if meta.positions.is_empty() {
             return (Vec::new(), Vec::new());
         }
 
         let n = meta.positions.len();
 
-        let legal_move_sets: Vec<HashSet<Move>> = meta
+        let legal_move_sets: Vec<Vec<Move>> = meta
             .positions
             .iter()
             .map(|pos| {
                 if self.is_cancelled() {
-                    return HashSet::new();
+                    return Vec::new();
                 }
-                pos.generate_legal_moves().into_iter().collect()
+                pos.generate_legal_moves()
             })
             .collect();
 
@@ -1420,10 +1420,10 @@ impl TsuitateDfpnPlusSolver {
             return None;
         }
 
-        let legal_move_sets: Vec<HashSet<Move>> = meta
+        let legal_move_sets: Vec<Vec<Move>> = meta
             .positions
             .iter()
-            .map(|pos| pos.generate_legal_moves().into_iter().collect())
+            .map(|pos| pos.generate_legal_moves())
             .collect();
 
         let mut seen = HashSet::new();
@@ -1522,7 +1522,7 @@ impl TsuitateDfpnPlusSolver {
         &self,
         meta: &MetaPosition,
         mv: Move,
-        legal_move_sets: &[HashSet<Move>],
+        legal_move_sets: &[Vec<Move>],
         depth: u32,
     ) -> Option<Vec<SolutionBranch>> {
         let meta_hash = meta_position_hash(meta);
@@ -1750,8 +1750,8 @@ impl TsuitateDfpnPlusSolver {
         if !is_proven { return None; }
 
         // 全合法手を収集
-        let legal_move_sets: Vec<HashSet<Move>> = meta.positions.iter()
-            .map(|pos| pos.generate_legal_moves().into_iter().collect())
+        let legal_move_sets: Vec<Vec<Move>> = meta.positions.iter()
+            .map(|pos| pos.generate_legal_moves())
             .collect();
         let mut seen = HashSet::new();
         let mut all_moves = Vec::new();
@@ -1798,7 +1798,7 @@ impl TsuitateDfpnPlusSolver {
         &self,
         meta: &MetaPosition,
         mv: Move,
-        _legal_move_sets: &[HashSet<Move>],
+        _legal_move_sets: &[Vec<Move>],
     ) -> Option<Vec<(ProofObs, ProofNode)>> {
         // and_expansion_cache を使って expand_defense_moves の再呼び出しを回避
         let meta_hash = meta_position_hash(meta);

@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use super::metaposition::MetaPosition;
 use super::solution::*;
+use crate::shogi::position::Position;
 use crate::shogi::types::*;
 
 /// 証明数/反証数の上限（sum時のオーバーフロー防止）
@@ -101,11 +102,195 @@ fn meta_board_only_hash(meta: &MetaPosition) -> u64 {
     h.finish()
 }
 
+// ========================================================================
+// 王手候補の幾何学的事前フィルタ
+// ========================================================================
+
+/// 駒種が to から target を大まかに攻撃可能か（遮蔽物無視）
+/// 偽陰性なし（王手になりうる手を漏らさない）、偽陽性あり
+fn can_attack_rough(kind: PieceKind, to: Square, target: Square, color: Color) -> bool {
+    let df = target.file as i8 - to.file as i8;
+    let dr = target.rank as i8 - to.rank as i8;
+    if df == 0 && dr == 0 {
+        return false;
+    }
+    match kind {
+        PieceKind::King => df.abs() <= 1 && dr.abs() <= 1,
+        PieceKind::Gold | PieceKind::PromotedSilver | PieceKind::PromotedKnight
+        | PieceKind::PromotedLance | PieceKind::PromotedPawn => {
+            // 金の動き（色依存）
+            if df.abs() <= 1 && dr.abs() <= 1 {
+                if color == Color::Sente {
+                    // 後ろ斜めは不可: (-1,1),(1,1) が不可
+                    !(dr == 1 && df.abs() == 1)
+                } else {
+                    // 前斜めは不可: (-1,-1),(1,-1) が不可
+                    !(dr == -1 && df.abs() == 1)
+                }
+            } else {
+                false
+            }
+        }
+        PieceKind::Silver => {
+            if df.abs() <= 1 && dr.abs() <= 1 {
+                if color == Color::Sente {
+                    // 銀: 前3 + 後斜め2 = (-1,-1),(0,-1),(1,-1),(-1,1),(1,1)
+                    !(df == 0 && dr == 1) && !(df.abs() == 1 && dr == 0)
+                } else {
+                    !(df == 0 && dr == -1) && !(df.abs() == 1 && dr == 0)
+                }
+            } else {
+                false
+            }
+        }
+        PieceKind::Knight => {
+            if color == Color::Sente {
+                (df == -1 || df == 1) && dr == -2
+            } else {
+                (df == -1 || df == 1) && dr == 2
+            }
+        }
+        PieceKind::Pawn => {
+            if color == Color::Sente {
+                df == 0 && dr == -1
+            } else {
+                df == 0 && dr == 1
+            }
+        }
+        PieceKind::Lance => {
+            // 同筋で前方向のみ（遮蔽物無視）
+            if df != 0 {
+                return false;
+            }
+            if color == Color::Sente { dr < 0 } else { dr > 0 }
+        }
+        PieceKind::Rook => {
+            // 十字方向（遮蔽物無視）
+            df == 0 || dr == 0
+        }
+        PieceKind::Bishop => {
+            // 斜め方向（遮蔽物無視）
+            df.abs() == dr.abs()
+        }
+        PieceKind::PromotedRook => {
+            // 竜: 十字スライド + 斜め1マス
+            df == 0 || dr == 0 || (df.abs() <= 1 && dr.abs() <= 1)
+        }
+        PieceKind::PromotedBishop => {
+            // 馬: 斜めスライド + 十字1マス
+            df.abs() == dr.abs() || (df.abs() <= 1 && dr.abs() <= 1)
+        }
+    }
+}
+
+/// ある方向にスライドできる攻め方の駒種か
+fn is_slider_for_direction(kind: PieceKind, df: i8, dr: i8, color: Color) -> bool {
+    match kind {
+        PieceKind::Rook | PieceKind::PromotedRook => df == 0 || dr == 0,
+        PieceKind::Bishop | PieceKind::PromotedBishop => df.abs() == dr.abs() && df != 0,
+        PieceKind::Lance => {
+            df == 0 && if color == Color::Sente { dr < 0 } else { dr > 0 }
+        }
+        _ => false,
+    }
+}
+
+/// 開き王手の候補マスを計算
+/// king_sq から8方向をスキャンし、攻め方の駒の後ろにスライダーがある場合、
+/// 手前の駒のマスを discovery_square として返す
+fn compute_discovery_squares(pos: &Position, king_sq: Square, attacker: Color) -> Vec<Square> {
+    let directions: [(i8, i8); 8] = [
+        (0, -1), (0, 1), (-1, 0), (1, 0),
+        (-1, -1), (-1, 1), (1, -1), (1, 1),
+    ];
+    let mut result = Vec::new();
+
+    for &(df, dr) in &directions {
+        let mut f = king_sq.file as i8 + df;
+        let mut r = king_sq.rank as i8 + dr;
+        let mut first_piece_sq: Option<Square> = None;
+
+        while Square::is_valid(f, r) {
+            let sq = Square::new(f as u8, r as u8);
+            if let Some(piece) = pos.piece_at(sq) {
+                if piece.color == attacker {
+                    if first_piece_sq.is_none() {
+                        // 最初に見つけた攻め方の駒 → 開き王手の候補
+                        first_piece_sq = Some(sq);
+                    } else {
+                        // 2番目の攻め方の駒 → スライダーならdiscovery確定
+                        if is_slider_for_direction(piece.kind, -df, -dr, attacker) {
+                            result.push(first_piece_sq.unwrap());
+                        }
+                        break;
+                    }
+                } else {
+                    // 相手の駒に当たった → このラインは終了
+                    break;
+                }
+            }
+            f += df;
+            r += dr;
+        }
+    }
+
+    result
+}
+
+/// 手 mv が king_sq に王手を与えうるかの粗判定（偽陰性なし）
+fn could_give_check(mv: &Move, king_sq: Square, discovery_sqs: &[Square], attacker: Color) -> bool {
+    // A. 直接王手の可能性
+    let piece_kind_after = if let Some(drop_kind) = mv.drop_piece {
+        drop_kind
+    } else if let Some(moved_kind) = mv.moved_piece_kind {
+        if mv.promotion {
+            moved_kind.promoted().unwrap_or(moved_kind)
+        } else {
+            moved_kind
+        }
+    } else {
+        return true; // 安全側に倒す
+    };
+
+    if can_attack_rough(piece_kind_after, mv.to, king_sq, attacker) {
+        return true;
+    }
+
+    // B. 開き王手の可能性（盤上の駒移動のみ）
+    if let Some(from) = mv.from {
+        if discovery_sqs.contains(&from) {
+            // 移動先が同じラインに留まるかチェック
+            let df_king = king_sq.file as i8 - from.file as i8;
+            let dr_king = king_sq.rank as i8 - from.rank as i8;
+            let df_to = mv.to.file as i8 - from.file as i8;
+            let dr_to = mv.to.rank as i8 - from.rank as i8;
+
+            // 同じライン上に留まるかの判定
+            // ライン方向を正規化して比較
+            let stays_on_line = if df_king == 0 {
+                df_to == 0
+            } else if dr_king == 0 {
+                dr_to == 0
+            } else {
+                // 斜め方向: df_to/dr_to が df_king/dr_king と同じ方向比
+                df_to != 0 && dr_to != 0
+                    && df_king.signum() * dr_to == dr_king.signum() * df_to
+            };
+
+            if !stays_on_line {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 /// OR ノードの候補手生成結果キャッシュ
 /// mid_or が同一 OR ノードを再訪問する際の generate_attack_candidates 再計算を回避
 struct CachedOrCandidates {
     candidates: Vec<Move>,
-    legal_move_sets: Vec<HashSet<Move>>,
+    legal_move_sets: Vec<Vec<Move>>,
 }
 
 /// AND ノードの展開結果キャッシュ
@@ -164,6 +349,12 @@ pub struct TsuitateDfpnSolver {
     /// OR ノードの候補手キャッシュ: meta_hash → 候補手 + 合法手セット
     /// mid_or が同一 OR ノードを再訪問する際の generate_attack_candidates 再計算を回避
     or_candidate_cache: HashMap<u64, CachedOrCandidates>,
+    /// 局面レベルの合法手キャッシュ: zobrist_hash → 合法手リスト
+    /// 同一局面が異なるMetaPositionに出現する場合の重複計算を回避
+    legal_moves_cache: HashMap<u64, Vec<Move>>,
+    /// 局面レベルの王手手キャッシュ: zobrist_hash → 王手になる手のリスト
+    /// 同一局面が異なるMetaPositionに出現する場合の重複計算を回避
+    check_moves_cache: HashMap<u64, Vec<Move>>,
     /// 診断用カウンタ
     pub proof_replay_attempts: u64,
     pub proof_replay_full_success: u64,
@@ -179,6 +370,14 @@ pub struct TsuitateDfpnSolver {
     pub expand_defense_nanos: u64,
     /// 診断: all_effectively_checkmate の累計時間 (ナノ秒)
     pub aec_nanos: u64,
+    /// 診断: generate_attack_candidates の非キャッシュ呼出回数
+    pub gen_candidates_calls: u64,
+    /// 診断: generate_attack_candidates で処理した局面の合計数
+    pub gen_candidates_total_positions: u64,
+    /// 診断: legal_moves_cache ヒット数
+    pub legal_moves_cache_hits: u64,
+    /// 診断: legal_moves_cache ミス数
+    pub legal_moves_cache_misses: u64,
 }
 
 impl TsuitateDfpnSolver {
@@ -200,6 +399,8 @@ impl TsuitateDfpnSolver {
             proof_cache: HashMap::new(),
             and_expansion_cache: HashMap::new(),
             or_candidate_cache: HashMap::new(),
+            legal_moves_cache: HashMap::new(),
+            check_moves_cache: HashMap::new(),
             proof_replay_attempts: 0,
             proof_replay_full_success: 0,
             proof_replay_partial: 0,
@@ -210,6 +411,10 @@ impl TsuitateDfpnSolver {
             gen_candidates_nanos: 0,
             expand_defense_nanos: 0,
             aec_nanos: 0,
+            gen_candidates_calls: 0,
+            gen_candidates_total_positions: 0,
+            legal_moves_cache_hits: 0,
+            legal_moves_cache_misses: 0,
         }
     }
 
@@ -507,7 +712,7 @@ impl TsuitateDfpnSolver {
         &mut self,
         meta: &MetaPosition,
         mv: Move,
-        legal_move_sets: &[HashSet<Move>],
+        legal_move_sets: &[Vec<Move>],
         pn_limit: u32,
         dn_limit: u32,
         path: &mut Vec<u64>,
@@ -882,25 +1087,39 @@ impl TsuitateDfpnSolver {
 
     /// 攻め方の候補手を生成
     /// 全盤面から王手の手を収集し、プローブ手を追加
+    ///
+    /// Phase 2 では幾何学的事前フィルタで王手候補を絞り込む:
+    /// - 直接王手: 駒種の移動先が玉に利きうるか（遮蔽物無視）
+    /// - 開き王手: 移動元が discovery_squares に含まれるか
     fn generate_attack_candidates(
-        &self,
+        &mut self,
         meta: &MetaPosition,
-    ) -> (Vec<Move>, Vec<HashSet<Move>>) {
+    ) -> (Vec<Move>, Vec<Vec<Move>>) {
         if meta.positions.is_empty() {
             return (Vec::new(), Vec::new());
         }
 
         let n = meta.positions.len();
+        self.gen_candidates_calls += 1;
+        self.gen_candidates_total_positions += n as u64;
 
-        // 各盤面の合法手セットを事前計算
-        let legal_move_sets: Vec<HashSet<Move>> = meta
+        // 各盤面の合法手セットを事前計算（局面レベルのキャッシュを活用）
+        let legal_move_sets: Vec<Vec<Move>> = meta
             .positions
             .iter()
             .map(|pos| {
                 if self.is_cancelled() {
-                    return HashSet::new();
+                    return Vec::new();
                 }
-                pos.generate_legal_moves().into_iter().collect()
+                let hash = pos.zobrist_hash;
+                if let Some(cached) = self.legal_moves_cache.get(&hash) {
+                    self.legal_moves_cache_hits += 1;
+                    return cached.clone();
+                }
+                self.legal_moves_cache_misses += 1;
+                let moves = pos.generate_legal_moves();
+                self.legal_moves_cache.insert(hash, moves.clone());
+                moves
             })
             .collect();
 
@@ -912,27 +1131,52 @@ impl TsuitateDfpnSolver {
         let mut check_moves = Vec::new();
 
         // 全盤面から王手の手を収集（union）
-        // 後手玉の位置を事前キャッシュし、is_in_check の 81マススキャンを回避
+        // 局面レベルのキャッシュ + 幾何学的事前フィルタで候補を絞り込む
         for (i, pos) in meta.positions.iter().enumerate() {
             let attacker = pos.side_to_move;
             let gote_king_sq = pos.find_king(attacker.opponent());
+            let Some(ksq) = gote_king_sq else { continue };
+
+            // 局面レベルの王手手キャッシュを確認
+            let pos_hash = pos.zobrist_hash;
+            if let Some(cached_checks) = self.check_moves_cache.get(&pos_hash) {
+                for mv in cached_checks {
+                    if seen.insert(*mv) {
+                        check_moves.push(*mv);
+                    }
+                }
+                continue;
+            }
+
+            // 開き王手の候補マスを事前計算
+            let discovery_sqs = compute_discovery_squares(pos, ksq, attacker);
             let mut test_pos = pos.clone();
+            let mut pos_checks = Vec::new();
             for mv in &legal_move_sets[i] {
-                if seen.contains(mv) {
+                // 玉を取る手は王手ではない
+                if mv.to == ksq {
                     continue;
                 }
+                // 幾何学的事前フィルタ: 王手になりえない手をスキップ
+                if !could_give_check(mv, ksq, &discovery_sqs, attacker) {
+                    continue;
+                }
+                // 正確な王手判定
                 let undo = test_pos.make_move(*mv);
-                let is_check = match gote_king_sq {
-                    // 玉を取る手は王手ではない（玉取りは別処理）
-                    Some(ksq) if mv.to != ksq => test_pos.is_attacked(ksq, attacker),
-                    _ => false,
-                };
+                let is_check = test_pos.is_attacked(ksq, attacker);
                 if is_check {
-                    seen.insert(*mv);
-                    check_moves.push(*mv);
+                    pos_checks.push(*mv);
                 }
                 test_pos.unmake_move(&undo);
             }
+
+            // キャッシュに保存
+            for mv in &pos_checks {
+                if seen.insert(*mv) {
+                    check_moves.push(*mv);
+                }
+            }
+            self.check_moves_cache.insert(pos_hash, pos_checks);
         }
 
         // 候補手のソート
@@ -1324,10 +1568,10 @@ impl TsuitateDfpnSolver {
         }
 
         // 全盤面の合法手を収集
-        let legal_move_sets: Vec<HashSet<Move>> = meta
+        let legal_move_sets: Vec<Vec<Move>> = meta
             .positions
             .iter()
-            .map(|pos| pos.generate_legal_moves().into_iter().collect())
+            .map(|pos| pos.generate_legal_moves())
             .collect();
 
         let mut seen = HashSet::new();
@@ -1389,7 +1633,7 @@ impl TsuitateDfpnSolver {
         &self,
         meta: &MetaPosition,
         mv: Move,
-        legal_move_sets: &[HashSet<Move>],
+        legal_move_sets: &[Vec<Move>],
         depth: u32,
     ) -> Option<Vec<SolutionBranch>> {
         let (legal_meta, illegal_meta) =
@@ -1465,8 +1709,8 @@ impl TsuitateDfpnSolver {
         if entry.pn != 0 { return None; }
 
         // 全合法手を収集（extract_or と同じ）
-        let legal_move_sets: Vec<HashSet<Move>> = meta.positions.iter()
-            .map(|pos| pos.generate_legal_moves().into_iter().collect())
+        let legal_move_sets: Vec<Vec<Move>> = meta.positions.iter()
+            .map(|pos| pos.generate_legal_moves())
             .collect();
         let mut seen = HashSet::new();
         let mut all_moves = Vec::new();
@@ -1501,7 +1745,7 @@ impl TsuitateDfpnSolver {
         &self,
         meta: &MetaPosition,
         mv: Move,
-        legal_move_sets: &[HashSet<Move>],
+        legal_move_sets: &[Vec<Move>],
     ) -> Option<Vec<(ProofObs, ProofNode)>> {
         let (legal_meta, illegal_meta) = meta.apply_attack_move_split_with_sets(mv, legal_move_sets);
         let mut branches = Vec::new();
