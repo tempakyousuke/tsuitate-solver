@@ -291,38 +291,17 @@ impl MetaPosition {
                 continue;
             }
 
-            // 無駄合い判定のキャッシュ（打ち駒のみ、マス目ごと）
-            let mut futile_drop_squares: HashSet<Square> = HashSet::new();
+            // 衝立詰将棋では、無駄合い判定を個別局面レベルで行わない。
+            // 攻め方は個々の局面を区別できないため、一部の局面で無駄合いでも
+            // 他の局面で有効な応手であれば、その応手は観測分岐に含まれるべき。
+            // MetaPosition全体が実質詰みかどうかは all_effectively_checkmate() で
+            // expand_defense_moves() の呼び出し前に判定済み。
             let attacker_color = defender_color.opponent();
 
             // 遅延クローン: scratch で make_move/unmake_move し、ユニーク時のみクローン
             let mut scratch = pos.clone();
 
             for def_mv in &legal_moves {
-                // 無駄合い判定
-                let is_king_move = if let Some(from) = def_mv.from {
-                    pos.piece_at(from).map_or(false, |p| p.kind == PieceKind::King)
-                } else {
-                    false
-                };
-
-                let is_drop = def_mv.drop_piece.is_some();
-                let is_futile = if is_king_move {
-                    false
-                } else if is_drop && futile_drop_squares.contains(&def_mv.to) {
-                    true // 打ち駒の同一マスキャッシュヒット
-                } else {
-                    let result = pos.is_futile_interposition(def_mv);
-                    if result && is_drop {
-                        futile_drop_squares.insert(def_mv.to);
-                    }
-                    result
-                };
-
-                if is_futile {
-                    continue;
-                }
-
                 let undo = scratch.make_move(*def_mv);
 
                 let captured = pos.piece_at(def_mv.to)
