@@ -288,9 +288,11 @@ fn could_give_check(mv: &Move, king_sq: Square, discovery_sqs: &[Square], attack
 
 /// OR ノードの候補手生成結果キャッシュ
 /// mid_or が同一 OR ノードを再訪問する際の generate_attack_candidates 再計算を回避
+/// 注: legal_move_sets はキャッシュしない。meta_position_hash は局面順序に依存しないが、
+/// legal_move_sets は positions の順序に依存するため、キャッシュすると順序不一致で
+/// apply_attack_move_split_with_sets が誤った legal/illegal 分割を行うバグの原因になる。
 struct CachedOrCandidates {
     candidates: Vec<Move>,
-    legal_move_sets: Vec<Vec<Move>>,
 }
 
 /// AND ノードの展開結果キャッシュ
@@ -547,16 +549,27 @@ impl TsuitateDfpnSolver {
         }
 
         // 候補手を生成（キャッシュ活用、remove/re-insert パターン）
-        let (candidates_raw, legal_move_sets) = if let Some(cached) = self.or_candidate_cache.remove(&hash) {
-            (cached.candidates, cached.legal_move_sets)
+        // legal_move_sets は毎回 positions の順序に合わせて再生成する
+        // （meta_position_hash は順序非依存だが legal_move_sets は順序依存のため）
+        let candidates_raw = if let Some(cached) = self.or_candidate_cache.remove(&hash) {
+            cached.candidates
         } else {
             let gen_start = std::time::Instant::now();
-            let result = self.generate_attack_candidates(meta);
+            let (candidates, _) = self.generate_attack_candidates(meta);
             self.gen_candidates_nanos += gen_start.elapsed().as_nanos() as u64;
-            result
+            candidates
         };
+        let legal_move_sets: Vec<Vec<Move>> = meta.positions.iter().map(|pos| {
+            let h = pos.zobrist_hash;
+            if let Some(cached) = self.legal_moves_cache.get(&h) {
+                return cached.clone();
+            }
+            let moves = pos.generate_legal_moves();
+            self.legal_moves_cache.insert(h, moves.clone());
+            moves
+        }).collect();
         if self.should_stop() {
-            self.or_candidate_cache.insert(hash, CachedOrCandidates { candidates: candidates_raw.clone(), legal_move_sets });
+            self.or_candidate_cache.insert(hash, CachedOrCandidates { candidates: candidates_raw.clone() });
             return;
         }
         let mut candidates = candidates_raw.clone();
@@ -575,7 +588,7 @@ impl TsuitateDfpnSolver {
 
         if candidates.is_empty() {
             self.or_table.insert(hash, PnDn { pn: INF, dn: 0 });
-            self.or_candidate_cache.insert(hash, CachedOrCandidates { candidates: candidates_raw.clone(), legal_move_sets });
+            self.or_candidate_cache.insert(hash, CachedOrCandidates { candidates: candidates_raw.clone() });
             return;
         }
 
@@ -606,7 +619,7 @@ impl TsuitateDfpnSolver {
 
         loop {
             if self.should_stop() {
-                self.or_candidate_cache.insert(hash, CachedOrCandidates { candidates: candidates_raw.clone(), legal_move_sets });
+                self.or_candidate_cache.insert(hash, CachedOrCandidates { candidates: candidates_raw.clone() });
                 return;
             }
 
@@ -658,13 +671,13 @@ impl TsuitateDfpnSolver {
                         }
                     }
                 }
-                self.or_candidate_cache.insert(hash, CachedOrCandidates { candidates: candidates_raw.clone(), legal_move_sets });
+                self.or_candidate_cache.insert(hash, CachedOrCandidates { candidates: candidates_raw.clone() });
                 return;
             }
 
             if pn_n >= pn_limit || dn_n >= dn_limit {
                 self.or_table.insert(hash, PnDn { pn: pn_n, dn: dn_n });
-                self.or_candidate_cache.insert(hash, CachedOrCandidates { candidates: candidates_raw.clone(), legal_move_sets });
+                self.or_candidate_cache.insert(hash, CachedOrCandidates { candidates: candidates_raw.clone() });
                 return;
             }
 
