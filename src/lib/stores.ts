@@ -84,6 +84,12 @@ export const findSecondSolution = writable<boolean>(false);
 /** 最短経路を探すかどうか */
 export const findShortestPath = writable<boolean>(false);
 
+/** 現在の問題タイトル */
+export const questionTitle = writable<string>("");
+
+/** 現在の問題作者 */
+export const questionAuthor = writable<string>("");
+
 /** 初期盤面（解探索時に保存） */
 export const initialPosition = writable<{ board: BoardState; senteHand: HandState } | null>(null);
 
@@ -473,4 +479,6 @@ export function clearBoard() {
   previewMode.set(false);
   previewHighlight.set(null);
   selectedPath.set(null);
+  questionTitle.set("");
+  questionAuthor.set("");
 }

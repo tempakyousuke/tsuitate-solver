@@ -18,6 +18,8 @@ pub fn run() {
             commands::cancel_solve,
             commands::list_sample_questions,
             commands::load_sample_question,
+            commands::list_kakurenbo_questions,
+            commands::load_kakurenbo_question,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

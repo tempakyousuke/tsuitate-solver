@@ -3,10 +3,17 @@
   import PieceSelector from "./lib/PieceSelector.svelte";
   import Controls from "./lib/Controls.svelte";
   import Solution from "./lib/Solution.svelte";
+  import { questionTitle, questionAuthor } from "./lib/stores";
 </script>
 
 <main>
   <h1>衝立詰将棋ソルバー</h1>
+  {#if $questionTitle}
+    <div class="question-info">
+      <span class="question-title">{$questionTitle}</span>
+      <span class="question-author">（{$questionAuthor}）</span>
+    </div>
+  {/if}
   <div class="app-layout">
     <div class="board-section">
       <Board />
@@ -29,8 +36,23 @@
   h1 {
     text-align: center;
     font-size: 24px;
-    margin-bottom: 16px;
+    margin-bottom: 4px;
     color: #333;
+  }
+
+  .question-info {
+    text-align: center;
+    margin-bottom: 12px;
+    font-size: 16px;
+    color: #555;
+  }
+
+  .question-title {
+    font-weight: bold;
+  }
+
+  .question-author {
+    color: #888;
   }
 
   .app-layout {

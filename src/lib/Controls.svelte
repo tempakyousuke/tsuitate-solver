@@ -13,27 +13,29 @@
     clearBoard,
     saveInitialPosition,
     exitPreview,
+    questionTitle,
+    questionAuthor,
   } from "./stores";
   import type { BoardState, HandState } from "./stores";
-  import type { PositionData, HandPieceData, SolutionData, PieceKind, Color } from "./types";
+  import type { PositionData, HandPieceData, SolutionData, PieceKind, Color, KakurenboQuestionInfo } from "./types";
   import { ALL_PIECE_KINDS, HAND_PIECE_KINDS } from "./types";
 
   /** JSON インポート/エクスポート用のテキスト */
   let jsonText = "";
   let jsonVisible = false;
 
-  /** サンプル問題 */
-  let sampleQuestions: number[] = [];
-  let selectedQuestion: number | null = null;
+  /** かくれんぼ問題 */
+  let kakurenboQuestions: KakurenboQuestionInfo[] = [];
+  let selectedKakurenboId: string | null = null;
 
   onMount(async () => {
     try {
-      sampleQuestions = await invoke<number[]>("list_sample_questions");
-      if (sampleQuestions.length > 0) {
-        selectedQuestion = sampleQuestions[0];
+      kakurenboQuestions = await invoke<KakurenboQuestionInfo[]>("list_kakurenbo_questions");
+      if (kakurenboQuestions.length > 0) {
+        selectedKakurenboId = kakurenboQuestions[0].id;
       }
     } catch (_) {
-      // サンプル問題が見つからなくても無視
+      // かくれんぼ問題が見つからなくても無視
     }
   });
 
@@ -176,17 +178,24 @@
     clearBoard();
   }
 
-  /** サンプル問題を読み込む */
-  async function loadSampleQuestion() {
-    if (selectedQuestion == null) return;
+  /** かくれんぼ問題を読み込む */
+  async function loadKakurenboQuestion() {
+    if (selectedKakurenboId == null) return;
     try {
-      const json = await invoke<string>("load_sample_question", { number: selectedQuestion });
+      const json = await invoke<string>("load_kakurenbo_question", { id: selectedKakurenboId });
       jsonText = json;
       handleImport();
+      // タイトル・作者を設定
+      const info = kakurenboQuestions.find(q => q.id === selectedKakurenboId);
+      if (info) {
+        questionTitle.set(info.title);
+        questionAuthor.set(info.author);
+      }
     } catch (e) {
-      errorMessage.set(`サンプル問題の読み込みエラー: ${e}`);
+      errorMessage.set(`問題の読み込みエラー: ${e}`);
     }
   }
+
 </script>
 
 <div class="controls">
@@ -216,15 +225,15 @@
     </button>
   </div>
 
-  {#if sampleQuestions.length > 0}
+  {#if kakurenboQuestions.length > 0}
     <div class="sample-question">
-      <label for="sample-select">サンプル問題:</label>
-      <select id="sample-select" bind:value={selectedQuestion} disabled={$solving}>
-        {#each sampleQuestions as num}
-          <option value={num}>第{num}問</option>
+      <label for="kakurenbo-select">問題集:</label>
+      <select id="kakurenbo-select" bind:value={selectedKakurenboId} disabled={$solving}>
+        {#each kakurenboQuestions as q}
+          <option value={q.id}>{q.title.length > 10 ? q.title.slice(0, 10) + "…" : q.title}</option>
         {/each}
       </select>
-      <button class="load-btn" on:click={loadSampleQuestion} disabled={$solving}>
+      <button class="load-btn" on:click={loadKakurenboQuestion} disabled={$solving}>
         読み込み
       </button>
     </div>

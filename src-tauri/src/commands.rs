@@ -217,3 +217,66 @@ pub fn load_sample_question(app: tauri::AppHandle, number: u32) -> Result<String
     std::fs::read_to_string(&path)
         .map_err(|e| format!("問題ファイルの読み込みに失敗: {}", e))
 }
+
+/// かくれんぼ問題の情報
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KakurenboQuestionInfo {
+    pub id: String,
+    pub title: String,
+    pub author: String,
+}
+
+/// kakurenbo_questions ディレクトリのパスを取得する
+fn get_kakurenbo_questions_dir(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    // 本番ビルド: リソースディレクトリから探す
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        let dir = resource_dir.join("kakurenbo_questions");
+        if dir.is_dir() {
+            return Some(dir);
+        }
+    }
+    // 開発時: プロジェクトルートの kakurenbo_questions/
+    let dev_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("kakurenbo_questions");
+    if dev_dir.is_dir() {
+        return Some(dev_dir);
+    }
+    None
+}
+
+/// かくれんぼ問題の一覧を取得する
+#[tauri::command]
+pub fn list_kakurenbo_questions(app: tauri::AppHandle) -> Result<Vec<KakurenboQuestionInfo>, String> {
+    let dir = get_kakurenbo_questions_dir(&app)
+        .ok_or_else(|| "かくれんぼ問題ディレクトリが見つかりません".to_string())?;
+
+    let mut questions: Vec<KakurenboQuestionInfo> = std::fs::read_dir(&dir)
+        .map_err(|e| format!("ディレクトリの読み込みに失敗: {}", e))?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            let id = name.strip_suffix(".json")?.to_string();
+            let content = std::fs::read_to_string(entry.path()).ok()?;
+            let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+            let title = json.get("title")?.as_str()?.to_string();
+            let author = json.get("author")?.as_str()?.to_string();
+            Some(KakurenboQuestionInfo { id, title, author })
+        })
+        .collect();
+
+    questions.sort_by(|a, b| a.title.cmp(&b.title));
+    Ok(questions)
+}
+
+/// 指定IDのかくれんぼ問題を読み込む
+#[tauri::command]
+pub fn load_kakurenbo_question(app: tauri::AppHandle, id: String) -> Result<String, String> {
+    let dir = get_kakurenbo_questions_dir(&app)
+        .ok_or_else(|| "かくれんぼ問題ディレクトリが見つかりません".to_string())?;
+
+    let path = dir.join(format!("{}.json", id));
+    std::fs::read_to_string(&path)
+        .map_err(|e| format!("問題ファイルの読み込みに失敗: {}", e))
+}

@@ -88,6 +88,13 @@ export interface SolutionBranch {
 
 export type Observation = "NoCapture" | { Captured: { file: number; rank: number } } | "Illegal" | "Checkmate";
 
+/** かくれんぼ問題の情報 */
+export interface KakurenboQuestionInfo {
+  id: string;
+  title: string;
+  author: string;
+}
+
 /** 駒の漢字表示 */
 export const PIECE_KANJI: Record<PieceKind, string> = {
   king: "玉",
