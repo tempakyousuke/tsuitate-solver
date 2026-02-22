@@ -23,6 +23,12 @@
     if (isAttackMove(node)) {
       if (node.AttackMove.branches.length > 1) {
         keys.add(prefix);
+        for (let i = 0; i < node.AttackMove.branches.length; i++) {
+          const b = node.AttackMove.branches[i];
+          if (b.observation !== "Checkmate") {
+            keys.add(`obs:${prefix}/${i}`);
+          }
+        }
       }
       for (let i = 0; i < node.AttackMove.branches.length; i++) {
         const b = node.AttackMove.branches[i];
@@ -165,7 +171,20 @@
         </div>
         {#if !isFolded}
           {#each node.AttackMove.branches as branch, i}
-            <div class="line branch-line" style="padding-left: {depth * 20 + 24}px">
+            {@const obsFoldKey = `obs:${path}/${i}`}
+            {@const isObsFoldable = isFoldable && branch.observation !== "Checkmate"}
+            {@const isObsFolded = isObsFoldable && collapsed.has(obsFoldKey)}
+            <div
+              class="line branch-line"
+              class:foldable={isObsFoldable}
+              style="padding-left: {isObsFoldable ? depth * 20 + 4 : depth * 20 + 24}px"
+              onclick={() => isObsFoldable && toggle(obsFoldKey)}
+            >
+              {#if isObsFoldable}
+                <span class="gutter">
+                  <span class="chevron" class:folded={isObsFolded}></span>
+                </span>
+              {/if}
               <span
                 class="observation clickable"
                 class:selected={$selectedPath === `${path}/${i}!`}
@@ -177,8 +196,11 @@
                   <span class="copied-badge">コピーしました</span>
                 {/if}
               {/if}
+              {#if isObsFolded}
+                <span class="fold-badge">...</span>
+              {/if}
             </div>
-            {#if branch.observation !== "Checkmate"}
+            {#if branch.observation !== "Checkmate" && !isObsFolded}
               {@render nodeDisplay(branch.continuation, isFoldable ? depth + 1 : depth, `${path}/${i}`)}
             {/if}
           {/each}
