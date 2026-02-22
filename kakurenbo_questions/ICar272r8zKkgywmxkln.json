@@ -1,0 +1,34 @@
+{
+	"title": "左側への逃走を阻止せよ",
+	"author": "yukarisama",
+	"board": [
+		{
+			"file": 4,
+			"rank": 1,
+			"color": "gote",
+			"kind": "pawn"
+		},
+		{
+			"file": 2,
+			"rank": 3,
+			"color": "gote",
+			"kind": "king"
+		},
+		{
+			"file": 2,
+			"rank": 5,
+			"color": "sente",
+			"kind": "pawn"
+		}
+	],
+	"sente_hand": [
+		{
+			"kind": "rook",
+			"count": 1
+		},
+		{
+			"kind": "gold",
+			"count": 3
+		}
+	]
+}

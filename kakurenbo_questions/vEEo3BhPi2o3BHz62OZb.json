@@ -1,0 +1,66 @@
+{
+	"title": "動けない桂の活躍",
+	"author": "yukarisama",
+	"board": [
+		{
+			"file": 9,
+			"rank": 2,
+			"color": "gote",
+			"kind": "lance"
+		},
+		{
+			"file": 8,
+			"rank": 3,
+			"color": "gote",
+			"kind": "silver"
+		},
+		{
+			"file": 7,
+			"rank": 1,
+			"color": "gote",
+			"kind": "king"
+		},
+		{
+			"file": 7,
+			"rank": 2,
+			"color": "gote",
+			"kind": "silver"
+		},
+		{
+			"file": 7,
+			"rank": 3,
+			"color": "gote",
+			"kind": "lance"
+		},
+		{
+			"file": 7,
+			"rank": 4,
+			"color": "sente",
+			"kind": "knight"
+		},
+		{
+			"file": 7,
+			"rank": 5,
+			"color": "sente",
+			"kind": "king"
+		},
+		{
+			"file": 5,
+			"rank": 1,
+			"color": "sente",
+			"kind": "promoted_pawn"
+		},
+		{
+			"file": 5,
+			"rank": 2,
+			"color": "sente",
+			"kind": "rook"
+		}
+	],
+	"sente_hand": [
+		{
+			"kind": "lance",
+			"count": 1
+		}
+	]
+}

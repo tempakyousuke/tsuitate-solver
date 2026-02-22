@@ -1,0 +1,80 @@
+{
+	"title": "桂は友を呼ぶ",
+	"author": "yukarisama",
+	"board": [
+		{
+			"file": 6,
+			"rank": 1,
+			"color": "sente",
+			"kind": "promoted_rook"
+		},
+		{
+			"file": 5,
+			"rank": 4,
+			"color": "gote",
+			"kind": "pawn"
+		},
+		{
+			"file": 4,
+			"rank": 1,
+			"color": "gote",
+			"kind": "silver"
+		},
+		{
+			"file": 4,
+			"rank": 3,
+			"color": "gote",
+			"kind": "pawn"
+		},
+		{
+			"file": 4,
+			"rank": 4,
+			"color": "gote",
+			"kind": "bishop"
+		},
+		{
+			"file": 3,
+			"rank": 1,
+			"color": "gote",
+			"kind": "king"
+		},
+		{
+			"file": 3,
+			"rank": 3,
+			"color": "gote",
+			"kind": "knight"
+		},
+		{
+			"file": 3,
+			"rank": 5,
+			"color": "sente",
+			"kind": "knight"
+		},
+		{
+			"file": 1,
+			"rank": 1,
+			"color": "gote",
+			"kind": "lance"
+		},
+		{
+			"file": 1,
+			"rank": 3,
+			"color": "gote",
+			"kind": "pawn"
+		}
+	],
+	"sente_hand": [
+		{
+			"kind": "knight",
+			"count": 1
+		},
+		{
+			"kind": "rook",
+			"count": 1
+		},
+		{
+			"kind": "gold",
+			"count": 1
+		}
+	]
+}

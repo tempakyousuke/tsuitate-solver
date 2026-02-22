@@ -1,0 +1,40 @@
+{
+	"title": "頭金の基本2",
+	"author": "yukarisama",
+	"board": [
+		{
+			"file": 7,
+			"rank": 2,
+			"color": "gote",
+			"kind": "silver"
+		},
+		{
+			"file": 5,
+			"rank": 2,
+			"color": "gote",
+			"kind": "king"
+		},
+		{
+			"file": 5,
+			"rank": 4,
+			"color": "sente",
+			"kind": "pawn"
+		},
+		{
+			"file": 3,
+			"rank": 2,
+			"color": "gote",
+			"kind": "silver"
+		}
+	],
+	"sente_hand": [
+		{
+			"kind": "rook",
+			"count": 1
+		},
+		{
+			"kind": "gold",
+			"count": 2
+		}
+	]
+}

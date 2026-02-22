@@ -1,0 +1,116 @@
+{
+	"title": "入玉間近の攻防",
+	"author": "yukarisama",
+	"board": [
+		{
+			"file": 8,
+			"rank": 7,
+			"color": "gote",
+			"kind": "promoted_pawn"
+		},
+		{
+			"file": 7,
+			"rank": 4,
+			"color": "gote",
+			"kind": "silver"
+		},
+		{
+			"file": 7,
+			"rank": 7,
+			"color": "sente",
+			"kind": "silver"
+		},
+		{
+			"file": 7,
+			"rank": 8,
+			"color": "sente",
+			"kind": "pawn"
+		},
+		{
+			"file": 6,
+			"rank": 5,
+			"color": "gote",
+			"kind": "promoted_pawn"
+		},
+		{
+			"file": 6,
+			"rank": 7,
+			"color": "sente",
+			"kind": "pawn"
+		},
+		{
+			"file": 6,
+			"rank": 9,
+			"color": "sente",
+			"kind": "gold"
+		},
+		{
+			"file": 5,
+			"rank": 5,
+			"color": "gote",
+			"kind": "bishop"
+		},
+		{
+			"file": 5,
+			"rank": 6,
+			"color": "gote",
+			"kind": "king"
+		},
+		{
+			"file": 5,
+			"rank": 8,
+			"color": "sente",
+			"kind": "pawn"
+		},
+		{
+			"file": 4,
+			"rank": 3,
+			"color": "sente",
+			"kind": "promoted_pawn"
+		},
+		{
+			"file": 4,
+			"rank": 4,
+			"color": "sente",
+			"kind": "rook"
+		},
+		{
+			"file": 4,
+			"rank": 5,
+			"color": "gote",
+			"kind": "knight"
+		},
+		{
+			"file": 4,
+			"rank": 7,
+			"color": "gote",
+			"kind": "promoted_pawn"
+		},
+		{
+			"file": 4,
+			"rank": 8,
+			"color": "sente",
+			"kind": "silver"
+		},
+		{
+			"file": 3,
+			"rank": 8,
+			"color": "sente",
+			"kind": "pawn"
+		}
+	],
+	"sente_hand": [
+		{
+			"kind": "knight",
+			"count": 1
+		},
+		{
+			"kind": "bishop",
+			"count": 1
+		},
+		{
+			"kind": "gold",
+			"count": 1
+		}
+	]
+}

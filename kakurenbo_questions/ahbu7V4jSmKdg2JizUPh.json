@@ -1,0 +1,54 @@
+{
+	"title": "頭金の基本3",
+	"author": "yukarisama",
+	"board": [
+		{
+			"file": 5,
+			"rank": 3,
+			"color": "sente",
+			"kind": "pawn"
+		},
+		{
+			"file": 4,
+			"rank": 3,
+			"color": "gote",
+			"kind": "pawn"
+		},
+		{
+			"file": 3,
+			"rank": 1,
+			"color": "gote",
+			"kind": "knight"
+		},
+		{
+			"file": 3,
+			"rank": 2,
+			"color": "gote",
+			"kind": "king"
+		},
+		{
+			"file": 3,
+			"rank": 4,
+			"color": "sente",
+			"kind": "pawn"
+		},
+		{
+			"file": 1,
+			"rank": 1,
+			"color": "gote",
+			"kind": "lance"
+		},
+		{
+			"file": 1,
+			"rank": 3,
+			"color": "gote",
+			"kind": "pawn"
+		}
+	],
+	"sente_hand": [
+		{
+			"kind": "gold",
+			"count": 3
+		}
+	]
+}

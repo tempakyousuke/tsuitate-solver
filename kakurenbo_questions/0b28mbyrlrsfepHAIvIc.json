@@ -1,0 +1,64 @@
+{
+	"title": "金銀飛車が敗因",
+	"author": "yukarisama",
+	"board": [
+		{
+			"file": 4,
+			"rank": 1,
+			"color": "gote",
+			"kind": "silver"
+		},
+		{
+			"file": 4,
+			"rank": 3,
+			"color": "gote",
+			"kind": "pawn"
+		},
+		{
+			"file": 3,
+			"rank": 4,
+			"color": "sente",
+			"kind": "pawn"
+		},
+		{
+			"file": 2,
+			"rank": 1,
+			"color": "gote",
+			"kind": "gold"
+		},
+		{
+			"file": 2,
+			"rank": 2,
+			"color": "gote",
+			"kind": "king"
+		},
+		{
+			"file": 2,
+			"rank": 5,
+			"color": "sente",
+			"kind": "pawn"
+		},
+		{
+			"file": 1,
+			"rank": 2,
+			"color": "gote",
+			"kind": "rook"
+		},
+		{
+			"file": 1,
+			"rank": 3,
+			"color": "gote",
+			"kind": "pawn"
+		}
+	],
+	"sente_hand": [
+		{
+			"kind": "knight",
+			"count": 1
+		},
+		{
+			"kind": "silver",
+			"count": 1
+		}
+	]
+}

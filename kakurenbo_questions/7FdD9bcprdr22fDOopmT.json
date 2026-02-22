@@ -1,0 +1,76 @@
+{
+	"title": "龍王旋回",
+	"author": "yukarisama",
+	"board": [
+		{
+			"file": 7,
+			"rank": 1,
+			"color": "gote",
+			"kind": "pawn"
+		},
+		{
+			"file": 6,
+			"rank": 4,
+			"color": "gote",
+			"kind": "silver"
+		},
+		{
+			"file": 5,
+			"rank": 3,
+			"color": "sente",
+			"kind": "rook"
+		},
+		{
+			"file": 4,
+			"rank": 1,
+			"color": "gote",
+			"kind": "promoted_silver"
+		},
+		{
+			"file": 4,
+			"rank": 3,
+			"color": "sente",
+			"kind": "bishop"
+		},
+		{
+			"file": 4,
+			"rank": 4,
+			"color": "sente",
+			"kind": "pawn"
+		},
+		{
+			"file": 2,
+			"rank": 3,
+			"color": "gote",
+			"kind": "rook"
+		},
+		{
+			"file": 2,
+			"rank": 4,
+			"color": "gote",
+			"kind": "pawn"
+		},
+		{
+			"file": 1,
+			"rank": 2,
+			"color": "gote",
+			"kind": "king"
+		},
+		{
+			"file": 1,
+			"rank": 3,
+			"color": "gote",
+			"kind": "bishop"
+		}
+	],
+	"sente_hand": [
+		{
+			"kind": "knight",
+			"count": 1
+		},
+		{
+			"kind": "gold",
+			"count": 1
+		}
+	]
+}

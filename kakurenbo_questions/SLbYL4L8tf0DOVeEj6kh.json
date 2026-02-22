@@ -1,0 +1,78 @@
+{
+	"title": "いつ飛車を切るか",
+	"author": "yukarisama",
+	"board": [
+		{
+			"file": 9,
+			"rank": 1,
+			"color": "gote",
+			"kind": "lance"
+		},
+		{
+			"file": 9,
+			"rank": 4,
+			"color": "gote",
+			"kind": "pawn"
+		},
+		{
+			"file": 8,
+			"rank": 4,
+			"color": "gote",
+			"kind": "pawn"
+		},
+		{
+			"file": 7,
+			"rank": 1,
+			"color": "gote",
+			"kind": "silver"
+		},
+		{
+			"file": 7,
+			"rank": 2,
+			"color": "gote",
+			"kind": "gold"
+		},
+		{
+			"file": 7,
+			"rank": 3,
+			"color": "gote",
+			"kind": "king"
+		},
+		{
+			"file": 7,
+			"rank": 4,
+			"color": "gote",
+			"kind": "pawn"
+		},
+		{
+			"file": 6,
+			"rank": 4,
+			"color": "gote",
+			"kind": "pawn"
+		},
+		{
+			"file": 5,
+			"rank": 3,
+			"color": "sente",
+			"kind": "promoted_pawn"
+		},
+		{
+			"file": 4,
+			"rank": 2,
+			"color": "sente",
+			"kind": "rook"
+		},
+		{
+			"file": 3,
+			"rank": 2,
+			"color": "sente",
+			"kind": "rook"
+		}
+	],
+	"sente_hand": [
+		{
+			"kind": "bishop",
+			"count": 1
+		}
+	]
+}

@@ -1,0 +1,52 @@
+{
+	"title": "意外な駒が邪魔",
+	"author": "yukarisama",
+	"board": [
+		{
+			"file": 8,
+			"rank": 1,
+			"color": "sente",
+			"kind": "gold"
+		},
+		{
+			"file": 7,
+			"rank": 2,
+			"color": "sente",
+			"kind": "silver"
+		},
+		{
+			"file": 6,
+			"rank": 4,
+			"color": "sente",
+			"kind": "pawn"
+		},
+		{
+			"file": 4,
+			"rank": 2,
+			"color": "gote",
+			"kind": "king"
+		},
+		{
+			"file": 4,
+			"rank": 4,
+			"color": "sente",
+			"kind": "pawn"
+		},
+		{
+			"file": 3,
+			"rank": 5,
+			"color": "sente",
+			"kind": "knight"
+		}
+	],
+	"sente_hand": [
+		{
+			"kind": "rook",
+			"count": 1
+		},
+		{
+			"kind": "gold",
+			"count": 1
+		}
+	]
+}

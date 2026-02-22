@@ -1,0 +1,40 @@
+{
+	"title": "玉の居場所を探る飛車",
+	"author": "yukarisama",
+	"board": [
+		{
+			"file": 7,
+			"rank": 3,
+			"color": "sente",
+			"kind": "lance"
+		},
+		{
+			"file": 5,
+			"rank": 5,
+			"color": "sente",
+			"kind": "knight"
+		},
+		{
+			"file": 4,
+			"rank": 2,
+			"color": "gote",
+			"kind": "king"
+		},
+		{
+			"file": 4,
+			"rank": 4,
+			"color": "sente",
+			"kind": "pawn"
+		}
+	],
+	"sente_hand": [
+		{
+			"kind": "rook",
+			"count": 1
+		},
+		{
+			"kind": "gold",
+			"count": 1
+		}
+	]
+}
