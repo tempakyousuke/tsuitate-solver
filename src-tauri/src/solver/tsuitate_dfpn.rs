@@ -1525,6 +1525,104 @@ impl TsuitateDfpnSolver {
         self.check_moves_cache.clear();
     }
 
+    /// 最長応手経路上の全ORノードで証明手が一意かどうかをチェックする
+    ///
+    /// 初回solve後、テーブルをクリアする前に呼び出す。
+    /// 解の手順木をルートから最長応手分岐に沿って走査し、各ORノードで
+    /// ANDテーブルの pn==0 の手を数える。いずれかの最長経路上で全ORノードが
+    /// 一意（proven_count <= 1）であれば true を返す。
+    fn has_unique_longest_path(&self, meta: &MetaPosition, node: &SolutionNode) -> bool {
+        self.check_unique_longest_recursive(meta, node)
+    }
+
+    fn check_unique_longest_recursive(
+        &self,
+        meta: &MetaPosition,
+        node: &SolutionNode,
+    ) -> bool {
+        let (mv_data, branches) = match node {
+            SolutionNode::Checkmate { .. } => return true,
+            SolutionNode::AttackMove { mv, branches } => (mv, branches),
+        };
+
+        // 最終手は対象外（最終手余詰は余詰と見なさない）
+        if node.is_final_move() {
+            return true;
+        }
+
+        // このORノードで証明された手の数をANDテーブルから確認
+        let hash = meta_position_hash(meta);
+
+        // 全盤面の合法手を収集
+        let legal_move_sets: Vec<Vec<Move>> = meta
+            .positions
+            .iter()
+            .map(|pos| pos.generate_legal_moves())
+            .collect();
+
+        let mut seen = HashSet::new();
+        let mut all_moves = Vec::new();
+        for set in &legal_move_sets {
+            for mv in set {
+                if seen.insert(*mv) {
+                    all_moves.push(*mv);
+                }
+            }
+        }
+
+        // ANDテーブルで pn==0 の手を数える
+        let proven_count = all_moves.iter().filter(|mv| {
+            let ak = Self::and_key(hash, mv);
+            self.and_table.get(&ak).map_or(false, |e| e.pn == 0)
+        }).count();
+
+        if proven_count > 1 {
+            return false; // 複数の証明手がある → 一意でない
+        }
+
+        // 攻め手を適用して観測分岐を復元
+        let mv = Self::move_data_to_move(mv_data);
+        let (legal_meta, illegal_meta) = meta.apply_attack_move_split_fast(mv);
+
+        let obs_metas: Vec<(Observation, MetaPosition)> =
+            if !legal_meta.is_empty() && !legal_meta.all_effectively_checkmate() {
+                let raw = legal_meta.expand_defense_moves(mv);
+                Self::merge_observation_branches(raw)
+            } else {
+                vec![]
+            };
+
+        // 最長分岐の深さを計算
+        let max_depth = node.max_moves();
+
+        // 最長分岐のみ再帰（いずれかの最長経路で全一意なら true）
+        for branch in branches {
+            let branch_depth = match branch.observation {
+                Observation::Checkmate => 1,
+                Observation::Illegal => branch.continuation.max_moves(),
+                _ => 2 + branch.continuation.max_moves(),
+            };
+            if branch_depth < max_depth {
+                continue; // 最長ではない分岐はスキップ
+            }
+
+            let child_meta = match &branch.observation {
+                Observation::Checkmate => continue, // 詰み分岐は経路終端
+                Observation::Illegal => illegal_meta.clone(),
+                obs => match obs_metas.iter().find(|(o, _)| o == obs) {
+                    Some((_, m)) => m.clone(),
+                    None => continue,
+                },
+            };
+
+            if self.check_unique_longest_recursive(&child_meta, &branch.continuation) {
+                return true; // この最長経路上で全ORノードが一意
+            }
+        }
+
+        false
+    }
+
     fn find_second_solution(
         &mut self,
         meta: &MetaPosition,
@@ -1536,6 +1634,11 @@ impl TsuitateDfpnSolver {
                 return (None, self.nodes_searched, String::new());
             }
         };
+
+        // プレチェック: テーブルクリア前に最長応手経路の一意性を確認
+        if self.has_unique_longest_path(meta, first_tree) {
+            return (None, self.nodes_searched, "unique_longest_path".to_string());
+        }
 
         let first_hashes = first_tree.collect_attack_subtree_hashes();
         let initial_nodes = self.nodes_searched;
@@ -1614,8 +1717,21 @@ impl TsuitateDfpnSolver {
                 vec![]
             };
 
+        // 最長応手分岐のみ探索
+        let max_depth = node.max_moves();
+
         // 各ブランチの子MetaPositionを特定して再帰
         for (branch_idx, branch) in branches.iter().enumerate() {
+            // 最長でない分岐はスキップ
+            let branch_depth = match branch.observation {
+                Observation::Checkmate => 1,
+                Observation::Illegal => branch.continuation.max_moves(),
+                _ => 2 + branch.continuation.max_moves(),
+            };
+            if branch_depth < max_depth {
+                continue;
+            }
+
             let child_meta = match &branch.observation {
                 Observation::Checkmate => continue,
                 Observation::Illegal => illegal_meta.clone(),
