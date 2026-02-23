@@ -454,7 +454,7 @@ fn print_solution_tree(node: &SolutionNode, indent: usize) {
         SolutionNode::Checkmate { depth } => {
             println!("{}詰み (depth={})", pad, depth);
         }
-        SolutionNode::AttackMove { mv, branches } => {
+        SolutionNode::AttackMove { mv, branches, .. } => {
             println!("{}{}", pad, mv.notation);
             for branch in branches {
                 println!("{}  [{:?}]", pad, branch.observation);

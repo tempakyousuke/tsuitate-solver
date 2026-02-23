@@ -226,7 +226,7 @@ fn print_solution_tree(node: &tsuitate_solver_lib::solver::solution::SolutionNod
         SolutionNode::Checkmate { depth } => {
             println!("{}詰み (depth={})", pad, depth);
         }
-        SolutionNode::AttackMove { mv, branches } => {
+        SolutionNode::AttackMove { mv, branches, .. } => {
             println!("{}{}", pad, mv.notation);
             for branch in branches {
                 let obs_str = match &branch.observation {

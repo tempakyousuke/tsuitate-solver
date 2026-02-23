@@ -52,6 +52,7 @@ export interface SolutionData {
   found: boolean;
   tree: SolutionNode | null;
   second_tree: SolutionNode | null;
+  kizu_trees: SolutionNode[];
   message: string;
   trace: string[];
 }

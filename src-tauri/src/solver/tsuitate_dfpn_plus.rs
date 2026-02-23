@@ -445,6 +445,7 @@ impl TsuitateDfpnPlusSolver {
                     found: true,
                     tree,
                     second_tree,
+                    kizu_trees: vec![],
                     message,
                     trace: Vec::new(),
                 }
@@ -453,6 +454,7 @@ impl TsuitateDfpnPlusSolver {
                 found: false,
                 tree: None,
                 second_tree: None,
+                kizu_trees: vec![],
                 message: format!(
                     "詰みは存在しません (探索ノード数: {})",
                     self.nodes_searched
@@ -463,6 +465,7 @@ impl TsuitateDfpnPlusSolver {
                 found: false,
                 tree: None,
                 second_tree: None,
+                kizu_trees: vec![],
                 message: format!(
                     "探索を打ち切りました (探索ノード数: {})",
                     self.nodes_searched
@@ -1460,6 +1463,7 @@ impl TsuitateDfpnPlusSolver {
                         return Some(SolutionNode::AttackMove {
                             mv: MoveData::from_move(*mv, Color::Sente),
                             branches,
+                            meta_hash: None,
                         });
                     }
                 }
@@ -1475,6 +1479,7 @@ impl TsuitateDfpnPlusSolver {
                         return Some(SolutionNode::AttackMove {
                             mv: MoveData::from_move(hint_mv, Color::Sente),
                             branches,
+                            meta_hash: None,
                         });
                     }
                 }
@@ -1489,6 +1494,7 @@ impl TsuitateDfpnPlusSolver {
                                 return Some(SolutionNode::AttackMove {
                                     mv: MoveData::from_move(*mv, Color::Sente),
                                     branches,
+                                    meta_hash: None,
                                 });
                             }
                         }
@@ -1503,6 +1509,7 @@ impl TsuitateDfpnPlusSolver {
                 return Some(SolutionNode::AttackMove {
                     mv: MoveData::from_move(*mv, Color::Sente),
                     branches,
+                    meta_hash: None,
                 });
             }
         }
@@ -1771,7 +1778,7 @@ impl TsuitateDfpnPlusSolver {
     ) -> Option<SolutionNode> {
         let (mv_data, branches) = match node {
             SolutionNode::Checkmate { .. } => return None,
-            SolutionNode::AttackMove { mv, branches } => (mv, branches),
+            SolutionNode::AttackMove { mv, branches, .. } => (mv, branches),
         };
 
         let mv = Self::move_data_to_move(mv_data);
@@ -1807,6 +1814,7 @@ impl TsuitateDfpnPlusSolver {
                         return Some(SolutionNode::AttackMove {
                             mv: mv_data.clone(),
                             branches: new_branches,
+                            meta_hash: None,
                         });
                     }
                 }
@@ -1823,6 +1831,7 @@ impl TsuitateDfpnPlusSolver {
                 return Some(SolutionNode::AttackMove {
                     mv: mv_data.clone(),
                     branches: new_branches,
+                    meta_hash: None,
                 });
             }
         }

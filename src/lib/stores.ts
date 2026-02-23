@@ -202,7 +202,15 @@ export function replayToPath(pathStr: string, applyFinalMove: boolean): { board:
 
   const sol = get(solution);
   const prefix = pathStr.split("/")[0];
-  const tree = prefix === "t" ? sol?.tree : sol?.second_tree;
+  let tree: SolutionNode | null | undefined;
+  if (prefix === "s") {
+    tree = sol?.second_tree;
+  } else if (prefix.startsWith("k")) {
+    const idx = parseInt(prefix.substring(1));
+    tree = sol?.kizu_trees?.[idx];
+  } else {
+    tree = sol?.tree;
+  }
   if (!tree) return null;
 
   const board = deepCopyBoard(initial.board);
@@ -303,7 +311,12 @@ function getNodeAtPath(tree: SolutionNode, pathStr: string): SolutionNode | null
 function getTreeForPath(pathStr: string): SolutionNode | null {
   const sol = get(solution);
   if (!sol) return null;
-  return pathStr.startsWith("s") ? sol.second_tree ?? null : sol.tree ?? null;
+  if (pathStr.startsWith("s")) return sol.second_tree ?? null;
+  if (pathStr.startsWith("k")) {
+    const idx = parseInt(pathStr.substring(1));
+    return sol.kizu_trees?.[idx] ?? null;
+  }
+  return sol.tree ?? null;
 }
 
 /** 前進（次の手へ / 次の観測へ） */

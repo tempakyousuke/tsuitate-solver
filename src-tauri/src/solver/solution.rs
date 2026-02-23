@@ -34,6 +34,9 @@ pub enum SolutionNode {
         mv: MoveData,
         /// 観測結果による分岐
         branches: Vec<SolutionBranch>,
+        /// MetaPosition ハッシュ（余詰めチェック用、extract_solution で設定）
+        #[serde(skip)]
+        meta_hash: Option<u64>,
     },
 }
 
@@ -99,7 +102,7 @@ impl SolutionNode {
             SolutionNode::Checkmate { .. } => {
                 0u8.hash(hasher);
             }
-            SolutionNode::AttackMove { mv, branches } => {
+            SolutionNode::AttackMove { mv, branches, .. } => {
                 1u8.hash(hasher);
                 mv.from_file.hash(hasher);
                 mv.from_rank.hash(hasher);
@@ -257,11 +260,13 @@ mod tests {
     #[test]
     fn test_subsumed_futile_interposition() {
         let solution1 = SolutionNode::AttackMove {
+            meta_hash: None,
             mv: make_move_data("▲２一飛打", 2, 1, Some("飛")),
             branches: vec![
                 SolutionBranch {
                     observation: Observation::Captured { file: 2, rank: 1 },
                     continuation: Box::new(SolutionNode::AttackMove {
+                        meta_hash: None,
                         mv: make_move_data("▲２二金打", 2, 2, Some("金")),
                         branches: vec![SolutionBranch {
                             observation: Observation::Checkmate,
@@ -273,16 +278,19 @@ mod tests {
         };
 
         let solution2 = SolutionNode::AttackMove {
+            meta_hash: None,
             mv: make_move_data("▲１一飛打", 1, 1, Some("飛")),
             branches: vec![
                 SolutionBranch {
                     observation: Observation::NoCapture,
                     continuation: Box::new(SolutionNode::AttackMove {
+                        meta_hash: None,
                         mv: make_move_data("▲２一飛成", 2, 1, None),
                         branches: vec![
                             SolutionBranch {
                                 observation: Observation::Captured { file: 2, rank: 1 },
                                 continuation: Box::new(SolutionNode::AttackMove {
+                                    meta_hash: None,
                                     mv: make_move_data("▲２二金打", 2, 2, Some("金")),
                                     branches: vec![SolutionBranch {
                                         observation: Observation::Checkmate,
@@ -310,6 +318,7 @@ mod tests {
     #[test]
     fn test_final_move_yodume_1move() {
         let solution1 = SolutionNode::AttackMove {
+            meta_hash: None,
             mv: make_move_data("▲１一金打", 1, 1, Some("金")),
             branches: vec![SolutionBranch {
                 observation: Observation::Checkmate,
@@ -318,6 +327,7 @@ mod tests {
         };
 
         let solution2 = SolutionNode::AttackMove {
+            meta_hash: None,
             mv: make_move_data("▲２二銀打", 2, 2, Some("銀")),
             branches: vec![SolutionBranch {
                 observation: Observation::Checkmate,
@@ -337,6 +347,7 @@ mod tests {
     fn test_is_final_move() {
         // 全分岐の継続が直接 Checkmate である AttackMove は最終手
         let final_node = SolutionNode::AttackMove {
+            meta_hash: None,
             mv: make_move_data("▲２二金打", 2, 2, Some("金")),
             branches: vec![SolutionBranch {
                 observation: Observation::Checkmate,
@@ -347,6 +358,7 @@ mod tests {
 
         // 複数の Checkmate 分岐でも最終手
         let multi_checkmate = SolutionNode::AttackMove {
+            meta_hash: None,
             mv: make_move_data("▲２二金打", 2, 2, Some("金")),
             branches: vec![
                 SolutionBranch {
@@ -363,10 +375,12 @@ mod tests {
 
         // 非 Checkmate 継続がある場合は最終手ではない
         let non_final = SolutionNode::AttackMove {
+            meta_hash: None,
             mv: make_move_data("▲２一飛打", 2, 1, Some("飛")),
             branches: vec![SolutionBranch {
                 observation: Observation::NoCapture,
                 continuation: Box::new(SolutionNode::AttackMove {
+                    meta_hash: None,
                     mv: make_move_data("▲２二金打", 2, 2, Some("金")),
                     branches: vec![SolutionBranch {
                         observation: Observation::Checkmate,
@@ -389,6 +403,7 @@ mod tests {
     #[test]
     fn test_subsumed_illegal_probe() {
         let gold_drop = SolutionNode::AttackMove {
+            meta_hash: None,
             mv: make_move_data("▲１一金打", 1, 1, Some("金")),
             branches: vec![SolutionBranch {
                 observation: Observation::Checkmate,
@@ -397,6 +412,7 @@ mod tests {
         };
 
         let solution2 = SolutionNode::AttackMove {
+            meta_hash: None,
             mv: make_move_data("▲３三桂打", 3, 3, Some("桂")),
             branches: vec![SolutionBranch {
                 observation: Observation::Illegal,
@@ -415,6 +431,7 @@ mod tests {
     #[test]
     fn test_not_subsumed_partial_convergence() {
         let solution1 = SolutionNode::AttackMove {
+            meta_hash: None,
             mv: make_move_data("▲２一飛打", 2, 1, Some("飛")),
             branches: vec![SolutionBranch {
                 observation: Observation::Checkmate,
@@ -425,6 +442,7 @@ mod tests {
         // 解2: NoCapture は1つ目の解のサブツリーに収束するが、
         // Captured は異なる手順で詰む → 余詰め
         let solution2 = SolutionNode::AttackMove {
+            meta_hash: None,
             mv: make_move_data("▲１一飛打", 1, 1, Some("飛")),
             branches: vec![
                 SolutionBranch {
@@ -434,6 +452,7 @@ mod tests {
                 SolutionBranch {
                     observation: Observation::Captured { file: 1, rank: 1 },
                     continuation: Box::new(SolutionNode::AttackMove {
+                        meta_hash: None,
                         mv: make_move_data("▲３三角打", 3, 3, Some("角")),
                         branches: vec![SolutionBranch {
                             observation: Observation::Checkmate,
@@ -462,6 +481,9 @@ pub struct SolutionData {
     /// 2つ目の解の手順木（余詰めチェック用）
     #[serde(default)]
     pub second_tree: Option<SolutionNode>,
+    /// キズの手順木（プローブ代替手による許容余詰め）
+    #[serde(default)]
+    pub kizu_trees: Vec<SolutionNode>,
     /// メッセージ
     pub message: String,
     /// 探索ログ

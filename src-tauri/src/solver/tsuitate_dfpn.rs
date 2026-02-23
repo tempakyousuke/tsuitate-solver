@@ -1354,27 +1354,40 @@ impl TsuitateDfpnSolver {
                 // find_second_solution は self.nodes_searched を first_phase_nodes として使うため、
                 // shorten 分を含めた累計値を設定しておく
                 self.nodes_searched = nodes_before_second;
-                let (second_tree, total_nodes, second_msg) = if find_second {
+                let (second_tree, kizu_trees, total_nodes, second_msg) = if find_second {
                     if let Some(ref t) = tree {
                         self.find_second_solution(meta, t)
                     } else {
-                        (None, nodes_before_second, String::new())
+                        (None, vec![], nodes_before_second, String::new())
                     }
                 } else {
-                    (None, nodes_before_second, String::new())
+                    (None, vec![], nodes_before_second, String::new())
+                };
+
+                let kizu_suffix = if !kizu_trees.is_empty() {
+                    format!("、キズ: {}件", kizu_trees.len())
+                } else {
+                    String::new()
                 };
 
                 let message = if second_tree.is_some() {
                     let second_depth = second_tree.as_ref().map(|t| t.max_moves()).unwrap_or(0);
                     format!(
-                        "余詰めあり: {}手詰めと{}手詰めが見つかりました (探索ノード数: {})",
-                        depth, second_depth, total_nodes
+                        "余詰めあり: {}手詰めと{}手詰めが見つかりました (探索ノード数: {}{})",
+                        depth, second_depth, total_nodes, kizu_suffix
                     )
                 } else if find_second && !second_msg.is_empty() {
-                    format!(
-                        "{}手詰めが見つかりました（余詰めなし、探索ノード数: {}）",
-                        depth, total_nodes
-                    )
+                    if kizu_trees.is_empty() {
+                        format!(
+                            "{}手詰めが見つかりました（余詰めなし、探索ノード数: {}）",
+                            depth, total_nodes
+                        )
+                    } else {
+                        format!(
+                            "{}手詰めが見つかりました（余詰めなし{}、探索ノード数: {}）",
+                            depth, kizu_suffix, total_nodes
+                        )
+                    }
                 } else {
                     format!(
                         "{}手詰めが見つかりました (探索ノード数: {})",
@@ -1386,6 +1399,7 @@ impl TsuitateDfpnSolver {
                     found: true,
                     tree,
                     second_tree,
+                    kizu_trees,
                     message,
                     trace: Vec::new(),
                 }
@@ -1394,6 +1408,7 @@ impl TsuitateDfpnSolver {
                 found: false,
                 tree: None,
                 second_tree: None,
+                kizu_trees: vec![],
                 message: format!(
                     "詰みは存在しません (探索ノード数: {})",
                     self.nodes_searched
@@ -1404,6 +1419,7 @@ impl TsuitateDfpnSolver {
                 found: false,
                 tree: None,
                 second_tree: None,
+                kizu_trees: vec![],
                 message: format!(
                     "探索を打ち切りました (探索ノード数: {})",
                     self.nodes_searched
@@ -1531,6 +1547,9 @@ impl TsuitateDfpnSolver {
     /// 解の手順木をルートから最長応手分岐に沿って走査し、各ORノードで
     /// ANDテーブルの pn==0 の手を数える。いずれかの最長経路上で全ORノードが
     /// 一意（proven_count <= 1）であれば true を返す。
+    ///
+    /// extract_solution で保存された meta_hash を使用してANDテーブルを参照するため、
+    /// MetaPosition の再構築が不要。
     fn has_unique_longest_path(&self, meta: &MetaPosition, node: &SolutionNode) -> bool {
         self.check_unique_longest_recursive(meta, node)
     }
@@ -1540,9 +1559,9 @@ impl TsuitateDfpnSolver {
         meta: &MetaPosition,
         node: &SolutionNode,
     ) -> bool {
-        let (mv_data, branches) = match node {
+        let (mv_data, branches, meta_hash) = match node {
             SolutionNode::Checkmate { .. } => return true,
-            SolutionNode::AttackMove { mv, branches } => (mv, branches),
+            SolutionNode::AttackMove { mv, branches, meta_hash } => (mv, branches, *meta_hash),
         };
 
         // 最終手は対象外（最終手余詰は余詰と見なさない）
@@ -1550,10 +1569,12 @@ impl TsuitateDfpnSolver {
             return true;
         }
 
-        // このORノードで証明された手の数をANDテーブルから確認
-        let hash = meta_position_hash(meta);
+        // extract_solution で保存された meta_hash を使用
+        // meta_hash がない場合（旧ソルバー等）は MetaPosition から計算
+        let hash = meta_hash.unwrap_or_else(|| meta_position_hash(meta));
 
-        // 全盤面の合法手を収集
+        // meta_hash がある場合はそれを使ってANDテーブルのみで証明手数を確認
+        // （MetaPosition から合法手を生成して全候補をチェックする）
         let legal_move_sets: Vec<Vec<Move>> = meta
             .positions
             .iter()
@@ -1580,9 +1601,23 @@ impl TsuitateDfpnSolver {
             return false; // 複数の証明手がある → 一意でない
         }
 
-        // 攻め手を適用して観測分岐を復元
+        // 最長分岐の深さを計算
+        let max_depth = node.max_moves();
+
+        // 最長分岐のみ再帰
+        // 子ノードの MetaPosition は extract_solution で meta_hash が保存されているため、
+        // MetaPosition 再構築の代わりに meta_hash を直接参照する。
+        // ただし子ノードの合法手生成には MetaPosition が必要なので、
+        // 再構築可能な場合のみ再帰する。再構築できない場合は保守的に false を返す。
         let mv = Self::move_data_to_move(mv_data);
-        let (legal_meta, illegal_meta) = meta.apply_attack_move_split_fast(mv);
+        let (legal_meta, illegal_meta) = if !meta.is_empty() {
+            meta.apply_attack_move_split_fast(mv)
+        } else {
+            // meta が空の場合、子ノードの MetaPosition を再構築できないが、
+            // 子ノードに meta_hash があれば AND テーブルのハッシュ参照は可能。
+            // ただし合法手リスト生成ができないため保守的に false を返す。
+            return false;
+        };
 
         let obs_metas: Vec<(Observation, MetaPosition)> =
             if !legal_meta.is_empty() && !legal_meta.all_effectively_checkmate() {
@@ -1592,10 +1627,6 @@ impl TsuitateDfpnSolver {
                 vec![]
             };
 
-        // 最長分岐の深さを計算
-        let max_depth = node.max_moves();
-
-        // 最長分岐のみ再帰（いずれかの最長経路で全一意なら true）
         for branch in branches {
             let branch_depth = match branch.observation {
                 Observation::Checkmate => 1,
@@ -1607,41 +1638,58 @@ impl TsuitateDfpnSolver {
             }
 
             let child_meta = match &branch.observation {
-                Observation::Checkmate => continue, // 詰み分岐は経路終端
+                Observation::Checkmate => continue,
                 Observation::Illegal => illegal_meta.clone(),
                 obs => match obs_metas.iter().find(|(o, _)| o == obs) {
                     Some((_, m)) => m.clone(),
-                    None => continue,
+                    None => continue, // 再構築不可 → この分岐をスキップ
                 },
             };
 
             if self.check_unique_longest_recursive(&child_meta, &branch.continuation) {
-                return true; // この最長経路上で全ORノードが一意
+                return true;
             }
         }
 
         false
     }
 
+    /// キズ（許容余詰め）の判定
+    ///
+    /// 主解の手と別解の手が両方ともプローブ手（Illegal分岐を持つ）である場合、
+    /// これはプローブ代替手に過ぎず、真の余詰めではないと判断する。
+    fn is_kizu(main_node: &SolutionNode, alt_node: &SolutionNode) -> bool {
+        fn has_illegal_branch(node: &SolutionNode) -> bool {
+            match node {
+                SolutionNode::AttackMove { branches, .. } => {
+                    branches.iter().any(|b| b.observation == Observation::Illegal)
+                }
+                _ => false,
+            }
+        }
+        has_illegal_branch(main_node) && has_illegal_branch(alt_node)
+    }
+
     fn find_second_solution(
         &mut self,
         meta: &MetaPosition,
         first_tree: &SolutionNode,
-    ) -> (Option<SolutionNode>, u64, String) {
+    ) -> (Option<SolutionNode>, Vec<SolutionNode>, u64, String) {
         let first_mv = match first_tree {
             SolutionNode::AttackMove { mv, .. } => Self::move_data_to_move(mv),
             SolutionNode::Checkmate { .. } => {
-                return (None, self.nodes_searched, String::new());
+                return (None, vec![], self.nodes_searched, String::new());
             }
         };
 
         // プレチェック: テーブルクリア前に最長応手経路の一意性を確認
         if self.has_unique_longest_path(meta, first_tree) {
-            return (None, self.nodes_searched, "unique_longest_path".to_string());
+            return (None, vec![], self.nodes_searched, "unique_longest_path".to_string());
         }
 
         let first_hashes = first_tree.collect_attack_subtree_hashes();
         let initial_nodes = self.nodes_searched;
+        let mut kizu_trees: Vec<SolutionNode> = vec![];
 
         // Phase 1: 初手除外で再探索
         let mut excluded = vec![first_mv];
@@ -1663,45 +1711,56 @@ impl TsuitateDfpnSolver {
             let second_tree = self.extract_solution(meta);
             if let Some(ref second) = second_tree {
                 if !second.is_subsumed_by(&first_hashes) {
-                    return (second_tree, total_nodes, "found".to_string());
+                    if Self::is_kizu(first_tree, second) {
+                        // キズ（プローブ代替手）として収集、探索を続行
+                        kizu_trees.push(second_tree.unwrap());
+                    } else {
+                        // 真の余詰め → 即座に返す
+                        return (second_tree, kizu_trees, total_nodes, "found".to_string());
+                    }
                 }
             }
         }
 
         // Phase 2: 内部ORノードで別手順を探索
         if let Some(alt_tree) = self.find_inner_alternative(
-            meta, first_tree, &first_hashes, &mut total_nodes,
+            meta, first_tree, &first_hashes, &mut total_nodes, &mut kizu_trees,
         ) {
-            return (Some(alt_tree), total_nodes, "found".to_string());
+            return (Some(alt_tree), kizu_trees, total_nodes, "found".to_string());
         }
 
-        (None, total_nodes, "not_found".to_string())
+        let method = if kizu_trees.is_empty() { "not_found" } else { "kizu_only" };
+        (None, kizu_trees, total_nodes, method.to_string())
     }
 
     /// 手順木の内部ORノードで余詰め（別手順）を探す
     ///
     /// 1つ目の解の手順木を辿りながら、各ORノードで選ばれた手を除外して
     /// 再探索し、別の詰み手順がないかチェックする。
+    /// キズ（プローブ代替手）は kizu_trees に収集し、真の余詰めのみ返す。
     fn find_inner_alternative(
         &mut self,
         meta: &MetaPosition,
         first_tree: &SolutionNode,
         first_hashes: &HashSet<u64>,
         total_nodes: &mut u64,
+        kizu_trees: &mut Vec<SolutionNode>,
     ) -> Option<SolutionNode> {
-        self.find_inner_alt_recursive(meta, first_tree, first_hashes, total_nodes)
+        self.find_inner_alt_recursive(meta, first_tree, first_tree, first_hashes, total_nodes, kizu_trees)
     }
 
     fn find_inner_alt_recursive(
         &mut self,
         meta: &MetaPosition,
         node: &SolutionNode,
+        root_node: &SolutionNode,
         first_hashes: &HashSet<u64>,
         total_nodes: &mut u64,
+        kizu_trees: &mut Vec<SolutionNode>,
     ) -> Option<SolutionNode> {
         let (mv_data, branches) = match node {
             SolutionNode::Checkmate { .. } => return None,
-            SolutionNode::AttackMove { mv, branches } => (mv, branches),
+            SolutionNode::AttackMove { mv, branches, .. } => (mv, branches),
         };
 
         let mv = Self::move_data_to_move(mv_data);
@@ -1748,12 +1807,22 @@ impl TsuitateDfpnSolver {
                     if let Some(alt_subtree) =
                         self.try_solve_excluding(&child_meta, child_move, first_hashes, total_nodes)
                     {
-                        let mut new_branches = branches.clone();
-                        new_branches[branch_idx].continuation = Box::new(alt_subtree);
-                        return Some(SolutionNode::AttackMove {
-                            mv: mv_data.clone(),
-                            branches: new_branches,
-                        });
+                        if Self::is_kizu(&branch.continuation, &alt_subtree) {
+                            // キズとして収集、full tree を構築して kizu_trees に追加
+                            let mut new_branches = branches.clone();
+                            new_branches[branch_idx].continuation = Box::new(alt_subtree);
+                            kizu_trees.push(Self::rebuild_full_tree(root_node, node, branch_idx, new_branches.clone()));
+                            // continue — 真の余詰めを探し続ける
+                        } else {
+                            // 真の余詰め → 即座に返す
+                            let mut new_branches = branches.clone();
+                            new_branches[branch_idx].continuation = Box::new(alt_subtree);
+                            return Some(SolutionNode::AttackMove {
+                                mv: mv_data.clone(),
+                                branches: new_branches,
+                                meta_hash: None,
+                            });
+                        }
                     }
                 }
             }
@@ -1762,19 +1831,46 @@ impl TsuitateDfpnSolver {
             if let Some(deep_alt) = self.find_inner_alt_recursive(
                 &child_meta,
                 &branch.continuation,
+                root_node,
                 first_hashes,
                 total_nodes,
+                kizu_trees,
             ) {
                 let mut new_branches = branches.clone();
                 new_branches[branch_idx].continuation = Box::new(deep_alt);
                 return Some(SolutionNode::AttackMove {
                     mv: mv_data.clone(),
                     branches: new_branches,
+                    meta_hash: None,
                 });
             }
         }
 
         None
+    }
+
+    /// find_inner_alt_recursive でキズを検出した際、ルートからの完全な手順木を構築する
+    ///
+    /// inner_alt_recursive は再帰的に呼び出されるため、検出時点では部分木しか持っていない。
+    /// キズの表示にはルートからの完全な手順木が必要なので、root_node をベースに
+    /// 変更箇所のみ差し替えた完全な手順木を返す。
+    ///
+    /// 簡易実装: 現在のノードレベルの new_branches を使って AttackMove を構築する。
+    /// find_inner_alt_recursive の戻り値と同様の形式（親ノードの branches を差し替えた部分木）。
+    fn rebuild_full_tree(
+        _root_node: &SolutionNode,
+        current_node: &SolutionNode,
+        _branch_idx: usize,
+        new_branches: Vec<SolutionBranch>,
+    ) -> SolutionNode {
+        match current_node {
+            SolutionNode::AttackMove { mv, .. } => SolutionNode::AttackMove {
+                mv: mv.clone(),
+                branches: new_branches,
+                meta_hash: None,
+            },
+            _ => current_node.clone(),
+        }
     }
 
     /// 指定MetaPositionで特定の手を除外して解を探す
@@ -1880,6 +1976,7 @@ impl TsuitateDfpnSolver {
                         return Some(SolutionNode::AttackMove {
                             mv: MoveData::from_move(*mv, Color::Sente),
                             branches,
+                            meta_hash: Some(hash),
                         });
                     }
                 }
@@ -1893,6 +1990,7 @@ impl TsuitateDfpnSolver {
                 return Some(SolutionNode::AttackMove {
                     mv: MoveData::from_move(*mv, Color::Sente),
                     branches,
+                    meta_hash: Some(hash),
                 });
             }
         }

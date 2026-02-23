@@ -39,10 +39,15 @@
     }
   }
 
-  function foldAll(tree: SolutionNode | undefined, secondTree: SolutionNode | undefined) {
+  function foldAll(tree: SolutionNode | undefined, secondTree: SolutionNode | undefined, kizuTrees?: SolutionNode[]) {
     const keys = new Set<string>();
     if (tree) collapseAll(tree, "t", keys);
     if (secondTree) collapseAll(secondTree, "s", keys);
+    if (kizuTrees) {
+      for (let i = 0; i < kizuTrees.length; i++) {
+        collapseAll(kizuTrees[i], `k${i}`, keys);
+      }
+    }
     collapsed = keys;
   }
 
@@ -115,7 +120,9 @@
     const sol = $solution;
     if (!sol) return;
 
-    const tree = path.startsWith("s") ? sol.second_tree : sol.tree;
+    const tree = path.startsWith("s") ? sol.second_tree
+      : path.startsWith("k") ? (sol.kizu_trees?.[parseInt(path.substring(1))] ?? null)
+      : sol.tree;
     if (!tree) return;
 
     const moves = collectMovesForPath(tree, path);
@@ -216,7 +223,7 @@
             {#if $previewMode}
               <button class="reset-btn" onclick={() => exitPreview()}>盤面を戻す</button>
             {/if}
-            <button onclick={() => foldAll($solution?.tree ?? undefined, $solution?.second_tree ?? undefined)}>全て折りたたむ</button>
+            <button onclick={() => foldAll($solution?.tree ?? undefined, $solution?.second_tree ?? undefined, $solution?.kizu_trees)}>全て折りたたむ</button>
             <button onclick={() => unfoldAll()}>全て展開</button>
           </div>
         </div>
@@ -229,6 +236,15 @@
         <h4>2つ目の解（余詰め）</h4>
         {@render nodeDisplay($solution.second_tree, 0, "s")}
       </div>
+    {/if}
+
+    {#if $solution.kizu_trees && $solution.kizu_trees.length > 0}
+      {#each $solution.kizu_trees as kizu, idx}
+        <div class="tree kizu-solution">
+          <h4>キズ {idx + 1}（プローブ代替手）</h4>
+          {@render nodeDisplay(kizu, 0, `k${idx}`)}
+        </div>
+      {/each}
     {/if}
 
     {#if $solution.trace && $solution.trace.length > 0}
@@ -457,6 +473,16 @@
 
   .second-solution h4 {
     color: #c33;
+  }
+
+  .kizu-solution {
+    margin-top: 12px;
+    padding-top: 8px;
+    border-top: 1px solid #ddd;
+  }
+
+  .kizu-solution h4 {
+    color: #c90;
   }
 
   .trace-section {

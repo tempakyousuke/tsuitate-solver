@@ -131,6 +131,7 @@ impl TsuitateSolver {
                 found: false,
                 tree: None,
                 second_tree: None,
+                kizu_trees: vec![],
                 message: msg,
                 trace: std::mem::take(&mut self.trace),
             };
@@ -147,6 +148,7 @@ impl TsuitateSolver {
                 found: false,
                 tree: None,
                 second_tree: None,
+                kizu_trees: vec![],
                 message: msg,
                 trace: std::mem::take(&mut self.trace),
             };
@@ -180,6 +182,7 @@ impl TsuitateSolver {
                         found: true,
                         tree: Some(tree),
                         second_tree: None,
+                        kizu_trees: vec![],
                         message: msg,
                         trace: std::mem::take(&mut self.trace),
                     };
@@ -196,6 +199,7 @@ impl TsuitateSolver {
                         found: true,
                         tree: Some(tree),
                         second_tree: Some(second),
+                        kizu_trees: vec![],
                         message: msg,
                         trace: std::mem::take(&mut self.trace),
                     };
@@ -209,6 +213,7 @@ impl TsuitateSolver {
                         found: true,
                         tree: Some(tree),
                         second_tree: None,
+                        kizu_trees: vec![],
                         message: msg,
                         trace: std::mem::take(&mut self.trace),
                     };
@@ -225,6 +230,7 @@ impl TsuitateSolver {
             found: true,
             tree: Some(tree),
             second_tree: None,
+            kizu_trees: vec![],
             message: msg,
             trace: std::mem::take(&mut self.trace),
         }
@@ -574,6 +580,7 @@ impl TsuitateSolver {
                 return Some(SolutionNode::AttackMove {
                     mv: MoveData::from_move(mv, Color::Sente),
                     branches: solution_branches,
+                    meta_hash: None,
                 });
             }
 

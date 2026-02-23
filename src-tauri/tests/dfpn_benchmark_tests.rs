@@ -180,9 +180,10 @@ fn run_question_second(number: u32, node_limit: u64, time_limit_secs: u64) {
     let has_second = result.second_tree.is_some();
     let second_depth = result.second_tree.as_ref().map_or(0, |t| t.max_moves());
 
+    let kizu_count = result.kizu_trees.len();
     println!(
-        "問題{}: found={}, depth={}, has_second={}, second_depth={}, time={:.3}s, nodes={}, msg={}",
-        number, result.found, depth, has_second, second_depth,
+        "問題{}: found={}, depth={}, has_second={}, second_depth={}, kizu={}, time={:.3}s, nodes={}, msg={}",
+        number, result.found, depth, has_second, second_depth, kizu_count,
         elapsed.as_secs_f64(), solver.nodes_searched, result.message,
     );
     if let Some(ref tree) = result.tree {
@@ -193,7 +194,15 @@ fn run_question_second(number: u32, node_limit: u64, time_limit_secs: u64) {
         println!("  余詰め:");
         print_solution_tree(second, 2);
     } else if result.found {
-        println!("  余詰めなし（完全作）");
+        if kizu_count > 0 {
+            println!("  余詰めなし（完全作、キズ: {}件）", kizu_count);
+            for (i, kizu) in result.kizu_trees.iter().enumerate() {
+                println!("  キズ {}:", i + 1);
+                print_solution_tree(kizu, 4);
+            }
+        } else {
+            println!("  余詰めなし（完全作）");
+        }
     }
     println!();
 }
@@ -279,7 +288,7 @@ fn print_solution_tree(
         SolutionNode::Checkmate { depth } => {
             println!("{}詰み (depth={})", pad, depth);
         }
-        SolutionNode::AttackMove { mv, branches } => {
+        SolutionNode::AttackMove { mv, branches, .. } => {
             println!("{}{}", pad, mv.notation);
             for branch in branches {
                 let obs_str = match &branch.observation {
@@ -1435,6 +1444,7 @@ fn run_all_second_questions(from: u32, to: u32) {
         depth: u32,
         has_second: bool,
         second_depth: u32,
+        kizu_count: usize,
         time_secs: f64,
         nodes: u64,
         message: String,
@@ -1467,19 +1477,24 @@ fn run_all_second_questions(from: u32, to: u32) {
         let depth = result.tree.as_ref().map_or(0, |t| t.max_moves());
         let has_second = result.second_tree.is_some();
         let second_depth = result.second_tree.as_ref().map_or(0, |t| t.max_moves());
+        let kizu_count = result.kizu_trees.len();
         let time_secs = elapsed.as_secs_f64();
         let nodes = solver.nodes_searched;
 
         let second_info = if has_second {
             format!("余詰め{}手", second_depth)
         } else if result.found {
-            "完全作".to_string()
+            if kizu_count > 0 {
+                format!("完全作(キズ{})", kizu_count)
+            } else {
+                "完全作".to_string()
+            }
         } else {
             "-".to_string()
         };
 
         println!(
-            "問題{:3}: found={:<5} depth={:2} second={:<10} time={:8.3}s nodes={:>12} | {}",
+            "問題{:3}: found={:<5} depth={:2} second={:<14} time={:8.3}s nodes={:>12} | {}",
             number, result.found, depth, second_info, time_secs, nodes, result.message,
         );
 
@@ -1489,6 +1504,7 @@ fn run_all_second_questions(from: u32, to: u32) {
             depth,
             has_second,
             second_depth,
+            kizu_count,
             time_secs,
             nodes,
             message: result.message.clone(),
@@ -1500,6 +1516,7 @@ fn run_all_second_questions(from: u32, to: u32) {
     let solved = results.iter().filter(|r| r.found).count();
     let perfect = results.iter().filter(|r| r.found && !r.has_second).count();
     let has_second = results.iter().filter(|r| r.has_second).count();
+    let has_kizu = results.iter().filter(|r| r.kizu_count > 0).count();
     let total_time: f64 = results.iter().map(|r| r.time_secs).sum();
     let total_nodes: u64 = results.iter().map(|r| r.nodes).sum();
 
@@ -1507,14 +1524,15 @@ fn run_all_second_questions(from: u32, to: u32) {
     println!("解けた問題: {}/{}", solved, total);
     println!("完全作: {}", perfect);
     println!("余詰めあり: {}", has_second);
+    println!("キズあり: {}", has_kizu);
     println!("合計時間: {:.3}s", total_time);
     println!("合計ノード数: {}", total_nodes);
     println!();
     println!(
-        "{:<8} {:<8} {:<6} {:<10} {:<10} {:<12} {:<14}",
-        "問題", "結果", "手数", "余詰め", "余詰手数", "時間(s)", "ノード数"
+        "{:<8} {:<8} {:<6} {:<10} {:<10} {:<6} {:<12} {:<14}",
+        "問題", "結果", "手数", "余詰め", "余詰手数", "キズ", "時間(s)", "ノード数"
     );
-    println!("{}", "-".repeat(72));
+    println!("{}", "-".repeat(80));
     for r in &results {
         let result_str = if r.found { "OK" } else { "NG" };
         let depth_str = if r.found { format!("{}", r.depth) } else { "-".to_string() };
@@ -1530,10 +1548,15 @@ fn run_all_second_questions(from: u32, to: u32) {
         } else {
             "-".to_string()
         };
+        let kizu_str = if r.kizu_count > 0 {
+            format!("{}", r.kizu_count)
+        } else {
+            "-".to_string()
+        };
         println!(
-            "{:<8} {:<8} {:<6} {:<10} {:<10} {:<12.3} {:<14}",
+            "{:<8} {:<8} {:<6} {:<10} {:<10} {:<6} {:<12.3} {:<14}",
             r.number, result_str, depth_str, second_str, second_depth_str,
-            r.time_secs, r.nodes,
+            kizu_str, r.time_secs, r.nodes,
         );
     }
 
@@ -1558,11 +1581,12 @@ fn run_all_second_questions(from: u32, to: u32) {
     md.push_str(&format!("- 解けた問題: {}/{}\n", solved, total));
     md.push_str(&format!("- 完全作: {}\n", perfect));
     md.push_str(&format!("- 余詰めあり: {}\n", has_second));
+    md.push_str(&format!("- キズあり: {}\n", has_kizu));
     md.push_str(&format!("- 合計時間: {:.3}秒\n", total_time));
     md.push_str(&format!("- 合計ノード数: {}\n\n", total_nodes));
 
-    md.push_str("| 問題 | 結果 | 手数 | 余詰め | 余詰手数 | 時間(秒) | ノード数 |\n");
-    md.push_str("|-----:|:----:|-----:|:------:|---------:|---------:|---------:|\n");
+    md.push_str("| 問題 | 結果 | 手数 | 余詰め | 余詰手数 | キズ | 時間(秒) | ノード数 |\n");
+    md.push_str("|-----:|:----:|-----:|:------:|---------:|-----:|---------:|---------:|\n");
     for r in &results {
         let result_str = if r.found { "OK" } else { "NG" };
         let depth_str = if r.found { format!("{}", r.depth) } else { "-".to_string() };
@@ -1578,10 +1602,15 @@ fn run_all_second_questions(from: u32, to: u32) {
         } else {
             "-".to_string()
         };
+        let kizu_str = if r.kizu_count > 0 {
+            format!("{}", r.kizu_count)
+        } else {
+            "-".to_string()
+        };
         md.push_str(&format!(
-            "| {} | {} | {} | {} | {} | {:.3} | {} |\n",
+            "| {} | {} | {} | {} | {} | {} | {:.3} | {} |\n",
             r.number, result_str, depth_str, second_str, second_depth_str,
-            r.time_secs, r.nodes,
+            kizu_str, r.time_secs, r.nodes,
         ));
     }
 
