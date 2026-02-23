@@ -1,3 +1,7 @@
+use std::collections::hash_map::DefaultHasher;
+use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
+
 use serde::{Deserialize, Serialize};
 
 use crate::shogi::types::Move;
@@ -69,6 +73,123 @@ impl MoveData {
 }
 
 impl SolutionNode {
+    /// 手順木の構造ハッシュを計算する（Checkmate の depth は無視）
+    fn structural_hash(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.hash_structure(&mut hasher);
+        hasher.finish()
+    }
+
+    fn hash_structure(&self, hasher: &mut impl Hasher) {
+        match self {
+            SolutionNode::Checkmate { .. } => {
+                0u8.hash(hasher);
+            }
+            SolutionNode::AttackMove { mv, branches } => {
+                1u8.hash(hasher);
+                mv.from_file.hash(hasher);
+                mv.from_rank.hash(hasher);
+                mv.to_file.hash(hasher);
+                mv.to_rank.hash(hasher);
+                mv.promotion.hash(hasher);
+                mv.drop_piece.hash(hasher);
+                // ブランチを観測ハッシュでソートして順序非依存にする
+                let mut branch_hashes: Vec<(u64, u64)> = branches
+                    .iter()
+                    .map(|b| {
+                        let mut obs_hasher = DefaultHasher::new();
+                        b.observation.hash(&mut obs_hasher);
+                        let obs_hash = obs_hasher.finish();
+                        let cont_hash = b.continuation.structural_hash();
+                        (obs_hash, cont_hash)
+                    })
+                    .collect();
+                branch_hashes.sort();
+                branch_hashes.len().hash(hasher);
+                for (obs, cont) in &branch_hashes {
+                    obs.hash(hasher);
+                    cont.hash(hasher);
+                }
+            }
+        }
+    }
+
+    /// 手順木から全ての AttackMove サブツリーの構造ハッシュを収集する
+    pub fn collect_attack_subtree_hashes(&self) -> HashSet<u64> {
+        let mut hashes = HashSet::new();
+        self.collect_hashes_recursive(&mut hashes);
+        hashes
+    }
+
+    fn collect_hashes_recursive(&self, hashes: &mut HashSet<u64>) {
+        match self {
+            SolutionNode::Checkmate { .. } => {}
+            SolutionNode::AttackMove { branches, .. } => {
+                hashes.insert(self.structural_hash());
+                for branch in branches {
+                    branch.continuation.collect_hashes_recursive(hashes);
+                }
+            }
+        }
+    }
+
+    /// 2つ目の解が1つ目の解に包含されているかチェックする
+    ///
+    /// 2つ目の解の全分岐が、最終的に1つ目の解のいずれかのサブツリーに収束する場合、
+    /// 2つ目の解は無駄合い等による変形に過ぎず、実質的な余詰めではないと判断する。
+    ///
+    /// ルート直下の Checkmate 観測（初手で即詰み）は独立した詰み手段とみなし、
+    /// 包含とは判定しない。内部ノードの Checkmate 観測は、1つ目の解でも同じ局面が
+    /// 詰んでいるはずなので包含扱いとする。
+    pub fn is_subsumed_by(&self, first_subtree_hashes: &HashSet<u64>) -> bool {
+        match self {
+            SolutionNode::Checkmate { .. } => false,
+            SolutionNode::AttackMove { branches, .. } => {
+                branches.iter().all(|b| match b.observation {
+                    // ルート直下の Checkmate 観測は独立した詰み手段
+                    Observation::Checkmate => false,
+                    _ => Self::is_continuation_subsumed(
+                        &b.continuation,
+                        first_subtree_hashes,
+                    ),
+                })
+            }
+        }
+    }
+
+    /// 内部ノードが1つ目の解のサブツリーに包含されているかチェック
+    fn is_continuation_subsumed(
+        node: &SolutionNode,
+        first_subtree_hashes: &HashSet<u64>,
+    ) -> bool {
+        match node {
+            SolutionNode::Checkmate { .. } => false,
+            SolutionNode::AttackMove { branches, .. } => {
+                // このサブツリー全体が1つ目の解のサブツリーに一致するか
+                if first_subtree_hashes.contains(&node.structural_hash()) {
+                    return true;
+                }
+                // 非 Checkmate ブランチのみチェック
+                // (Checkmate 観測は1つ目の解でも詰んでいるはずなので自動的に包含扱い)
+                let non_checkmate: Vec<_> = branches
+                    .iter()
+                    .filter(|b| b.observation != Observation::Checkmate)
+                    .collect();
+                // 非 Checkmate ブランチがない場合、このノードは最終詰み手のみ
+                // → サブツリー全体の一致が必要（上で不一致だったので false）
+                if non_checkmate.is_empty() {
+                    return false;
+                }
+                non_checkmate.iter().all(|b| {
+                    Self::is_continuation_subsumed(
+                        &b.continuation,
+                        first_subtree_hashes,
+                    )
+                })
+            }
+        }
+    }
+
     /// 解の最大手数を計算（攻め方と玉方の手数を含む）
     pub fn max_moves(&self) -> u32 {
         match self {
@@ -90,6 +211,174 @@ impl SolutionNode {
                     .unwrap_or(0)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ヘルパー: MoveData を手軽に作成
+    fn make_move_data(notation: &str, to_file: u8, to_rank: u8, drop_piece: Option<&str>) -> MoveData {
+        MoveData {
+            from_file: if drop_piece.is_some() { None } else { Some(to_file) },
+            from_rank: if drop_piece.is_some() { None } else { Some(to_rank + 1) },
+            to_file,
+            to_rank,
+            promotion: notation.contains('成'),
+            drop_piece: drop_piece.map(|s| s.to_string()),
+            notation: notation.to_string(),
+        }
+    }
+
+    /// ユーザ報告のケース:
+    /// 解1: ▲２一飛打 → Captured(2,1) → ▲２二金打 → Checkmate
+    /// 解2: ▲１一飛打 → NoCapture → ▲２一飛成 → Captured(2,1) → ▲２二金打 → Checkmate
+    /// → 解2は無駄合い変形なので包含される
+    #[test]
+    fn test_subsumed_futile_interposition() {
+        let solution1 = SolutionNode::AttackMove {
+            mv: make_move_data("▲２一飛打", 2, 1, Some("飛")),
+            branches: vec![
+                SolutionBranch {
+                    observation: Observation::Captured { file: 2, rank: 1 },
+                    continuation: Box::new(SolutionNode::AttackMove {
+                        mv: make_move_data("▲２二金打", 2, 2, Some("金")),
+                        branches: vec![SolutionBranch {
+                            observation: Observation::Checkmate,
+                            continuation: Box::new(SolutionNode::Checkmate { depth: 3 }),
+                        }],
+                    }),
+                },
+            ],
+        };
+
+        let solution2 = SolutionNode::AttackMove {
+            mv: make_move_data("▲１一飛打", 1, 1, Some("飛")),
+            branches: vec![
+                SolutionBranch {
+                    observation: Observation::NoCapture,
+                    continuation: Box::new(SolutionNode::AttackMove {
+                        mv: make_move_data("▲２一飛成", 2, 1, None),
+                        branches: vec![
+                            SolutionBranch {
+                                observation: Observation::Captured { file: 2, rank: 1 },
+                                continuation: Box::new(SolutionNode::AttackMove {
+                                    mv: make_move_data("▲２二金打", 2, 2, Some("金")),
+                                    branches: vec![SolutionBranch {
+                                        observation: Observation::Checkmate,
+                                        continuation: Box::new(SolutionNode::Checkmate { depth: 5 }),
+                                    }],
+                                }),
+                            },
+                        ],
+                    }),
+                },
+            ],
+        };
+
+        let first_hashes = solution1.collect_attack_subtree_hashes();
+        assert!(
+            solution2.is_subsumed_by(&first_hashes),
+            "無駄合い変形は包含と判定されるべき"
+        );
+    }
+
+    /// 本物の余詰め: 異なる初手で即詰み
+    /// 解1: ▲１一金打 → Checkmate
+    /// 解2: ▲２二銀打 → Checkmate
+    #[test]
+    fn test_genuine_yodume_different_first_move() {
+        let solution1 = SolutionNode::AttackMove {
+            mv: make_move_data("▲１一金打", 1, 1, Some("金")),
+            branches: vec![SolutionBranch {
+                observation: Observation::Checkmate,
+                continuation: Box::new(SolutionNode::Checkmate { depth: 1 }),
+            }],
+        };
+
+        let solution2 = SolutionNode::AttackMove {
+            mv: make_move_data("▲２二銀打", 2, 2, Some("銀")),
+            branches: vec![SolutionBranch {
+                observation: Observation::Checkmate,
+                continuation: Box::new(SolutionNode::Checkmate { depth: 1 }),
+            }],
+        };
+
+        let first_hashes = solution1.collect_attack_subtree_hashes();
+        assert!(
+            !solution2.is_subsumed_by(&first_hashes),
+            "異なる初手で即詰みは余詰めとして報告すべき"
+        );
+    }
+
+    /// Illegal プローブ後に1つ目の解と同じ手順に合流するケース
+    /// 解1: ▲１一金打 → Checkmate
+    /// 解2: ▲３三桂打 → Illegal → ▲１一金打 → Checkmate
+    /// → 包含される
+    #[test]
+    fn test_subsumed_illegal_probe() {
+        let gold_drop = SolutionNode::AttackMove {
+            mv: make_move_data("▲１一金打", 1, 1, Some("金")),
+            branches: vec![SolutionBranch {
+                observation: Observation::Checkmate,
+                continuation: Box::new(SolutionNode::Checkmate { depth: 1 }),
+            }],
+        };
+
+        let solution2 = SolutionNode::AttackMove {
+            mv: make_move_data("▲３三桂打", 3, 3, Some("桂")),
+            branches: vec![SolutionBranch {
+                observation: Observation::Illegal,
+                continuation: Box::new(gold_drop.clone()),
+            }],
+        };
+
+        let first_hashes = gold_drop.collect_attack_subtree_hashes();
+        assert!(
+            solution2.is_subsumed_by(&first_hashes),
+            "Illegal プローブ後の合流は包含されるべき"
+        );
+    }
+
+    /// 解2の一部分岐が1つ目の解に収束しないケース → 余詰め
+    #[test]
+    fn test_not_subsumed_partial_convergence() {
+        let solution1 = SolutionNode::AttackMove {
+            mv: make_move_data("▲２一飛打", 2, 1, Some("飛")),
+            branches: vec![SolutionBranch {
+                observation: Observation::Checkmate,
+                continuation: Box::new(SolutionNode::Checkmate { depth: 1 }),
+            }],
+        };
+
+        // 解2: NoCapture は1つ目の解のサブツリーに収束するが、
+        // Captured は異なる手順で詰む → 余詰め
+        let solution2 = SolutionNode::AttackMove {
+            mv: make_move_data("▲１一飛打", 1, 1, Some("飛")),
+            branches: vec![
+                SolutionBranch {
+                    observation: Observation::NoCapture,
+                    continuation: Box::new(solution1.clone()),
+                },
+                SolutionBranch {
+                    observation: Observation::Captured { file: 1, rank: 1 },
+                    continuation: Box::new(SolutionNode::AttackMove {
+                        mv: make_move_data("▲３三角打", 3, 3, Some("角")),
+                        branches: vec![SolutionBranch {
+                            observation: Observation::Checkmate,
+                            continuation: Box::new(SolutionNode::Checkmate { depth: 3 }),
+                        }],
+                    }),
+                },
+            ],
+        };
+
+        let first_hashes = solution1.collect_attack_subtree_hashes();
+        assert!(
+            !solution2.is_subsumed_by(&first_hashes),
+            "一部のみ収束する場合は余詰めとして報告すべき"
+        );
     }
 }
 

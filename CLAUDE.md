@@ -123,7 +123,7 @@ npm run tauri dev
 
 ## ベンチマークテスト
 
-`sample-questions/` 配下の問題ファイル（1.json〜41.json）を使ったベンチマークテストがある。全テストに `#[ignore]` が付いているため `--ignored` フラグが必要。性能測定のため `--release` ビルドを推奨。
+`sample-questions/` 配下の問題ファイル（1.json〜147.json）を使ったベンチマークテストがある。全テストに `#[ignore]` が付いているため `--ignored` フラグが必要。性能測定のため `--release` ビルドを推奨。結果ファイルは `benchmark/` ディレクトリに出力される。
 
 ### df-pn ソルバー（推奨）
 
@@ -133,19 +133,28 @@ npm run tauri dev
 # 個別の問題を実行（例: 問題1）
 cd src-tauri && cargo test --release --test dfpn_benchmark_tests dfpn_bench_question_01 -- --ignored --nocapture
 
-# 全問一括ベンチマーク（サマリー表付き、dfpn-benchmark-results.md 出力）
+# 全問一括ベンチマーク（サマリー表付き）
 cd src-tauri && cargo test --release --test dfpn_benchmark_tests dfpn_bench_all -- --ignored --nocapture
+
+# 分割ベンチマーク（通常、5分割: part1=1-30, part2=31-60, part3=61-90, part4=91-120, part5=121-147）
+cd src-tauri && cargo test --release --test dfpn_benchmark_tests dfpn_bench_part1 -- --ignored --nocapture
+cd src-tauri && cargo test --release --test dfpn_benchmark_tests dfpn_bench_part2 -- --ignored --nocapture
 
 # 個別の問題を実行（最短経路探索あり、例: 問題34）
 cd src-tauri && cargo test --release --test dfpn_benchmark_tests dfpn_bench_shortest_question_34 -- --ignored --nocapture
 
-# 全問一括ベンチマーク（最短経路探索あり、dfpn-benchmark-results-shortest.md 出力）
-cd src-tauri && cargo test --release --test dfpn_benchmark_tests dfpn_bench_all_shortest -- --ignored --nocapture
+# 分割ベンチマーク（最短経路探索あり）
+cd src-tauri && cargo test --release --test dfpn_benchmark_tests dfpn_bench_shortest_part1 -- --ignored --nocapture
 
 # 個別の問題を実行（余詰めチェック、例: 問題52）
 cd src-tauri && cargo test --release --test dfpn_benchmark_tests dfpn_bench_second_question_52 -- --ignored --nocapture
 
-# 全問一括ベンチマーク（余詰めチェック、dfpn-benchmark-results-second.md 出力）
+# 分割ベンチマーク（余詰めチェック）
+cd src-tauri && cargo test --release --test dfpn_benchmark_tests dfpn_bench_second_part1 -- --ignored --nocapture
+
+# 全問一括ベンチマーク（全種類）
+cd src-tauri && cargo test --release --test dfpn_benchmark_tests dfpn_bench_all -- --ignored --nocapture
+cd src-tauri && cargo test --release --test dfpn_benchmark_tests dfpn_bench_all_shortest -- --ignored --nocapture
 cd src-tauri && cargo test --release --test dfpn_benchmark_tests dfpn_bench_all_second -- --ignored --nocapture
 ```
 

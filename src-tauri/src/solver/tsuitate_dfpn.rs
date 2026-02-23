@@ -1484,55 +1484,34 @@ impl TsuitateDfpnSolver {
     }
 
     /// 1つ目の解の初手を除外して2つ目の解を探す
-    fn find_second_solution(
-        &mut self,
-        meta: &MetaPosition,
-        first_tree: &SolutionNode,
-    ) -> (Option<SolutionNode>, u64, String) {
-        // 1つ目の解の初手を取得
-        let first_mv = match first_tree {
-            SolutionNode::AttackMove { mv, .. } => {
-                let to = Square::new(mv.to_file, mv.to_rank);
-                let from = match (mv.from_file, mv.from_rank) {
-                    (Some(f), Some(r)) => Some(Square::new(f, r)),
-                    _ => None,
-                };
-                let drop_piece = mv.drop_piece.as_ref().and_then(|s| {
-                    match s.as_str() {
-                        "飛" => Some(PieceKind::Rook),
-                        "角" => Some(PieceKind::Bishop),
-                        "金" => Some(PieceKind::Gold),
-                        "銀" => Some(PieceKind::Silver),
-                        "桂" => Some(PieceKind::Knight),
-                        "香" => Some(PieceKind::Lance),
-                        "歩" => Some(PieceKind::Pawn),
-                        _ => None,
-                    }
-                });
-                Move {
-                    from,
-                    to,
-                    promotion: mv.promotion,
-                    drop_piece,
-                    moved_piece_kind: None,
-                }
-            }
-            SolutionNode::Checkmate { .. } => {
-                return (None, self.nodes_searched, String::new());
-            }
+    /// MoveData から Move に変換する
+    fn move_data_to_move(mv: &MoveData) -> Move {
+        let to = Square::new(mv.to_file, mv.to_rank);
+        let from = match (mv.from_file, mv.from_rank) {
+            (Some(f), Some(r)) => Some(Square::new(f, r)),
+            _ => None,
         };
-
-        // 初手と成/不成のバリエーションを除外リストに追加
-        let mut excluded = vec![first_mv];
-        if first_mv.from.is_some() {
-            let mut counterpart = first_mv;
-            counterpart.promotion = !counterpart.promotion;
-            excluded.push(counterpart);
+        let drop_piece = mv.drop_piece.as_ref().and_then(|s| match s.as_str() {
+            "飛" => Some(PieceKind::Rook),
+            "角" => Some(PieceKind::Bishop),
+            "金" => Some(PieceKind::Gold),
+            "銀" => Some(PieceKind::Silver),
+            "桂" => Some(PieceKind::Knight),
+            "香" => Some(PieceKind::Lance),
+            "歩" => Some(PieceKind::Pawn),
+            _ => None,
+        });
+        Move {
+            from,
+            to,
+            promotion: mv.promotion,
+            drop_piece,
+            moved_piece_kind: None,
         }
+    }
 
-        let first_phase_nodes = self.nodes_searched;
-
-        // 転置表をクリアして再探索
+    /// ソルバーの転置表・キャッシュを全てクリアする
+    fn clear_tables(&mut self) {
         self.or_table.clear();
         self.and_table.clear();
         self.dominance_table.clear();
@@ -1542,21 +1521,182 @@ impl TsuitateDfpnSolver {
         self.proof_cache.clear();
         self.and_expansion_cache.clear();
         self.or_candidate_cache.clear();
+        self.legal_moves_cache.clear();
+        self.check_moves_cache.clear();
+    }
+
+    fn find_second_solution(
+        &mut self,
+        meta: &MetaPosition,
+        first_tree: &SolutionNode,
+    ) -> (Option<SolutionNode>, u64, String) {
+        let first_mv = match first_tree {
+            SolutionNode::AttackMove { mv, .. } => Self::move_data_to_move(mv),
+            SolutionNode::Checkmate { .. } => {
+                return (None, self.nodes_searched, String::new());
+            }
+        };
+
+        let first_hashes = first_tree.collect_attack_subtree_hashes();
+        let initial_nodes = self.nodes_searched;
+
+        // Phase 1: 初手除外で再探索
+        let mut excluded = vec![first_mv];
+        if first_mv.from.is_some() {
+            let mut counterpart = first_mv;
+            counterpart.promotion = !counterpart.promotion;
+            excluded.push(counterpart);
+        }
+
+        self.clear_tables();
         self.nodes_searched = 0;
         self.excluded_root_moves = excluded;
 
         let result = self.solve(meta);
-        let second_phase_nodes = self.nodes_searched;
-        let total_nodes = first_phase_nodes + second_phase_nodes;
+        let mut total_nodes = initial_nodes + self.nodes_searched;
+        self.excluded_root_moves.clear();
 
+        if let TsuitateDfpnResult::Proven = result {
+            let second_tree = self.extract_solution(meta);
+            if let Some(ref second) = second_tree {
+                if !second.is_subsumed_by(&first_hashes) {
+                    return (second_tree, total_nodes, "found".to_string());
+                }
+            }
+        }
+
+        // Phase 2: 内部ORノードで別手順を探索
+        if let Some(alt_tree) = self.find_inner_alternative(
+            meta, first_tree, &first_hashes, &mut total_nodes,
+        ) {
+            return (Some(alt_tree), total_nodes, "found".to_string());
+        }
+
+        (None, total_nodes, "not_found".to_string())
+    }
+
+    /// 手順木の内部ORノードで余詰め（別手順）を探す
+    ///
+    /// 1つ目の解の手順木を辿りながら、各ORノードで選ばれた手を除外して
+    /// 再探索し、別の詰み手順がないかチェックする。
+    fn find_inner_alternative(
+        &mut self,
+        meta: &MetaPosition,
+        first_tree: &SolutionNode,
+        first_hashes: &HashSet<u64>,
+        total_nodes: &mut u64,
+    ) -> Option<SolutionNode> {
+        self.find_inner_alt_recursive(meta, first_tree, first_hashes, total_nodes)
+    }
+
+    fn find_inner_alt_recursive(
+        &mut self,
+        meta: &MetaPosition,
+        node: &SolutionNode,
+        first_hashes: &HashSet<u64>,
+        total_nodes: &mut u64,
+    ) -> Option<SolutionNode> {
+        let (mv_data, branches) = match node {
+            SolutionNode::Checkmate { .. } => return None,
+            SolutionNode::AttackMove { mv, branches } => (mv, branches),
+        };
+
+        let mv = Self::move_data_to_move(mv_data);
+
+        // この攻め手を適用して観測分岐を復元
+        let (legal_meta, illegal_meta) = meta.apply_attack_move_split_fast(mv);
+
+        let obs_metas: Vec<(Observation, MetaPosition)> =
+            if !legal_meta.is_empty() && !legal_meta.all_effectively_checkmate() {
+                let raw = legal_meta.expand_defense_moves(mv);
+                Self::merge_observation_branches(raw)
+            } else {
+                vec![]
+            };
+
+        // 各ブランチの子MetaPositionを特定して再帰
+        for (branch_idx, branch) in branches.iter().enumerate() {
+            let child_meta = match &branch.observation {
+                Observation::Checkmate => continue,
+                Observation::Illegal => illegal_meta.clone(),
+                obs => match obs_metas.iter().find(|(o, _)| o == obs) {
+                    Some((_, m)) => m.clone(),
+                    None => continue,
+                },
+            };
+
+            // この子ORノードで別の手を試す
+            if let SolutionNode::AttackMove { mv: child_mv, .. } = branch.continuation.as_ref() {
+                let child_move = Self::move_data_to_move(child_mv);
+                if let Some(alt_subtree) =
+                    self.try_solve_excluding(&child_meta, child_move, first_hashes, total_nodes)
+                {
+                    let mut new_branches = branches.clone();
+                    new_branches[branch_idx].continuation = Box::new(alt_subtree);
+                    return Some(SolutionNode::AttackMove {
+                        mv: mv_data.clone(),
+                        branches: new_branches,
+                    });
+                }
+            }
+
+            // 更に深いノードで試す
+            if let Some(deep_alt) = self.find_inner_alt_recursive(
+                &child_meta,
+                &branch.continuation,
+                first_hashes,
+                total_nodes,
+            ) {
+                let mut new_branches = branches.clone();
+                new_branches[branch_idx].continuation = Box::new(deep_alt);
+                return Some(SolutionNode::AttackMove {
+                    mv: mv_data.clone(),
+                    branches: new_branches,
+                });
+            }
+        }
+
+        None
+    }
+
+    /// 指定MetaPositionで特定の手を除外して解を探す
+    fn try_solve_excluding(
+        &mut self,
+        meta: &MetaPosition,
+        excluded_move: Move,
+        first_hashes: &HashSet<u64>,
+        total_nodes: &mut u64,
+    ) -> Option<SolutionNode> {
+        if self.is_cancelled() {
+            return None;
+        }
+
+        let mut excluded = vec![excluded_move];
+        if excluded_move.from.is_some() {
+            let mut counterpart = excluded_move;
+            counterpart.promotion = !counterpart.promotion;
+            excluded.push(counterpart);
+        }
+
+        self.clear_tables();
+        self.nodes_searched = 0;
+        self.excluded_root_moves = excluded;
+
+        let result = self.solve(meta);
+        *total_nodes += self.nodes_searched;
         self.excluded_root_moves.clear();
 
         match result {
             TsuitateDfpnResult::Proven => {
-                let second_tree = self.extract_solution(meta);
-                (second_tree, total_nodes, "found".to_string())
+                let tree = self.extract_solution(meta);
+                if let Some(ref t) = tree {
+                    if !t.is_subsumed_by(first_hashes) {
+                        return tree;
+                    }
+                }
+                None
             }
-            _ => (None, total_nodes, "not_found".to_string()),
+            _ => None,
         }
     }
 

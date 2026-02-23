@@ -463,3 +463,43 @@ fn print_solution_tree(node: &SolutionNode, indent: usize) {
         }
     }
 }
+
+fn yodume_questions_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("yodume_questions")
+}
+
+/// yodume_questions/2.json:
+/// - 無駄合い変形（▲１一飛打→NoCapture→...）は余詰めと判定しない
+/// - 内部ORノードでの別手順（▲２二銀打 vs ▲２二金打）は余詰めとして検出する
+#[test]
+#[ignore]
+fn tsuitate_dfpn_yodume_question_02() {
+    let path = yodume_questions_dir().join("2.json");
+    let pos = load_question(&path);
+    let meta = MetaPosition::new(pos);
+
+    let cancel = cancel_after(120);
+    let mut solver = TsuitateDfpnSolver::new(10_000_000, cancel);
+
+    let start = Instant::now();
+    let solution = solver.solve_to_solution_with_second(&meta, false);
+    let elapsed = start.elapsed();
+
+    println!("yodume問題2 余詰めチェック: time={:.3}s", elapsed.as_secs_f64());
+    println!("message: {}", solution.message);
+
+    assert!(solution.found, "解が見つかるはず");
+    if let Some(tree) = &solution.tree {
+        println!("\n=== 1つ目の解 ===");
+        print_solution_tree(tree, 0);
+    }
+    if let Some(second) = &solution.second_tree {
+        println!("\n=== 2つ目の解（余詰め）===");
+        print_solution_tree(second, 0);
+    } else {
+        panic!("内部ORノードの余詰め（▲２二銀打）が検出されるべき");
+    }
+}

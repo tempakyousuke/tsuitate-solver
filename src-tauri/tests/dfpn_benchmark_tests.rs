@@ -131,6 +131,15 @@ fn sample_questions_dir() -> PathBuf {
         .join("sample-questions")
 }
 
+fn benchmark_output_dir() -> PathBuf {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("benchmark");
+    std::fs::create_dir_all(&dir).ok();
+    dir
+}
+
 fn cancel_after(secs: u64) -> Arc<AtomicBool> {
     let cancel = Arc::new(AtomicBool::new(false));
     let cancel_clone = cancel.clone();
@@ -1192,7 +1201,7 @@ fn dfpn_debug_aigoma_73() {
 #[test]
 #[ignore]
 fn dfpn_bench_all_questions() {
-    run_all_questions(false);
+    run_all_questions(1, 147, false);
 }
 
 /// 全問一括ベンチマーク（最短経路探索あり）
@@ -1200,18 +1209,55 @@ fn dfpn_bench_all_questions() {
 #[test]
 #[ignore]
 fn dfpn_bench_all_shortest_questions() {
-    run_all_questions(true);
+    run_all_questions(1, 147, true);
 }
 
-fn run_all_questions(find_shortest: bool) {
+// === 分割ベンチマーク（通常） ===
+
+macro_rules! dfpn_bench_part {
+    ($name:ident, $start:expr, $end:expr) => {
+        #[test]
+        #[ignore]
+        fn $name() { run_all_questions($start, $end, false); }
+    };
+}
+
+dfpn_bench_part!(dfpn_bench_part1_questions, 1, 30);
+dfpn_bench_part!(dfpn_bench_part2_questions, 31, 60);
+dfpn_bench_part!(dfpn_bench_part3_questions, 61, 90);
+dfpn_bench_part!(dfpn_bench_part4_questions, 91, 120);
+dfpn_bench_part!(dfpn_bench_part5_questions, 121, 147);
+
+// === 分割ベンチマーク（最短経路探索あり） ===
+
+macro_rules! dfpn_bench_shortest_part {
+    ($name:ident, $start:expr, $end:expr) => {
+        #[test]
+        #[ignore]
+        fn $name() { run_all_questions($start, $end, true); }
+    };
+}
+
+dfpn_bench_shortest_part!(dfpn_bench_shortest_part1_questions, 1, 30);
+dfpn_bench_shortest_part!(dfpn_bench_shortest_part2_questions, 31, 60);
+dfpn_bench_shortest_part!(dfpn_bench_shortest_part3_questions, 61, 90);
+dfpn_bench_shortest_part!(dfpn_bench_shortest_part4_questions, 91, 120);
+dfpn_bench_shortest_part!(dfpn_bench_shortest_part5_questions, 121, 147);
+
+fn run_all_questions(from: u32, to: u32, find_shortest: bool) {
     let dir = sample_questions_dir();
     let node_limit: u64 = NODE_LIMIT;
     let time_limit_secs: u64 = TIME_LIMIT;
 
     let mode_label = if find_shortest { "最短経路あり" } else { "通常" };
+    let range_label = if from == 1 && to == 147 {
+        "全問".to_string()
+    } else {
+        format!("問題{}-{}", from, to)
+    };
     println!(
-        "=== 衝立df-pn 全問ベンチマーク [{}] (node_limit={}, time_limit={}s) ===\n",
-        mode_label, node_limit, time_limit_secs
+        "=== 衝立df-pn ベンチマーク [{}] {} (node_limit={}, time_limit={}s) ===\n",
+        mode_label, range_label, node_limit, time_limit_secs
     );
 
     struct Result {
@@ -1224,7 +1270,7 @@ fn run_all_questions(find_shortest: bool) {
 
     let mut results = Vec::new();
 
-    for number in 1..=147 {
+    for number in from..=to {
         let path = dir.join(format!("{}.json", number));
         if !path.exists() {
             println!("問題{}: ファイルが見つかりません", number);
@@ -1246,7 +1292,7 @@ fn run_all_questions(find_shortest: bool) {
         let nodes = solver.nodes_searched;
 
         println!(
-            "問題{:2}: found={:<5} depth={:2} time={:8.3}s nodes={:>12} | {}",
+            "問題{:3}: found={:<5} depth={:2} time={:8.3}s nodes={:>12} | {}",
             number, result.found, depth, time_secs, nodes, result.message,
         );
 
@@ -1265,7 +1311,7 @@ fn run_all_questions(find_shortest: bool) {
     let total_time: f64 = results.iter().map(|r| r.time_secs).sum();
     let total_nodes: u64 = results.iter().map(|r| r.nodes).sum();
 
-    println!("\n=== サマリー [{}] ===", mode_label);
+    println!("\n=== サマリー [{}] {} ===", mode_label, range_label);
     println!("解けた問題: {}/{}", solved, total);
     println!("合計時間: {:.3}s", total_time);
     println!("合計ノード数: {}", total_nodes);
@@ -1291,24 +1337,27 @@ fn run_all_questions(find_shortest: bool) {
     }
 
     // Markdown ファイル出力
-    let filename = if find_shortest {
-        "dfpn-benchmark-results-shortest.md"
+    let base = if find_shortest {
+        "dfpn-benchmark-results-shortest"
     } else {
-        "dfpn-benchmark-results.md"
+        "dfpn-benchmark-results"
     };
-    let output_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .join(filename);
+    let filename = if from == 1 && to == 147 {
+        format!("{}.md", base)
+    } else {
+        format!("{}-{}-{}.md", base, from, to)
+    };
+    let output_path = benchmark_output_dir().join(&filename);
 
     let now = chrono::Local::now();
     let mut md = String::new();
-    md.push_str(&format!("# 衝立df-pn ベンチマーク結果 [{}]\n\n", mode_label));
+    md.push_str(&format!("# 衝立df-pn ベンチマーク結果 [{}] {}\n\n", mode_label, range_label));
     md.push_str(&format!(
         "- 実行日時: {}\n",
         now.format("%Y-%m-%d %H:%M:%S")
     ));
     md.push_str(&format!("- モード: {}\n", mode_label));
+    md.push_str(&format!("- 範囲: {}\n", range_label));
     md.push_str(&format!("- ノード上限: {}\n", node_limit));
     md.push_str(&format!("- 制限時間: {}秒/問\n", time_limit_secs));
     md.push_str(&format!("- 解けた問題: {}/{}\n", solved, total));
@@ -1345,13 +1394,38 @@ fn run_all_questions(find_shortest: bool) {
 #[test]
 #[ignore]
 fn dfpn_bench_all_second_questions() {
+    run_all_second_questions(1, 147);
+}
+
+// === 分割ベンチマーク（余詰めチェック） ===
+
+macro_rules! dfpn_bench_second_part {
+    ($name:ident, $start:expr, $end:expr) => {
+        #[test]
+        #[ignore]
+        fn $name() { run_all_second_questions($start, $end); }
+    };
+}
+
+dfpn_bench_second_part!(dfpn_bench_second_part1_questions, 1, 30);
+dfpn_bench_second_part!(dfpn_bench_second_part2_questions, 31, 60);
+dfpn_bench_second_part!(dfpn_bench_second_part3_questions, 61, 90);
+dfpn_bench_second_part!(dfpn_bench_second_part4_questions, 91, 120);
+dfpn_bench_second_part!(dfpn_bench_second_part5_questions, 121, 147);
+
+fn run_all_second_questions(from: u32, to: u32) {
     let dir = sample_questions_dir();
     let node_limit: u64 = NODE_LIMIT;
     let time_limit_secs: u64 = TIME_LIMIT;
 
+    let range_label = if from == 1 && to == 147 {
+        "全問".to_string()
+    } else {
+        format!("問題{}-{}", from, to)
+    };
     println!(
-        "=== 衝立df-pn 全問ベンチマーク [余詰めチェック] (node_limit={}, time_limit={}s) ===\n",
-        node_limit, time_limit_secs
+        "=== 衝立df-pn ベンチマーク [余詰めチェック] {} (node_limit={}, time_limit={}s) ===\n",
+        range_label, node_limit, time_limit_secs
     );
 
     #[allow(dead_code)]
@@ -1368,7 +1442,7 @@ fn dfpn_bench_all_second_questions() {
 
     let mut results = Vec::new();
 
-    for number in 1..=147 {
+    for number in from..=to {
         let path = dir.join(format!("{}.json", number));
         if !path.exists() {
             continue;
@@ -1429,7 +1503,7 @@ fn dfpn_bench_all_second_questions() {
     let total_time: f64 = results.iter().map(|r| r.time_secs).sum();
     let total_nodes: u64 = results.iter().map(|r| r.nodes).sum();
 
-    println!("\n=== サマリー [余詰めチェック] ===");
+    println!("\n=== サマリー [余詰めチェック] {} ===", range_label);
     println!("解けた問題: {}/{}", solved, total);
     println!("完全作: {}", perfect);
     println!("余詰めあり: {}", has_second);
@@ -1464,18 +1538,21 @@ fn dfpn_bench_all_second_questions() {
     }
 
     // Markdown ファイル出力
-    let output_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .join("dfpn-benchmark-results-second.md");
+    let filename = if from == 1 && to == 147 {
+        "dfpn-benchmark-results-second.md".to_string()
+    } else {
+        format!("dfpn-benchmark-results-second-{}-{}.md", from, to)
+    };
+    let output_path = benchmark_output_dir().join(&filename);
 
     let now = chrono::Local::now();
     let mut md = String::new();
-    md.push_str("# 衝立df-pn ベンチマーク結果 [余詰めチェック]\n\n");
+    md.push_str(&format!("# 衝立df-pn ベンチマーク結果 [余詰めチェック] {}\n\n", range_label));
     md.push_str(&format!(
         "- 実行日時: {}\n",
         now.format("%Y-%m-%d %H:%M:%S")
     ));
+    md.push_str(&format!("- 範囲: {}\n", range_label));
     md.push_str(&format!("- ノード上限: {}\n", node_limit));
     md.push_str(&format!("- 制限時間: {}秒/問\n", time_limit_secs));
     md.push_str(&format!("- 解けた問題: {}/{}\n", solved, total));
