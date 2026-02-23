@@ -73,6 +73,20 @@ impl MoveData {
 }
 
 impl SolutionNode {
+    /// 最終手かどうかを判定する
+    /// 全ての分岐の継続が直接 Checkmate である AttackMove は最終手
+    pub fn is_final_move(&self) -> bool {
+        match self {
+            SolutionNode::Checkmate { .. } => false,
+            SolutionNode::AttackMove { branches, .. } => {
+                !branches.is_empty()
+                    && branches
+                        .iter()
+                        .all(|b| matches!(*b.continuation, SolutionNode::Checkmate { .. }))
+            }
+        }
+    }
+
     /// 手順木の構造ハッシュを計算する（Checkmate の depth は無視）
     fn structural_hash(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
@@ -145,6 +159,11 @@ impl SolutionNode {
         match self {
             SolutionNode::Checkmate { .. } => false,
             SolutionNode::AttackMove { branches, .. } => {
+                // 最終手余詰は余詰と見なさない
+                // （ルートの手が最終手＝1手詰で別の詰め方がある場合も含む）
+                if self.is_final_move() {
+                    return true;
+                }
                 branches.iter().all(|b| match b.observation {
                     // ルート直下の Checkmate 観測は独立した詰み手段
                     Observation::Checkmate => false,
@@ -284,11 +303,12 @@ mod tests {
         );
     }
 
-    /// 本物の余詰め: 異なる初手で即詰み
+    /// 最終手余詰: 異なる初手で即詰み（1手詰め）
     /// 解1: ▲１一金打 → Checkmate
     /// 解2: ▲２二銀打 → Checkmate
+    /// → 最終手での分岐なので余詰めと見なさない
     #[test]
-    fn test_genuine_yodume_different_first_move() {
+    fn test_final_move_yodume_1move() {
         let solution1 = SolutionNode::AttackMove {
             mv: make_move_data("▲１一金打", 1, 1, Some("金")),
             branches: vec![SolutionBranch {
@@ -307,9 +327,59 @@ mod tests {
 
         let first_hashes = solution1.collect_attack_subtree_hashes();
         assert!(
-            !solution2.is_subsumed_by(&first_hashes),
-            "異なる初手で即詰みは余詰めとして報告すべき"
+            solution2.is_subsumed_by(&first_hashes),
+            "最終手での分岐は余詰めと見なさない"
         );
+    }
+
+    /// is_final_move() の正確性テスト
+    #[test]
+    fn test_is_final_move() {
+        // 全分岐の継続が直接 Checkmate である AttackMove は最終手
+        let final_node = SolutionNode::AttackMove {
+            mv: make_move_data("▲２二金打", 2, 2, Some("金")),
+            branches: vec![SolutionBranch {
+                observation: Observation::Checkmate,
+                continuation: Box::new(SolutionNode::Checkmate { depth: 3 }),
+            }],
+        };
+        assert!(final_node.is_final_move(), "全分岐がCheckmateに至るNodeは最終手");
+
+        // 複数の Checkmate 分岐でも最終手
+        let multi_checkmate = SolutionNode::AttackMove {
+            mv: make_move_data("▲２二金打", 2, 2, Some("金")),
+            branches: vec![
+                SolutionBranch {
+                    observation: Observation::Checkmate,
+                    continuation: Box::new(SolutionNode::Checkmate { depth: 3 }),
+                },
+                SolutionBranch {
+                    observation: Observation::Illegal,
+                    continuation: Box::new(SolutionNode::Checkmate { depth: 3 }),
+                },
+            ],
+        };
+        assert!(multi_checkmate.is_final_move(), "全分岐がCheckmateなら最終手");
+
+        // 非 Checkmate 継続がある場合は最終手ではない
+        let non_final = SolutionNode::AttackMove {
+            mv: make_move_data("▲２一飛打", 2, 1, Some("飛")),
+            branches: vec![SolutionBranch {
+                observation: Observation::NoCapture,
+                continuation: Box::new(SolutionNode::AttackMove {
+                    mv: make_move_data("▲２二金打", 2, 2, Some("金")),
+                    branches: vec![SolutionBranch {
+                        observation: Observation::Checkmate,
+                        continuation: Box::new(SolutionNode::Checkmate { depth: 3 }),
+                    }],
+                }),
+            }],
+        };
+        assert!(!non_final.is_final_move(), "継続にAttackMoveがあれば最終手ではない");
+
+        // Checkmate ノード自体は最終手ではない
+        let checkmate = SolutionNode::Checkmate { depth: 1 };
+        assert!(!checkmate.is_final_move(), "Checkmateノードは最終手ではない");
     }
 
     /// Illegal プローブ後に1つ目の解と同じ手順に合流するケース

@@ -1625,18 +1625,20 @@ impl TsuitateDfpnSolver {
                 },
             };
 
-            // この子ORノードで別の手を試す
+            // この子ORノードで別の手を試す（最終手は余詰の対象外）
             if let SolutionNode::AttackMove { mv: child_mv, .. } = branch.continuation.as_ref() {
-                let child_move = Self::move_data_to_move(child_mv);
-                if let Some(alt_subtree) =
-                    self.try_solve_excluding(&child_meta, child_move, first_hashes, total_nodes)
-                {
-                    let mut new_branches = branches.clone();
-                    new_branches[branch_idx].continuation = Box::new(alt_subtree);
-                    return Some(SolutionNode::AttackMove {
-                        mv: mv_data.clone(),
-                        branches: new_branches,
-                    });
+                if !branch.continuation.is_final_move() {
+                    let child_move = Self::move_data_to_move(child_mv);
+                    if let Some(alt_subtree) =
+                        self.try_solve_excluding(&child_meta, child_move, first_hashes, total_nodes)
+                    {
+                        let mut new_branches = branches.clone();
+                        new_branches[branch_idx].continuation = Box::new(alt_subtree);
+                        return Some(SolutionNode::AttackMove {
+                            mv: mv_data.clone(),
+                            branches: new_branches,
+                        });
+                    }
                 }
             }
 
