@@ -60,6 +60,41 @@
     return node.AttackMove.branches.length;
   }
 
+  /**
+   * 主解と余詰め/キズの手順木を比較し、初めて手が異なるノードのパスを返す。
+   * Phase 1（初手除外）: ルートの手が異なる → ルートパスを返す
+   * Phase 2（内部ORノード除外）: 分岐に沿って走査し、初めて手が異なるノードを返す
+   */
+  function findDivergencePath(mainTree: SolutionNode, altTree: SolutionNode, path: string): string | null {
+    if (!isAttackMove(mainTree) || !isAttackMove(altTree)) return null;
+
+    // 手が異なる → ここが分岐点
+    if (mainTree.AttackMove.mv.notation !== altTree.AttackMove.mv.notation) {
+      return path;
+    }
+
+    // 同じ手 → ブランチの継続を再帰的に比較
+    const mainBranches = mainTree.AttackMove.branches;
+    const altBranches = altTree.AttackMove.branches;
+    for (let i = 0; i < altBranches.length && i < mainBranches.length; i++) {
+      const result = findDivergencePath(
+        mainBranches[i].continuation,
+        altBranches[i].continuation,
+        `${path}/${i}`,
+      );
+      if (result) return result;
+    }
+
+    return null;
+  }
+
+  /** 余詰め/キズの手順木の分岐点パスを計算する */
+  function getDivergencePath(altTree: SolutionNode, altPrefix: string): string | null {
+    const mainTree = $solution?.tree;
+    if (!mainTree) return null;
+    return findDivergencePath(mainTree, altTree, altPrefix);
+  }
+
   function squareLabel(file: number, rank: number): string {
     return `${file}${RANK_KANJI[rank]}`;
   }
@@ -142,7 +177,7 @@
       {$solution.message}
     </p>
 
-    {#snippet nodeDisplay(node: SolutionNode, depth: number, path: string)}
+    {#snippet nodeDisplay(node: SolutionNode, depth: number, path: string, divergencePath: string | null = null)}
       {#if isCheckmate(node)}
         <div class="line" style="padding-left: {depth * 20 + 24}px">
           <span class="checkmate copy-target" role="button" tabindex="0" onclick={(e) => handleCheckmateClick(path, e)}>詰み（{node.Checkmate.depth}手）</span>
@@ -154,6 +189,7 @@
         {@const branchCount = node.AttackMove.branches.length}
         {@const isFoldable = branchCount > 1}
         {@const isFolded = isFoldable && collapsed.has(path)}
+        {@const isDivergence = divergencePath !== null && path === divergencePath}
         <div
           class="line"
           class:foldable={isFoldable}
@@ -170,8 +206,12 @@
           <span
             class="move clickable"
             class:selected={$selectedPath === path}
+            class:divergence={isDivergence}
             onclick={(e) => handleMoveClick(path, e)}
           >{node.AttackMove.mv.notation}</span>
+          {#if isDivergence}
+            <span class="divergence-badge">← 分岐点</span>
+          {/if}
           {#if isFolded}
             <span class="fold-badge">{branchCount} 分岐</span>
           {/if}
@@ -208,7 +248,7 @@
               {/if}
             </div>
             {#if branch.observation !== "Checkmate" && !isObsFolded}
-              {@render nodeDisplay(branch.continuation, isFoldable ? depth + 1 : depth, `${path}/${i}`)}
+              {@render nodeDisplay(branch.continuation, isFoldable ? depth + 1 : depth, `${path}/${i}`, divergencePath)}
             {/if}
           {/each}
         {/if}
@@ -232,17 +272,19 @@
     {/if}
 
     {#if $solution.second_tree}
+      {@const secondDivPath = getDivergencePath($solution.second_tree, "s")}
       <div class="tree second-solution">
         <h4>2つ目の解（余詰め）</h4>
-        {@render nodeDisplay($solution.second_tree, 0, "s")}
+        {@render nodeDisplay($solution.second_tree, 0, "s", secondDivPath)}
       </div>
     {/if}
 
     {#if $solution.kizu_trees && $solution.kizu_trees.length > 0}
       {#each $solution.kizu_trees as kizu, idx}
+        {@const kizuDivPath = getDivergencePath(kizu, `k${idx}`)}
         <div class="tree kizu-solution">
           <h4>キズ {idx + 1}（プローブ代替手）</h4>
-          {@render nodeDisplay(kizu, 0, `k${idx}`)}
+          {@render nodeDisplay(kizu, 0, `k${idx}`, kizuDivPath)}
         </div>
       {/each}
     {/if}
@@ -384,6 +426,22 @@
 
   .move.selected {
     background: rgba(74, 144, 217, 0.25);
+  }
+
+  .move.divergence {
+    background: rgba(220, 80, 0, 0.15);
+    border-radius: 3px;
+  }
+
+  .divergence-badge {
+    margin-left: 6px;
+    padding: 0 6px;
+    font-size: 11px;
+    color: #c33;
+    background: #fee;
+    border-radius: 3px;
+    line-height: 18px;
+    font-weight: bold;
   }
 
   .reset-btn {
