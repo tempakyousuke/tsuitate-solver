@@ -9,6 +9,10 @@ edition = "2021"
 name = "tsuitate_solver_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
 
+[[bin]]
+name = "tsuitate-solver-cli"
+path = "src/bin/cli.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
