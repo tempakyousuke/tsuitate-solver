@@ -27,21 +27,87 @@ pub enum TsuitateDfpnResult {
 }
 
 /// 転置表エントリ
+///
+/// budget は「エントリ確定時の残り深さ予算」（depth_limit - 遭遇深さ、制限なしは INF）。
+/// 深さ制限付き探索の結果は予算に依存するため、再利用時に予算でゲートする:
+/// - 証明 (pn=0): 「証明深さ k 以内で詰む」→ 現在の予算 >= k なら再利用可
+/// - 反証 (dn=0): 「予算 budget 以内では詰まない」→ 現在の予算 <= budget なら再利用可
+/// - 中間値: ヒューリスティックなのでそのまま再利用可
+///
+/// proof_k は「このノードは k 手以内で詰む」という恒久的な証明の記録。
+/// 深さ制限付きプローブの再探索で pn/dn が反証で上書きされても、
+/// 一度得られた証明（恒久的な真実）は proof_k として保持され続ける。
 #[derive(Debug, Clone, Copy)]
 struct PnDn {
     pn: u32,
     dn: u32,
+    budget: u32,
+    /// 証明深さの最小値（未証明は u32::MAX）
+    proof_k: u32,
+}
+
+impl PnDn {
+    /// 現在の残り深さ予算での実効値。再利用できない場合は None。
+    fn effective(&self, budget_now: u32) -> Option<(u32, u32)> {
+        if self.proof_k <= budget_now {
+            return Some((0, INF)); // 予算内で証明済み
+        }
+        if self.pn == 0 {
+            return None; // 証明はあるが現在の予算では不足 → 未知扱い
+        }
+        if self.dn == 0 {
+            // 反証は「予算 budget 以内では詰まない」→ より小さい予算でのみ有効
+            return if budget_now <= self.budget {
+                Some((self.pn, self.dn))
+            } else {
+                None
+            };
+        }
+        Some((self.pn, self.dn))
+    }
+
+    /// 証明されている場合、その証明深さ k を返す
+    fn proven_bound(&self) -> Option<u32> {
+        if self.proof_k != u32::MAX {
+            Some(self.proof_k)
+        } else {
+            None
+        }
+    }
 }
 
 /// コンパクトな証明木ノード（リプレイキャッシュ用）
 /// SolutionNode と異なり String を持たず、Move を直接格納
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 enum ProofNode {
     Checkmate,
     Attack {
         mv: Move,
         branches: Vec<(ProofObs, ProofNode)>,
     },
+}
+
+impl ProofNode {
+    /// 証明木の深さ（mate-in-k の k、深さ制限の予算と同じ単位）
+    fn proof_depth(&self) -> u32 {
+        match self {
+            ProofNode::Checkmate => 0,
+            ProofNode::Attack { branches, .. } => {
+                let mut k: u32 = 1;
+                for (obs, child) in branches {
+                    let contrib = match obs {
+                        ProofObs::Checkmate => 1,
+                        ProofObs::Illegal => child.proof_depth(),
+                        ProofObs::Captured(..) | ProofObs::NoCapture => {
+                            child.proof_depth().saturating_add(2)
+                        }
+                    };
+                    k = k.max(contrib);
+                }
+                k
+            }
+        }
+    }
 }
 
 /// 証明木の観測タイプ（Observation の軽量版）
@@ -334,17 +400,18 @@ pub struct TsuitateDfpnSolver {
     root_hash: Option<u64>,
     /// 深さ上限（None = 制限なし）
     depth_limit: Option<u32>,
-    /// 優越関係テーブル: board_set_hash → Vec<[u8; 7]> (Pareto最小の proof_hand)
-    /// proof_hand <= sente_hand (要素ごと) で判定: 証明に必要な持ち駒が揃っていれば証明済み
-    dominance_table: HashMap<u64, Vec<[u8; 7]>>,
+    /// 優越関係テーブル: board_set_hash → Vec<(proof_hand, budget)> (Pareto最小)
+    /// proof_hand <= sente_hand (要素ごと) かつ 現在の残り深さ予算 >= budget で証明済み
+    dominance_table: HashMap<u64, Vec<([u8; 7], u32)>>,
     /// OR ノードの証明駒: meta_hash → proof_hand (証明に必要な最小の攻め方持ち駒)
     or_proof_hands: HashMap<u64, [u8; 7]>,
     /// AND ノードの証明駒: and_key → proof_hand
     and_proof_hands: HashMap<u64, [u8; 7]>,
     /// 盤面のみのハッシュ → 証明された手（手順ヒント用）
     move_hints: HashMap<u64, Move>,
-    /// 盤面のみのハッシュ → 証明木リスト（リプレイキャッシュ、複数手順対応）
-    proof_cache: HashMap<u64, Vec<ProofNode>>,
+    /// 盤面のみのハッシュ → (証明深さ, 証明木) リスト（リプレイキャッシュ、複数手順対応）
+    /// 証明深さは深さ制限付きプローブでのリプレイ可否の事前判定に使う
+    proof_cache: HashMap<u64, Vec<(u32, ProofNode)>>,
     /// AND ノードの展開結果キャッシュ: and_key → 構造データ
     /// mid_and が同一 AND ノードを再訪問する際の expand_defense_moves 再計算を回避
     and_expansion_cache: HashMap<u64, CachedAndExpansion>,
@@ -380,6 +447,8 @@ pub struct TsuitateDfpnSolver {
     pub legal_moves_cache_hits: u64,
     /// 診断: legal_moves_cache ミス数
     pub legal_moves_cache_misses: u64,
+    /// 診断: try_replay_proof の累計時間 (ナノ秒)
+    pub replay_nanos: u64,
 }
 
 impl TsuitateDfpnSolver {
@@ -417,6 +486,7 @@ impl TsuitateDfpnSolver {
             gen_candidates_total_positions: 0,
             legal_moves_cache_hits: 0,
             legal_moves_cache_misses: 0,
+            replay_nanos: 0,
         }
     }
 
@@ -428,13 +498,26 @@ impl TsuitateDfpnSolver {
 
         self.mid_or(meta, INF, INF, &mut path, 0);
 
-        let entry = self.or_table.get(&hash).copied().unwrap_or(PnDn { pn: 1, dn: 1 });
-        if entry.pn == 0 {
+        let budget = self.current_budget(0);
+        let (pn, dn) = self
+            .or_table
+            .get(&hash)
+            .and_then(|e| e.effective(budget))
+            .unwrap_or((1, 1));
+        if pn == 0 {
             TsuitateDfpnResult::Proven
-        } else if entry.dn == 0 {
+        } else if dn == 0 {
             TsuitateDfpnResult::Disproven
         } else {
             TsuitateDfpnResult::Unknown
+        }
+    }
+
+    /// 深さ depth における残り深さ予算（深さ制限なしは INF）
+    fn current_budget(&self, depth: u32) -> u32 {
+        match self.depth_limit {
+            Some(limit) => limit.saturating_sub(depth),
+            None => INF,
         }
     }
 
@@ -453,6 +536,48 @@ impl TsuitateDfpnSolver {
         h.finish()
     }
 
+    /// or_table への書き込み（既存の proof_k を保持し、証明なら更新）
+    fn store_or(&mut self, hash: u64, pn: u32, dn: u32, budget: u32) {
+        let e = self.or_table.entry(hash).or_insert(PnDn {
+            pn: 1,
+            dn: 1,
+            budget: 0,
+            proof_k: u32::MAX,
+        });
+        if pn == 0 {
+            e.proof_k = e.proof_k.min(budget);
+        }
+        e.pn = pn;
+        e.dn = dn;
+        e.budget = budget;
+    }
+
+    /// and_table への書き込み（既存の proof_k を保持し、証明なら更新）
+    fn store_and(&mut self, key: u64, pn: u32, dn: u32, budget: u32) {
+        let e = self.and_table.entry(key).or_insert(PnDn {
+            pn: 1,
+            dn: 1,
+            budget: 0,
+            proof_k: u32::MAX,
+        });
+        if pn == 0 {
+            e.proof_k = e.proof_k.min(budget);
+        }
+        e.pn = pn;
+        e.dn = dn;
+        e.budget = budget;
+    }
+
+    /// ルートで除外されている手かどうか（余詰めチェック用）
+    fn is_excluded_root_move(&self, mv: &Move) -> bool {
+        self.excluded_root_moves.iter().any(|exc| {
+            exc.from == mv.from
+                && exc.to == mv.to
+                && exc.promotion == mv.promotion
+                && exc.drop_piece == mv.drop_piece
+        })
+    }
+
     /// OR ノード（攻め方）: 候補手から1つでも詰みに導ければ成功
     ///
     /// pn = min{pn_c}, dn = sum{dn_c}
@@ -466,6 +591,7 @@ impl TsuitateDfpnSolver {
     ) {
         self.nodes_searched += 1;
         let hash = meta_position_hash(meta);
+        let budget_now = self.current_budget(depth);
 
         // MetaPosition サイズ記録
         if meta.positions.len() > self.max_meta_size {
@@ -474,61 +600,87 @@ impl TsuitateDfpnSolver {
 
         // 終端チェック
         if meta.is_empty() {
-            self.or_table.insert(hash, PnDn { pn: INF, dn: 0 });
+            // 深さ非依存の反証 → どの予算でも再利用可
+            self.store_or(hash, INF, 0, INF);
             return;
         }
         let aec_start = std::time::Instant::now();
         let is_aec = meta.all_effectively_checkmate();
         self.aec_nanos += aec_start.elapsed().as_nanos() as u64;
         if is_aec {
-            self.or_table.insert(hash, PnDn { pn: 0, dn: INF });
+            // 即詰み → 予算0で証明（どの予算でも再利用可）
+            self.store_or(hash, 0, INF, 0);
             let proof_hand = [0u8; 7];
             self.or_proof_hands.insert(hash, proof_hand);
             if !meta.positions.is_empty() {
                 let sente_hand = meta.positions[0].hand(Color::Sente).counts_array();
                 let board_hash = meta_board_set_hash(meta);
-                self.add_dominance_entry(board_hash, sente_hand);
+                self.add_dominance_entry(board_hash, sente_hand, 0);
             }
             return;
         }
         if meta.positions.len() > MAX_META_POSITIONS {
-            self.or_table.insert(hash, PnDn { pn: INF, dn: 0 });
+            self.store_or(hash, INF, 0, INF);
             return;
         }
 
         // 深さ制限チェック
         if let Some(limit) = self.depth_limit {
             if depth >= limit {
-                self.or_table.insert(hash, PnDn { pn: INF, dn: 0 });
+                // 予算0での反証（より浅い遭遇では再利用されない）
+                self.store_or(hash, INF, 0, 0);
                 return;
             }
         }
 
-        // 優越関係チェック: proof_hand <= sente_hand (要素ごと)
+        // ルートで手が除外されている場合（余詰めチェック）、除外手を使った
+        // 証明由来の優越関係・証明木リプレイで早期終了しないようスキップする
+        let exclusions_at_root =
+            self.root_hash == Some(hash) && !self.excluded_root_moves.is_empty();
+
+        // 優越関係チェック: proof_hand <= sente_hand (要素ごと) かつ予算が足りる場合
         // 同じ盤面セット + 同じ gote_hand で、sente_hand が proof_hand 以上なら証明済み
-        if !meta.positions.is_empty() {
+        if !exclusions_at_root && !meta.positions.is_empty() {
             let board_hash = meta_board_set_hash(meta);
             let sente_hand = meta.positions[0].hand(Color::Sente).counts_array();
-            if let Some(entries) = self.dominance_table.get(&board_hash) {
-                if let Some(matched_ph) = entries
+            let matched = self.dominance_table.get(&board_hash).and_then(|entries| {
+                entries
                     .iter()
-                    .find(|ph| ph.iter().zip(sente_hand.iter()).all(|(p, s)| p <= s))
-                {
-                    self.or_table.insert(hash, PnDn { pn: 0, dn: INF });
-                    self.or_proof_hands.insert(hash, *matched_ph);
-                    self.dominance_hits += 1;
-                    return;
-                }
+                    .find(|(ph, b)| {
+                        *b <= budget_now
+                            && ph.iter().zip(sente_hand.iter()).all(|(p, s)| p <= s)
+                    })
+                    .copied()
+            });
+            if let Some((matched_ph, matched_budget)) = matched {
+                self.store_or(hash, 0, INF, matched_budget);
+                self.or_proof_hands.insert(hash, matched_ph);
+                self.dominance_hits += 1;
+                return;
             }
         }
 
         // 証明木リプレイ: board-only hash でキャッシュされた証明木を試す（複数候補対応）
-        if !meta.positions.is_empty() {
+        // 証明深さが現在の残り予算を超える証明はリプレイしても必ず失敗するため
+        // 事前に除外する（深さ制限付きプローブでのリプレイ嵐を防ぐ）
+        if !exclusions_at_root && !meta.positions.is_empty() {
             let board_only_hash = meta_board_only_hash(meta);
-            if let Some(proofs) = self.proof_cache.get(&board_only_hash).cloned() {
+            let proofs: Vec<ProofNode> = self
+                .proof_cache
+                .get(&board_only_hash)
+                .map(|entry| {
+                    entry
+                        .iter()
+                        .filter(|(pd, _)| *pd <= budget_now)
+                        .map(|(_, p)| p.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !proofs.is_empty() {
                 self.proof_replay_attempts += 1;
                 let or_table_size_before = self.or_table.len();
                 let mut replayed = false;
+                let replay_start = std::time::Instant::now();
                 for proof in &proofs {
                     if let Some(_or_ph) = self.try_replay_proof(meta, proof, hash, path, depth) {
                         self.proof_replay_full_success += 1;
@@ -536,6 +688,7 @@ impl TsuitateDfpnSolver {
                         break;
                     }
                 }
+                self.replay_nanos += replay_start.elapsed().as_nanos() as u64;
                 if !replayed {
                     if self.or_table.len() > or_table_size_before {
                         self.proof_replay_partial += 1;
@@ -587,7 +740,7 @@ impl TsuitateDfpnSolver {
         }
 
         if candidates.is_empty() {
-            self.or_table.insert(hash, PnDn { pn: INF, dn: 0 });
+            self.store_or(hash, INF, 0, INF);
             self.or_candidate_cache.insert(hash, CachedOrCandidates { candidates: candidates_raw.clone() });
             return;
         }
@@ -605,15 +758,15 @@ impl TsuitateDfpnSolver {
             }
         }
 
-        // 子ノード（AND）の初期化
+        // 子ノード（AND）の初期化（予算ゲートを通ったエントリのみ再利用）
         let mut children: Vec<(Move, u64, u32, u32)> = Vec::with_capacity(candidates.len());
         for mv in &candidates {
             let ak = Self::and_key(hash, mv);
-            let (cpn, cdn) = if let Some(e) = self.and_table.get(&ak) {
-                (e.pn, e.dn)
-            } else {
-                (1, 1)
-            };
+            let (cpn, cdn) = self
+                .and_table
+                .get(&ak)
+                .and_then(|e| e.effective(budget_now))
+                .unwrap_or((1, 1));
             children.push((*mv, ak, cpn, cdn));
         }
 
@@ -628,7 +781,25 @@ impl TsuitateDfpnSolver {
             let dn_n = children.iter().map(|c| c.3).fold(0u32, |a, d| a.saturating_add(d));
 
             if pn_n == 0 || dn_n == 0 {
-                self.or_table.insert(hash, PnDn { pn: pn_n, dn: dn_n });
+                // 証明時は budget に実際の証明深さ k（k手以内で詰む）を記録する。
+                // 探索時の残り予算ではなく k を使うことで、より小さい予算の
+                // プローブでも budget_now >= k なら証明を再利用できる。
+                let entry_budget = if pn_n == 0 {
+                    children
+                        .iter()
+                        .filter(|c| c.2 == 0)
+                        .map(|c| {
+                            self.and_table
+                                .get(&c.1)
+                                .and_then(|e| e.proven_bound())
+                                .unwrap_or(budget_now)
+                        })
+                        .min()
+                        .unwrap_or(budget_now)
+                } else {
+                    budget_now
+                };
+                self.store_or(hash, pn_n, dn_n, entry_budget);
                 if pn_n == 0 {
                     // 証明駒の計算: 証明された AND 子ノードの proof_hand の要素ごと最小値
                     let fallback_ph = meta.positions.first()
@@ -648,24 +819,29 @@ impl TsuitateDfpnSolver {
                         or_ph = fallback_ph;
                     }
                     self.or_proof_hands.insert(hash, or_ph);
-                    self.record_proven_dominance(meta, or_ph);
+                    self.record_proven_dominance(meta, or_ph, entry_budget);
                     // 盤面のみのハッシュで手順ヒントを記録
                     if !meta.positions.is_empty() {
                         let board_only_hash = meta_board_only_hash(meta);
                         if let Some(proven_child) = children.iter().find(|c| c.2 == 0) {
                             self.move_hints.insert(board_only_hash, proven_child.0);
                         }
-                        // 証明木をキャッシュ（リプレイ用、複数手順対応）
-                        {
+                        // 証明木をキャッシュ（リプレイ用、複数手順対応、重複排除）
+                        // 深さ制限付きプローブ中はスキップ: 抽出（応手展開の再帰）が
+                        // 探索本体より高コストになる。プローブ間の証明の引き継ぎは
+                        // budget 付き転置表エントリが担う。
+                        if self.depth_limit.is_none() {
                             let max_proofs = 20;
                             let should_add = self.proof_cache
                                 .get(&board_only_hash)
                                 .map_or(true, |v| v.len() < max_proofs);
                             if should_add {
                                 if let Some(proof) = self.extract_compact_or(meta) {
-                                    self.proof_cache.entry(board_only_hash)
-                                        .or_default()
-                                        .push(proof);
+                                    let entry = self.proof_cache.entry(board_only_hash)
+                                        .or_default();
+                                    if !entry.iter().any(|(_, p)| *p == proof) {
+                                        entry.push((proof.proof_depth(), proof));
+                                    }
                                 }
                             }
                         }
@@ -676,7 +852,7 @@ impl TsuitateDfpnSolver {
             }
 
             if pn_n >= pn_limit || dn_n >= dn_limit {
-                self.or_table.insert(hash, PnDn { pn: pn_n, dn: dn_n });
+                self.store_or(hash, pn_n, dn_n, budget_now);
                 self.or_candidate_cache.insert(hash, CachedOrCandidates { candidates: candidates_raw.clone() });
                 return;
             }
@@ -709,11 +885,15 @@ impl TsuitateDfpnSolver {
                 depth,
             );
 
-            // AND テーブルから値を読み戻す
+            // AND テーブルから値を読み戻す（予算ゲート付き）
             let ak = children[best_idx].1;
-            let e = self.and_table.get(&ak).copied().unwrap_or(PnDn { pn: 1, dn: 1 });
-            children[best_idx].2 = e.pn;
-            children[best_idx].3 = e.dn;
+            let (cpn, cdn) = self
+                .and_table
+                .get(&ak)
+                .and_then(|e| e.effective(budget_now))
+                .unwrap_or((1, 1));
+            children[best_idx].2 = cpn;
+            children[best_idx].3 = cdn;
         }
     }
 
@@ -734,6 +914,7 @@ impl TsuitateDfpnSolver {
         self.mid_and_calls += 1;
         let meta_hash = meta_position_hash(meta);
         let and_key = Self::and_key(meta_hash, &mv);
+        let budget_now = self.current_budget(depth);
 
         // Phase 1: キャッシュから展開結果を取得、なければ計算
         // remove で所有権を取り、ループ後に再挿入（borrow checker 回避）
@@ -745,7 +926,8 @@ impl TsuitateDfpnSolver {
                 meta.apply_attack_move_split_with_sets(mv, legal_move_sets);
 
             if legal_meta.is_empty() && illegal_meta.is_empty() {
-                self.and_table.insert(and_key, PnDn { pn: INF, dn: 0 });
+                // 構造的な反証（深さ非依存）→ どの予算でも再利用可
+                self.store_and(and_key, INF, 0, INF);
                 return;
             }
 
@@ -756,7 +938,7 @@ impl TsuitateDfpnSolver {
                     .iter()
                     .all(|pos| pos.is_in_check(pos.side_to_move))
             {
-                self.and_table.insert(and_key, PnDn { pn: INF, dn: 0 });
+                self.store_and(and_key, INF, 0, INF);
                 return;
             }
 
@@ -784,7 +966,7 @@ impl TsuitateDfpnSolver {
                 if legal_meta.all_effectively_checkmate() {
                     if !legal_meta.positions.is_empty() {
                         let board_hash = meta_board_set_hash(&legal_meta);
-                        self.add_dominance_entry(board_hash, [0; 7]);
+                        self.add_dominance_entry(board_hash, [0; 7], 0);
                     }
                     let legal_hand = legal_meta.positions.first()
                         .map(|p| p.hand(Color::Sente).counts_array())
@@ -818,8 +1000,7 @@ impl TsuitateDfpnSolver {
                             }
                             Observation::Captured { .. } | Observation::NoCapture => {
                                 if branch_meta.positions.len() > MAX_META_POSITIONS {
-                                    self.and_table
-                                        .insert(and_key, PnDn { pn: INF, dn: 0 });
+                                    self.store_and(and_key, INF, 0, INF);
                                     return;
                                 }
                                 // 持ち駒の成分最小値を使用（混合対応、保守的推定）
@@ -838,7 +1019,7 @@ impl TsuitateDfpnSolver {
             }
 
             if obs_terminal.is_empty() {
-                self.and_table.insert(and_key, PnDn { pn: INF, dn: 0 });
+                self.store_and(and_key, INF, 0, INF);
                 return;
             }
 
@@ -854,7 +1035,7 @@ impl TsuitateDfpnSolver {
 
         let n = expansion.obs_terminal.len();
 
-        // Phase 2: 転置表から最新の pn/dn を取得
+        // Phase 2: 転置表から最新の pn/dn を取得（子の予算でゲート）
         let mut obs_pn: Vec<u32> = Vec::with_capacity(n);
         let mut obs_dn: Vec<u32> = Vec::with_capacity(n);
         for i in 0..n {
@@ -862,7 +1043,8 @@ impl TsuitateDfpnSolver {
                 obs_pn.push(0);
                 obs_dn.push(INF);
             } else {
-                let (cpn, cdn) = self.lookup_or(expansion.obs_hash[i], path);
+                let child_budget = self.current_budget(depth + expansion.obs_depth_inc[i]);
+                let (cpn, cdn) = self.lookup_or(expansion.obs_hash[i], path, child_budget);
                 obs_pn.push(cpn);
                 obs_dn.push(cdn);
             }
@@ -879,7 +1061,28 @@ impl TsuitateDfpnSolver {
             let dn_n = obs_dn.iter().copied().min().unwrap_or(INF);
 
             if pn_n == 0 || dn_n == 0 {
-                self.and_table.insert(and_key, PnDn { pn: pn_n, dn: dn_n });
+                // 証明時は budget に実際の証明深さ k を記録する:
+                // k = max(1, max_i (子の証明深さ + 深さ増分))
+                // （攻め方の1手 + 各観測分岐の証明深さ。Checkmate 分岐は寄与1）
+                let entry_budget = if pn_n == 0 {
+                    let mut k: u32 = 1;
+                    for i in 0..n {
+                        if expansion.obs_terminal[i] {
+                            continue;
+                        }
+                        let inc = expansion.obs_depth_inc[i];
+                        let child_k = self
+                            .or_table
+                            .get(&expansion.obs_hash[i])
+                            .and_then(|e| e.proven_bound())
+                            .unwrap_or_else(|| self.current_budget(depth + inc));
+                        k = k.max(child_k.saturating_add(inc));
+                    }
+                    k
+                } else {
+                    budget_now
+                };
+                self.store_and(and_key, pn_n, dn_n, entry_budget);
                 if pn_n == 0 {
                     // AND 証明駒の計算
                     let mut and_ph = [0u8; 7];
@@ -904,7 +1107,7 @@ impl TsuitateDfpnSolver {
             }
 
             if pn_n >= pn_limit || dn_n >= dn_limit {
-                self.and_table.insert(and_key, PnDn { pn: pn_n, dn: dn_n });
+                self.store_and(and_key, pn_n, dn_n, budget_now);
                 break;
             }
 
@@ -915,7 +1118,7 @@ impl TsuitateDfpnSolver {
             let best_idx = match best {
                 Some(i) => i,
                 None => {
-                    self.and_table.insert(and_key, PnDn { pn: pn_n, dn: dn_n });
+                    self.store_and(and_key, pn_n, dn_n, budget_now);
                     break;
                 }
             };
@@ -945,31 +1148,31 @@ impl TsuitateDfpnSolver {
             );
             path.pop();
 
-            // OR テーブルから値を読み戻す
-            let e = self
+            // OR テーブルから値を読み戻す（子の予算でゲート）
+            let child_budget = self.current_budget(child_depth);
+            let (cpn, cdn) = self
                 .or_table
                 .get(&child_hash)
-                .copied()
-                .unwrap_or(PnDn { pn: 1, dn: 1 });
-            obs_pn[best_idx] = e.pn;
-            obs_dn[best_idx] = e.dn;
+                .and_then(|e| e.effective(child_budget))
+                .unwrap_or((1, 1));
+            obs_pn[best_idx] = cpn;
+            obs_dn[best_idx] = cdn;
         }
 
         // Phase 4: キャッシュに再挿入
         self.and_expansion_cache.insert(and_key, expansion);
     }
 
-    /// OR ノードの初期値を取得（転置表 or デフォルト）
+    /// OR ノードの初期値を取得（転置表 or デフォルト、予算ゲート付き）
     /// ループ検出時は反証扱い
-    fn lookup_or(&self, hash: u64, path: &[u64]) -> (u32, u32) {
+    fn lookup_or(&self, hash: u64, path: &[u64], budget: u32) -> (u32, u32) {
         if path.contains(&hash) {
             return (INF, 0);
         }
-        if let Some(e) = self.or_table.get(&hash) {
-            (e.pn, e.dn)
-        } else {
-            (1, 1)
-        }
+        self.or_table
+            .get(&hash)
+            .and_then(|e| e.effective(budget))
+            .unwrap_or((1, 1))
     }
 
     /// 同一観測タイプの分岐をマージ（sente_hand_hash グループ統合）
@@ -1075,26 +1278,29 @@ impl TsuitateDfpnSolver {
 
     /// 優越関係テーブルに proof_hand（証明に必要な最小の攻め方持ち駒）を記録する
     /// gote_hand を含むハッシュと組み合わせて使用: 同じ盤面+同じgote_hand で proof_hand <= S_new
-    fn record_proven_dominance(&mut self, meta: &MetaPosition, proof_hand: [u8; 7]) {
+    /// budget は証明時の残り深さ予算（この予算以内で詰むことを保証）
+    fn record_proven_dominance(&mut self, meta: &MetaPosition, proof_hand: [u8; 7], budget: u32) {
         if meta.positions.is_empty() {
             return;
         }
         let board_hash = meta_board_set_hash(meta);
-        self.add_dominance_entry(board_hash, proof_hand);
+        self.add_dominance_entry(board_hash, proof_hand, budget);
     }
 
     /// dominance_table にエントリを追加（Pareto 最小を維持）
+    /// (hand, budget) の両方で支配判定: hand が小さく budget も小さいエントリが優越
     /// 追加された場合 true を返す
-    fn add_dominance_entry(&mut self, board_hash: u64, hand: [u8; 7]) -> bool {
+    fn add_dominance_entry(&mut self, board_hash: u64, hand: [u8; 7], budget: u32) -> bool {
         let entries = self.dominance_table.entry(board_hash).or_default();
-        if entries
-            .iter()
-            .any(|e| e.iter().zip(hand.iter()).all(|(ei, hi)| ei <= hi))
-        {
+        if entries.iter().any(|(eh, eb)| {
+            *eb <= budget && eh.iter().zip(hand.iter()).all(|(ei, hi)| ei <= hi)
+        }) {
             return false;
         }
-        entries.retain(|e| !e.iter().zip(hand.iter()).all(|(ei, hi)| hi <= ei));
-        entries.push(hand);
+        entries.retain(|(eh, eb)| {
+            !(budget <= *eb && eh.iter().zip(hand.iter()).all(|(ei, hi)| hi <= ei))
+        });
+        entries.push((hand, budget));
         true
     }
 
@@ -1354,9 +1560,12 @@ impl TsuitateDfpnSolver {
                 // find_second_solution は self.nodes_searched を first_phase_nodes として使うため、
                 // shorten 分を含めた累計値を設定しておく
                 self.nodes_searched = nodes_before_second;
+                // 最短経路探索後は転置表に深さ制限付きの反証エントリが残るため、
+                // 一意性プレチェック（転置表ベース）は使えない
+                let allow_precheck = !find_shortest;
                 let (second_tree, kizu_trees, total_nodes, second_msg) = if find_second {
                     if let Some(ref t) = tree {
-                        self.find_second_solution(meta, t)
+                        self.find_second_solution(meta, t, allow_precheck)
                     } else {
                         (None, vec![], nodes_before_second, String::new())
                     }
@@ -1429,20 +1638,23 @@ impl TsuitateDfpnSolver {
         }
     }
 
-    /// 線形スキャンで最短の深さを求める
+    /// 下方向スキャンで最短の深さを求める
     ///
-    /// 浅い深さから順に探索し、最初に証明に成功した深さが最短解。
-    /// 常に「深くなる方向」に進むため、前回の証明済みエントリを常に再利用でき、
-    /// 二分探索のような「浅くなる方向」での全テーブルクリアが不要。
+    /// 初回解の深さ−2 を depth_limit として探索し、証明に成功したら
+    /// 抽出した解の実際の深さまで一気に上限を狭めて繰り返す。
+    /// 反証されたら現在の best が最短と確定する。
+    ///
+    /// 上方向の線形スキャン（深さ1, 3, 5, ...）と比べ、最短解が初回解と
+    /// 同じ深さの場合に反証探索1回で済む（97手詰めなら48回→1回）。
     ///
     /// 最適化:
-    /// - 深さ非依存のキャッシュ（and_expansion_cache, or_candidate_cache, move_hints,
-    ///   proof_cache）は全反復で保持
-    /// - or_table/and_table の証明済みエントリ (pn=0) を毎回保持
-    ///   （浅い深さの証明は深い深さでも有効）
-    /// - dominance_table, or_proof_hands, and_proof_hands も保持
-    /// - OR ノードは偶数深さにのみ存在するため、奇数 depth_limit のみ試行
-    ///   （depth_limit=2k と 2k+1 は同一結果 → step=2 で探索）
+    /// - 転置表エントリは残り深さ予算（budget）でゲートされるため、
+    ///   反復間・深さ制限の有無をまたいでも安全に保持できる。
+    ///   下方向スキャンでは前回プローブの反証エントリがそのまま再利用される。
+    /// - 深さ非依存のキャッシュ（and_expansion_cache, or_candidate_cache,
+    ///   move_hints, proof_cache, legal_moves_cache, check_moves_cache）も
+    ///   全反復で保持。proof_cache のリプレイは try_replay_proof が
+    ///   depth_limit を検証するため深さ制限下でも安全。
     fn shorten_solution(
         &mut self,
         meta: &MetaPosition,
@@ -1453,46 +1665,59 @@ impl TsuitateDfpnSolver {
         let mut best_depth = initial_depth;
         let mut total_nodes: u64 = 0;
 
-        // 初回: 無限深さから有限深さへの遷移。証明依存テーブルをクリア。
-        // 深さ非依存キャッシュ（and_expansion_cache, or_candidate_cache,
-        // move_hints, proof_cache）は保持。
-        self.or_table.clear();
-        self.and_table.clear();
-        self.dominance_table.clear();
-        self.or_proof_hands.clear();
-        self.and_proof_hands.clear();
+        let root_hash = meta_position_hash(meta);
+        // 証明に成功した最小の深さ制限（ループ終了後の抽出で使用）
+        let mut proven_limit: Option<u32> = None;
 
-        // 浅い深さから順に探索（常に深くなる方向 → テーブル再利用可能）
-        let mut depth: u32 = 1;
-        while depth < best_depth {
+        let mut target = best_depth.saturating_sub(2);
+        while target >= 1 {
             if self.should_stop() {
                 break;
             }
 
-            // 前回より深い → 証明済みエントリ(pn=0)のみ保持、反証・中間値は除去
-            // dominance_table, or_proof_hands, and_proof_hands は保持
-            if depth > 1 {
-                self.or_table.retain(|_, v| v.pn == 0);
-                self.and_table.retain(|_, v| v.pn == 0);
-            }
-
             self.nodes_searched = 0;
-            self.depth_limit = Some(depth);
+            self.depth_limit = Some(target);
 
+            let probe_start = std::time::Instant::now();
             let result = self.solve(meta);
             total_nodes += self.nodes_searched;
-
-            if result == TsuitateDfpnResult::Proven {
-                let tree = self.extract_solution(meta);
-                let actual_depth = tree.as_ref().map(|t| t.max_moves()).unwrap_or(0);
-                if actual_depth < best_depth {
-                    best_tree = tree;
-                    best_depth = actual_depth;
-                }
-                break; // 最初に見つかった深さが最短
+            if std::env::var("SHORTEN_DEBUG").is_ok() {
+                eprintln!(
+                    "[shorten] target={} result={:?} nodes={} time={:.3}s",
+                    target, result, self.nodes_searched,
+                    probe_start.elapsed().as_secs_f64(),
+                );
             }
 
-            depth += 2; // OR ノードは偶数深さのみ → 奇数 depth_limit のみ意味がある
+            if result != TsuitateDfpnResult::Proven {
+                break; // 反証（または打ち切り）→ 現在の証明済み深さが最短
+            }
+
+            // 証明深さ k（ルートエントリの proof_k）で次のターゲットへジャンプ
+            let k = self
+                .or_table
+                .get(&root_hash)
+                .and_then(|e| e.proven_bound())
+                .unwrap_or(target)
+                .min(target);
+            proven_limit = Some(k.max(1));
+            if k <= 2 {
+                break; // これ以上短くならない（1手詰めが証明済み）
+            }
+            target = k - 2;
+        }
+
+        // 抽出はループ終了後に1回だけ行う（プローブごとの抽出は高コスト）。
+        // 最後に証明された深さ制限の下で抽出することで、混在した転置表から
+        // 深い方の解を拾わないよう budget ゲートを効かせる。
+        if let Some(limit) = proven_limit {
+            self.depth_limit = Some(limit);
+            let tree = self.extract_solution(meta);
+            let actual_depth = tree.as_ref().map(|t| t.max_moves()).unwrap_or(0);
+            if actual_depth > 0 && actual_depth < best_depth {
+                best_tree = tree;
+                best_depth = actual_depth;
+            }
         }
 
         self.depth_limit = None;
@@ -1524,21 +1749,6 @@ impl TsuitateDfpnSolver {
             drop_piece,
             moved_piece_kind: None,
         }
-    }
-
-    /// ソルバーの転置表・キャッシュを全てクリアする
-    fn clear_tables(&mut self) {
-        self.or_table.clear();
-        self.and_table.clear();
-        self.dominance_table.clear();
-        self.or_proof_hands.clear();
-        self.and_proof_hands.clear();
-        self.move_hints.clear();
-        self.proof_cache.clear();
-        self.and_expansion_cache.clear();
-        self.or_candidate_cache.clear();
-        self.legal_moves_cache.clear();
-        self.check_moves_cache.clear();
     }
 
     /// 最長応手経路上の全ORノードで証明手が一意かどうかをチェックする
@@ -1591,10 +1801,10 @@ impl TsuitateDfpnSolver {
             }
         }
 
-        // ANDテーブルで pn==0 の手を数える
+        // ANDテーブルで証明済みの手を数える
         let proven_count = all_moves.iter().filter(|mv| {
             let ak = Self::and_key(hash, mv);
-            self.and_table.get(&ak).map_or(false, |e| e.pn == 0)
+            self.and_table.get(&ak).map_or(false, |e| e.proven_bound().is_some())
         }).count();
 
         if proven_count > 1 {
@@ -1674,6 +1884,7 @@ impl TsuitateDfpnSolver {
         &mut self,
         meta: &MetaPosition,
         first_tree: &SolutionNode,
+        allow_precheck: bool,
     ) -> (Option<SolutionNode>, Vec<SolutionNode>, u64, String) {
         let first_mv = match first_tree {
             SolutionNode::AttackMove { mv, .. } => Self::move_data_to_move(mv),
@@ -1682,8 +1893,15 @@ impl TsuitateDfpnSolver {
             }
         };
 
-        // プレチェック: テーブルクリア前に最長応手経路の一意性を確認
-        if self.has_unique_longest_path(meta, first_tree) {
+        // プレチェック: 最長応手経路の一意性を確認
+        // 深さ制限付きプローブが走っていない（転置表の反証が全て無制限探索由来の）
+        // 場合のみ有効。最短経路探索後は呼び出し側が allow_precheck=false にする。
+        let root_hash = meta_position_hash(meta);
+        let root_proven = self
+            .or_table
+            .get(&root_hash)
+            .map_or(false, |e| e.proven_bound().is_some());
+        if allow_precheck && root_proven && self.has_unique_longest_path(meta, first_tree) {
             return (None, vec![], self.nodes_searched, "unique_longest_path".to_string());
         }
 
@@ -1692,6 +1910,9 @@ impl TsuitateDfpnSolver {
         let mut kizu_trees: Vec<SolutionNode> = vec![];
 
         // Phase 1: 初手除外で再探索
+        // 転置表・キャッシュは保持する: ルート以外のエントリと証明成果物
+        // （dominance, proof_cache 等）は除外条件に依存しないため再利用できる。
+        // ルートの or エントリのみ除外条件に依存するため探索後に削除する。
         let mut excluded = vec![first_mv];
         if first_mv.from.is_some() {
             let mut counterpart = first_mv;
@@ -1699,25 +1920,29 @@ impl TsuitateDfpnSolver {
             excluded.push(counterpart);
         }
 
-        self.clear_tables();
         self.nodes_searched = 0;
         self.excluded_root_moves = excluded;
 
         let result = self.solve(meta);
         let mut total_nodes = initial_nodes + self.nodes_searched;
-        self.excluded_root_moves.clear();
 
-        if let TsuitateDfpnResult::Proven = result {
-            let second_tree = self.extract_solution(meta);
-            if let Some(ref second) = second_tree {
-                if !second.is_subsumed_by(&first_hashes) {
-                    if Self::is_kizu(first_tree, second) {
-                        // キズ（プローブ代替手）として収集、探索を続行
-                        kizu_trees.push(second_tree.unwrap());
-                    } else {
-                        // 真の余詰め → 即座に返す
-                        return (second_tree, kizu_trees, total_nodes, "found".to_string());
-                    }
+        // 抽出はルート除外フィルタが効くよう excluded_root_moves を保持したまま行う
+        let second_tree = if result == TsuitateDfpnResult::Proven {
+            self.extract_solution(meta)
+        } else {
+            None
+        };
+        self.excluded_root_moves.clear();
+        self.or_table.remove(&root_hash);
+
+        if let Some(ref second) = second_tree {
+            if !second.is_subsumed_by(&first_hashes) {
+                if Self::is_kizu(first_tree, second) {
+                    // キズ（プローブ代替手）として収集、探索を続行
+                    kizu_trees.push(second_tree.unwrap());
+                } else {
+                    // 真の余詰め → 即座に返す
+                    return (second_tree, kizu_trees, total_nodes, "found".to_string());
                 }
             }
         }
@@ -1892,26 +2117,29 @@ impl TsuitateDfpnSolver {
             excluded.push(counterpart);
         }
 
-        self.clear_tables();
+        // 転置表・キャッシュは保持（find_second_solution Phase 1 と同じ理由）
         self.nodes_searched = 0;
         self.excluded_root_moves = excluded;
 
         let result = self.solve(meta);
         *total_nodes += self.nodes_searched;
-        self.excluded_root_moves.clear();
 
-        match result {
+        // 抽出はルート除外フィルタが効くよう excluded_root_moves を保持したまま行う
+        let ret = match result {
             TsuitateDfpnResult::Proven => {
                 let tree = self.extract_solution(meta);
-                if let Some(ref t) = tree {
-                    if !t.is_subsumed_by(first_hashes) {
-                        return tree;
-                    }
+                match tree {
+                    Some(ref t) if !t.is_subsumed_by(first_hashes) => tree,
+                    _ => None,
                 }
-                None
             }
             _ => None,
-        }
+        };
+        self.excluded_root_moves.clear();
+        // ルートの or エントリは除外条件に依存するため削除
+        // （後続の探索で通常ノードとして参照されると誤った反証になる）
+        self.or_table.remove(&meta_position_hash(meta));
+        ret
     }
 
     /// 証明木を抽出する（solve() で Proven になった後に呼ぶ）
@@ -1929,9 +2157,10 @@ impl TsuitateDfpnSolver {
         }
 
         let hash = meta_position_hash(meta);
+        let budget_now = self.current_budget(depth);
         let entry = self.or_table.get(&hash)?;
-        if entry.pn != 0 {
-            return None; // 証明されていない
+        if !entry.proven_bound().map_or(false, |k| k <= budget_now) {
+            return None; // 証明されていない（または現在の深さ予算では未証明）
         }
 
         // 全盤面の合法手を収集
@@ -1965,11 +2194,19 @@ impl TsuitateDfpnSolver {
             (is_drop, dist, mv.to.file, mv.to.rank)
         });
 
+        // ルートでは除外手をスキップ（余詰めチェック中に保持された
+        // 転置表の除外手エントリから主解を再抽出しないため）
+        let at_root_with_exclusions =
+            self.root_hash == Some(hash) && !self.excluded_root_moves.is_empty();
+
         // AND テーブルで pn=0 の手を探す
         for mv in &all_moves {
+            if at_root_with_exclusions && self.is_excluded_root_move(mv) {
+                continue;
+            }
             let ak = Self::and_key(hash, mv);
             if let Some(and_entry) = self.and_table.get(&ak) {
-                if and_entry.pn == 0 {
+                if and_entry.proven_bound().map_or(false, |k| k <= budget_now) {
                     if let Some(branches) =
                         self.extract_and(meta, *mv, &legal_move_sets, depth)
                     {
@@ -1986,6 +2223,9 @@ impl TsuitateDfpnSolver {
         // AND テーブルで見つからない場合（優越関係で証明されたノード）
         // 各候補手で直接 extract_and を試す
         for mv in &all_moves {
+            if at_root_with_exclusions && self.is_excluded_root_move(mv) {
+                continue;
+            }
             if let Some(branches) = self.extract_and(meta, *mv, &legal_move_sets, depth) {
                 return Some(SolutionNode::AttackMove {
                     mv: MoveData::from_move(*mv, Color::Sente),
@@ -2075,7 +2315,7 @@ impl TsuitateDfpnSolver {
 
         let hash = meta_position_hash(meta);
         let entry = self.or_table.get(&hash)?;
-        if entry.pn != 0 { return None; }
+        if entry.proven_bound().is_none() { return None; }
 
         // 全合法手を収集（extract_or と同じ）
         let legal_move_sets: Vec<Vec<Move>> = meta.positions.iter()
@@ -2089,11 +2329,18 @@ impl TsuitateDfpnSolver {
             }
         }
 
+        // ルートでは除外手をスキップ（extract_or と同じ理由）
+        let at_root_with_exclusions =
+            self.root_hash == Some(hash) && !self.excluded_root_moves.is_empty();
+
         // pn=0 の手を探す
         for mv in &all_moves {
+            if at_root_with_exclusions && self.is_excluded_root_move(mv) {
+                continue;
+            }
             let ak = Self::and_key(hash, mv);
             if let Some(e) = self.and_table.get(&ak) {
-                if e.pn == 0 {
+                if e.proven_bound().is_some() {
                     if let Some(branches) = self.extract_compact_and(meta, *mv, &legal_move_sets) {
                         return Some(ProofNode::Attack { mv: *mv, branches });
                     }
@@ -2103,6 +2350,9 @@ impl TsuitateDfpnSolver {
 
         // dominance で証明されたノード: 各候補手で直接試す
         for mv in &all_moves {
+            if at_root_with_exclusions && self.is_excluded_root_move(mv) {
+                continue;
+            }
             if let Some(branches) = self.extract_compact_and(meta, *mv, &legal_move_sets) {
                 return Some(ProofNode::Attack { mv: *mv, branches });
             }
@@ -2180,7 +2430,7 @@ impl TsuitateDfpnSolver {
             ProofNode::Checkmate => {
                 if meta.all_effectively_checkmate() {
                     let proof_hand = [0u8; 7];
-                    self.or_table.insert(hash, PnDn { pn: 0, dn: INF });
+                    self.store_or(hash, 0, INF, 0);
                     self.or_proof_hands.insert(hash, proof_hand);
                     Some(proof_hand)
                 } else {
@@ -2228,6 +2478,7 @@ impl TsuitateDfpnSolver {
                     .map(|p| p.hand(Color::Sente).counts_array())
                     .unwrap_or([0; 7]);
                 let mut and_ph = [0u8; 7];
+                let mut k_and: u32 = 1; // 証明深さ（攻め方の1手 + 分岐の最大）
                 let mut all_succeeded = true;
 
                 for (actual_obs, actual_meta) in &actual_branches {
@@ -2259,6 +2510,12 @@ impl TsuitateDfpnSolver {
                                             - parent_hand[j] as i16).max(0) as u8;
                                         and_ph[j] = and_ph[j].max(eff);
                                     }
+                                    let child_k = self
+                                        .or_table
+                                        .get(&child_hash)
+                                        .and_then(|e| e.proven_bound())
+                                        .unwrap_or_else(|| self.current_budget(depth));
+                                    k_and = k_and.max(child_k);
                                     branch_ok = true;
                                     break;
                                 }
@@ -2282,6 +2539,12 @@ impl TsuitateDfpnSolver {
                                             - child_hand[j] as i16).max(0) as u8;
                                         and_ph[j] = and_ph[j].max(eff);
                                     }
+                                    let child_k = self
+                                        .or_table
+                                        .get(&child_hash)
+                                        .and_then(|e| e.proven_bound())
+                                        .unwrap_or_else(|| self.current_budget(depth + 2));
+                                    k_and = k_and.max(child_k.saturating_add(2));
                                     branch_ok = true;
                                     break;
                                 }
@@ -2301,13 +2564,13 @@ impl TsuitateDfpnSolver {
                     // 全分岐成功 → OR ノードの proof_hand
                     let or_ph = and_ph;
 
-                    self.or_table.insert(hash, PnDn { pn: 0, dn: INF });
+                    self.store_or(hash, 0, INF, k_and);
                     self.or_proof_hands.insert(hash, or_ph);
-                    self.record_proven_dominance(meta, or_ph);
+                    self.record_proven_dominance(meta, or_ph, k_and);
 
                     // and_table にも記録
                     let and_key = Self::and_key(hash, mv);
-                    self.and_table.insert(and_key, PnDn { pn: 0, dn: INF });
+                    self.store_and(and_key, 0, INF, k_and);
                     self.and_proof_hands.insert(and_key, and_ph);
 
                     Some(or_ph)
