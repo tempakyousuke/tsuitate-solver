@@ -1,3 +1,4 @@
+use super::bitboard::{nearest_on_ray, NEAR_ATTACKER_MASK};
 use super::position::Position;
 use super::types::*;
 
@@ -312,108 +313,54 @@ fn is_pawn_drop_mate(pos: &Position, sq: Square, color: Color) -> bool {
     result
 }
 
-/// マスが特定の色の駒に攻撃されているか
+/// マスが特定の色の駒に攻撃されているか（ビットボード版）
+///
+/// - 近接駒（玉・金類・銀・桂・歩・竜の斜め1マス・馬の十字1マス）:
+///   NEAR_ATTACKER_MASK と色別占有の AND で候補マスを絞り、駒種ごとの
+///   オフセット判定で確定する
+/// - 飛び駒（飛/竜・角/馬・香）: レイマスクと全体占有の AND から
+///   最近接ブロッカーをビット演算で求めて駒種判定
 pub fn is_square_attacked(pos: &Position, sq: Square, by_color: Color) -> bool {
-    // 各駒種からの攻撃をチェック
+    let idx = sq.index();
 
-    // 玉からの攻撃
-    for &(df, dr) in &king_offsets() {
-        if check_attacker(pos, sq, df, dr, by_color, PieceKind::King) {
-            return true;
-        }
-    }
-
-    // 金（+成駒）からの攻撃
-    // Note: 非対称駒は逆方向にスキャンする（攻撃者の移動方向の逆 = 相手側のオフセット）
-    for &(df, dr) in &gold_offsets(by_color.opponent()) {
-        if let Some(attacker) = get_piece_at_offset(pos, sq, df, dr) {
-            if attacker.color == by_color
-                && matches!(
-                    attacker.kind,
-                    PieceKind::Gold
-                        | PieceKind::PromotedSilver
-                        | PieceKind::PromotedKnight
-                        | PieceKind::PromotedLance
-                        | PieceKind::PromotedPawn
-                )
-            {
+    // 近接駒からの攻撃
+    let mut near = NEAR_ATTACKER_MASK[idx] & pos.occupancy(by_color);
+    while near != 0 {
+        let a_idx = near.trailing_zeros() as usize;
+        near &= near - 1;
+        if let Some(piece) = pos.piece_at(Square::from_index(a_idx)) {
+            if step_piece_attacks(piece.kind, by_color, a_idx, idx) {
                 return true;
             }
         }
     }
 
-    // 銀からの攻撃
-    for &(df, dr) in &silver_offsets(by_color.opponent()) {
-        if check_attacker(pos, sq, df, dr, by_color, PieceKind::Silver) {
-            return true;
+    // 飛び駒からの攻撃（8方向の最近接ブロッカーのみ判定）
+    // 方向インデックス: 0:(+1,0) 1:(-1,0) 2:(0,+1) 3:(0,-1) 4..7: 斜め
+    let occ_all = pos.occupancy_all();
+    for dir in 0..8 {
+        let Some(b_idx) = nearest_on_ray(occ_all, dir, idx) else {
+            continue;
+        };
+        let Some(piece) = pos.piece_at(Square::from_index(b_idx)) else {
+            continue;
+        };
+        if piece.color != by_color {
+            continue;
         }
-    }
-
-    // 桂からの攻撃
-    for &(df, dr) in &knight_offsets(by_color.opponent()) {
-        if check_attacker(pos, sq, df, dr, by_color, PieceKind::Knight) {
-            return true;
-        }
-    }
-
-    // 歩からの攻撃
-    for &(df, dr) in &pawn_offsets(by_color.opponent()) {
-        if check_attacker(pos, sq, df, dr, by_color, PieceKind::Pawn) {
-            return true;
-        }
-    }
-
-    // 香からの攻撃（縦方向スライド - 逆方向にスキャン）
-    let lance_dr: i8 = if by_color == Color::Sente { 1 } else { -1 };
-    if check_slide_attacker(
-        pos,
-        sq,
-        0,
-        lance_dr,
-        by_color,
-        &[PieceKind::Lance],
-    ) {
-        return true;
-    }
-
-    // 飛車/竜からの攻撃（十字方向）
-    for &(df, dr) in &[(0i8, -1i8), (0, 1), (-1, 0), (1, 0)] {
-        if check_slide_attacker(
-            pos,
-            sq,
-            df,
-            dr,
-            by_color,
-            &[PieceKind::Rook, PieceKind::PromotedRook],
-        ) {
-            return true;
-        }
-    }
-
-    // 角/馬からの攻撃（斜め方向）
-    for &(df, dr) in &[(-1i8, -1i8), (-1, 1), (1, -1), (1, 1)] {
-        if check_slide_attacker(
-            pos,
-            sq,
-            df,
-            dr,
-            by_color,
-            &[PieceKind::Bishop, PieceKind::PromotedBishop],
-        ) {
-            return true;
-        }
-    }
-
-    // 竜の斜め1マス攻撃
-    for &(df, dr) in &[(-1i8, -1i8), (-1, 1), (1, -1), (1, 1)] {
-        if check_attacker(pos, sq, df, dr, by_color, PieceKind::PromotedRook) {
-            return true;
-        }
-    }
-
-    // 馬の十字1マス攻撃
-    for &(df, dr) in &[(0i8, -1i8), (0, 1), (-1, 0), (1, 0)] {
-        if check_attacker(pos, sq, df, dr, by_color, PieceKind::PromotedBishop) {
+        let hit = match dir {
+            // 横方向: 飛/竜
+            0 | 1 => matches!(piece.kind, PieceKind::Rook | PieceKind::PromotedRook),
+            // 縦 (0,+1): 飛/竜 + 先手香（先手香は rank 増加側から rank 減少方向に利く）
+            2 => matches!(piece.kind, PieceKind::Rook | PieceKind::PromotedRook)
+                || (piece.kind == PieceKind::Lance && by_color == Color::Sente),
+            // 縦 (0,-1): 飛/竜 + 後手香
+            3 => matches!(piece.kind, PieceKind::Rook | PieceKind::PromotedRook)
+                || (piece.kind == PieceKind::Lance && by_color == Color::Gote),
+            // 斜め方向: 角/馬
+            _ => matches!(piece.kind, PieceKind::Bishop | PieceKind::PromotedBishop),
+        };
+        if hit {
             return true;
         }
     }
@@ -421,53 +368,29 @@ pub fn is_square_attacked(pos: &Position, sq: Square, by_color: Color) -> bool {
     false
 }
 
-/// オフセット位置に特定の駒があるかチェック
-fn check_attacker(
-    pos: &Position,
-    sq: Square,
-    df: i8,
-    dr: i8,
-    color: Color,
-    kind: PieceKind,
-) -> bool {
-    if let Some(piece) = get_piece_at_offset(pos, sq, df, dr) {
-        piece.color == color && piece.kind == kind
-    } else {
-        false
+/// 近接駒 kind（color 側）が from_idx から to_idx のマスに利いているか
+/// 飛び利き（飛/角/香、竜/馬のスライド部分）はレイ判定側で処理するため対象外
+#[inline]
+fn step_piece_attacks(kind: PieceKind, color: Color, from_idx: usize, to_idx: usize) -> bool {
+    let df = (to_idx / 9) as i8 - (from_idx / 9) as i8;
+    let dr = (to_idx % 9) as i8 - (from_idx % 9) as i8;
+    match kind {
+        PieceKind::King => df.abs() <= 1 && dr.abs() <= 1,
+        PieceKind::Gold
+        | PieceKind::PromotedSilver
+        | PieceKind::PromotedKnight
+        | PieceKind::PromotedLance
+        | PieceKind::PromotedPawn => gold_offsets(color).contains(&(df, dr)),
+        PieceKind::Silver => silver_offsets(color).contains(&(df, dr)),
+        PieceKind::Knight => knight_offsets(color).contains(&(df, dr)),
+        PieceKind::Pawn => pawn_offsets(color).contains(&(df, dr)),
+        // 竜の斜め1マス（十字スライドはレイ判定で処理）
+        PieceKind::PromotedRook => df.abs() == 1 && dr.abs() == 1,
+        // 馬の十字1マス（斜めスライドはレイ判定で処理）
+        PieceKind::PromotedBishop => df.abs() + dr.abs() == 1,
+        // 飛/角/香はレイ判定で処理
+        _ => false,
     }
-}
-
-/// オフセット位置の駒を取得
-fn get_piece_at_offset(pos: &Position, sq: Square, df: i8, dr: i8) -> Option<Piece> {
-    let nf = sq.file as i8 + df;
-    let nr = sq.rank as i8 + dr;
-    if Square::is_valid(nf, nr) {
-        pos.piece_at(Square::new(nf as u8, nr as u8))
-    } else {
-        None
-    }
-}
-
-/// スライド方向に特定の駒があるかチェック
-fn check_slide_attacker(
-    pos: &Position,
-    sq: Square,
-    df: i8,
-    dr: i8,
-    color: Color,
-    kinds: &[PieceKind],
-) -> bool {
-    let mut f = sq.file as i8 + df;
-    let mut r = sq.rank as i8 + dr;
-    while Square::is_valid(f, r) {
-        let check_sq = Square::new(f as u8, r as u8);
-        if let Some(piece) = pos.piece_at(check_sq) {
-            return piece.color == color && kinds.contains(&piece.kind);
-        }
-        f += df;
-        r += dr;
-    }
-    false
 }
 
 /// 王手回避手を生成（王手されている局面専用の高効率合法手生成）

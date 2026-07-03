@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
+use std::rc::Rc;
 
 use super::fasthash::{FxHashMap, FxHashSet, FxHasher};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -419,7 +420,8 @@ pub struct TsuitateDfpnSolver {
     or_candidate_cache: FxHashMap<u64, CachedOrCandidates>,
     /// 局面レベルの合法手キャッシュ: zobrist_hash → 合法手リスト
     /// 同一局面が異なるMetaPositionに出現する場合の重複計算を回避
-    legal_moves_cache: FxHashMap<u64, Vec<Move>>,
+    /// Rc 共有により mid_or ごとの Vec クローンを回避する
+    legal_moves_cache: FxHashMap<u64, Rc<Vec<Move>>>,
     /// 局面レベルの王手手キャッシュ: zobrist_hash → 王手になる手のリスト
     /// 同一局面が異なるMetaPositionに出現する場合の重複計算を回避
     check_moves_cache: FxHashMap<u64, Vec<Move>>,
@@ -711,17 +713,17 @@ impl TsuitateDfpnSolver {
             self.gen_candidates_nanos += gen_start.elapsed().as_nanos() as u64;
             candidates
         };
-        let legal_move_sets: Vec<Vec<Move>> = meta.positions.iter().map(|pos| {
+        let legal_move_sets: Vec<Rc<Vec<Move>>> = meta.positions.iter().map(|pos| {
             let h = pos.zobrist_hash;
             if let Some(cached) = self.legal_moves_cache.get(&h) {
-                return cached.clone();
+                return Rc::clone(cached);
             }
-            let moves = pos.generate_legal_moves();
-            self.legal_moves_cache.insert(h, moves.clone());
+            let moves = Rc::new(pos.generate_legal_moves());
+            self.legal_moves_cache.insert(h, Rc::clone(&moves));
             moves
         }).collect();
         if self.should_stop() {
-            self.or_candidate_cache.insert(hash, CachedOrCandidates { candidates: candidates_raw.clone() });
+            self.or_candidate_cache.insert(hash, CachedOrCandidates { candidates: candidates_raw });
             return;
         }
         let mut candidates = candidates_raw.clone();
@@ -740,7 +742,7 @@ impl TsuitateDfpnSolver {
 
         if candidates.is_empty() {
             self.store_or(hash, INF, 0, INF);
-            self.or_candidate_cache.insert(hash, CachedOrCandidates { candidates: candidates_raw.clone() });
+            self.or_candidate_cache.insert(hash, CachedOrCandidates { candidates: candidates_raw });
             return;
         }
 
@@ -771,7 +773,7 @@ impl TsuitateDfpnSolver {
 
         loop {
             if self.should_stop() {
-                self.or_candidate_cache.insert(hash, CachedOrCandidates { candidates: candidates_raw.clone() });
+                self.or_candidate_cache.insert(hash, CachedOrCandidates { candidates: candidates_raw });
                 return;
             }
 
@@ -846,13 +848,13 @@ impl TsuitateDfpnSolver {
                         }
                     }
                 }
-                self.or_candidate_cache.insert(hash, CachedOrCandidates { candidates: candidates_raw.clone() });
+                self.or_candidate_cache.insert(hash, CachedOrCandidates { candidates: candidates_raw });
                 return;
             }
 
             if pn_n >= pn_limit || dn_n >= dn_limit {
                 self.store_or(hash, pn_n, dn_n, budget_now);
-                self.or_candidate_cache.insert(hash, CachedOrCandidates { candidates: candidates_raw.clone() });
+                self.or_candidate_cache.insert(hash, CachedOrCandidates { candidates: candidates_raw });
                 return;
             }
 
@@ -904,7 +906,7 @@ impl TsuitateDfpnSolver {
         &mut self,
         meta: &MetaPosition,
         mv: Move,
-        legal_move_sets: &[Vec<Move>],
+        legal_move_sets: &[Rc<Vec<Move>>],
         pn_limit: u32,
         dn_limit: u32,
         path: &mut Vec<u64>,
@@ -1312,7 +1314,7 @@ impl TsuitateDfpnSolver {
     fn generate_attack_candidates(
         &mut self,
         meta: &MetaPosition,
-    ) -> (Vec<Move>, Vec<Vec<Move>>) {
+    ) -> (Vec<Move>, Vec<Rc<Vec<Move>>>) {
         if meta.positions.is_empty() {
             return (Vec::new(), Vec::new());
         }
@@ -1321,22 +1323,22 @@ impl TsuitateDfpnSolver {
         self.gen_candidates_calls += 1;
         self.gen_candidates_total_positions += n as u64;
 
-        // 各盤面の合法手セットを事前計算（局面レベルのキャッシュを活用）
-        let legal_move_sets: Vec<Vec<Move>> = meta
+        // 各盤面の合法手セットを事前計算（局面レベルのキャッシュを活用、Rc共有）
+        let legal_move_sets: Vec<Rc<Vec<Move>>> = meta
             .positions
             .iter()
             .map(|pos| {
                 if self.is_cancelled() {
-                    return Vec::new();
+                    return Rc::new(Vec::new());
                 }
                 let hash = pos.zobrist_hash;
                 if let Some(cached) = self.legal_moves_cache.get(&hash) {
                     self.legal_moves_cache_hits += 1;
-                    return cached.clone();
+                    return Rc::clone(cached);
                 }
                 self.legal_moves_cache_misses += 1;
-                let moves = pos.generate_legal_moves();
-                self.legal_moves_cache.insert(hash, moves.clone());
+                let moves = Rc::new(pos.generate_legal_moves());
+                self.legal_moves_cache.insert(hash, Rc::clone(&moves));
                 moves
             })
             .collect();
@@ -1370,7 +1372,7 @@ impl TsuitateDfpnSolver {
             let discovery_sqs = compute_discovery_squares(pos, ksq, attacker);
             let mut test_pos = pos.clone();
             let mut pos_checks = Vec::new();
-            for mv in &legal_move_sets[i] {
+            for mv in legal_move_sets[i].iter() {
                 // 玉を取る手は王手ではない
                 if mv.to == ksq {
                     continue;
@@ -1496,7 +1498,7 @@ impl TsuitateDfpnSolver {
         // プローブ手: 一部の盤面でのみ合法な手
         let mut move_counts: FxHashMap<Move, usize> = FxHashMap::default();
         for legal_set in &legal_move_sets {
-            for mv in legal_set {
+            for mv in legal_set.iter() {
                 *move_counts.entry(*mv).or_insert(0) += 1;
             }
         }

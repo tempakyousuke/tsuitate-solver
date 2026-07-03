@@ -136,10 +136,11 @@ impl MetaPosition {
     /// 攻め方の手を指す（合法/不正に分割、事前計算された合法手セットを使用）
     /// generate_attack_candidates で既に計算された合法手セットを再利用し、
     /// 重複する generate_legal_moves 呼び出しを回避する
-    pub fn apply_attack_move_split_with_sets(
+    /// S は Vec<Move> と Rc<Vec<Move>> の両方を受け付ける（Borrow 経由）
+    pub fn apply_attack_move_split_with_sets<S: std::borrow::Borrow<Vec<Move>>>(
         &self,
         mv: Move,
-        legal_move_sets: &[Vec<Move>],
+        legal_move_sets: &[S],
     ) -> (MetaPosition, MetaPosition) {
         let mut legal_positions = Vec::new();
         let mut illegal_positions = Vec::new();
@@ -148,7 +149,7 @@ impl MetaPosition {
         let mut illegal_seen: FxHashSet<u64> = FxHashSet::default();
 
         for (i, pos) in self.positions.iter().enumerate() {
-            if legal_move_sets[i].contains(&mv) {
+            if legal_move_sets[i].borrow().contains(&mv) {
                 let mut new_pos = pos.clone();
                 new_pos.make_move(mv);
                 if legal_seen.insert(new_pos.zobrist_hash) {

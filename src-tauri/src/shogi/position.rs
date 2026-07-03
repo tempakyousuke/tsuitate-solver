@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 
+use super::bitboard::Bitboard;
 use super::movegen;
 use super::types::*;
 
@@ -125,6 +126,8 @@ pub struct Position {
     zobrist_sente_hand: u64,
     /// Zobrist ハッシュの後手持ち駒コンポーネント
     zobrist_gote_hand: u64,
+    /// 色別の占有ビットボード [先手, 後手]（board と常に同期、set_piece/remove_piece で更新）
+    occupancy: [Bitboard; 2],
 }
 
 impl Hash for Position {
@@ -173,23 +176,54 @@ impl Position {
             zobrist_hash: sente_hand_hash ^ gote_hand_hash,
             zobrist_sente_hand: sente_hand_hash,
             zobrist_gote_hand: gote_hand_hash,
+            occupancy: [0, 0],
         }
     }
 
+    #[inline]
+    const fn occ_index(color: Color) -> usize {
+        match color {
+            Color::Sente => 0,
+            Color::Gote => 1,
+        }
+    }
+
+    /// 指定した色の占有ビットボード
+    #[inline]
+    pub fn occupancy(&self, color: Color) -> Bitboard {
+        self.occupancy[Self::occ_index(color)]
+    }
+
+    /// 全駒の占有ビットボード
+    #[inline]
+    pub fn occupancy_all(&self) -> Bitboard {
+        self.occupancy[0] | self.occupancy[1]
+    }
+
     /// マス目の駒を取得
+    #[inline]
     pub fn piece_at(&self, sq: Square) -> Option<Piece> {
         self.board[sq.index()]
     }
 
     /// 駒を配置
     pub fn set_piece(&mut self, sq: Square, piece: Piece) {
-        self.board[sq.index()] = Some(piece);
+        let idx = sq.index();
+        if let Some(old) = self.board[idx] {
+            self.occupancy[Self::occ_index(old.color)] &= !(1u128 << idx);
+        }
+        self.board[idx] = Some(piece);
+        self.occupancy[Self::occ_index(piece.color)] |= 1u128 << idx;
     }
 
     /// 駒を除去
     pub fn remove_piece(&mut self, sq: Square) -> Option<Piece> {
-        let piece = self.board[sq.index()];
-        self.board[sq.index()] = None;
+        let idx = sq.index();
+        let piece = self.board[idx];
+        if let Some(p) = piece {
+            self.occupancy[Self::occ_index(p.color)] &= !(1u128 << idx);
+        }
+        self.board[idx] = None;
         piece
     }
 
@@ -211,9 +245,12 @@ impl Position {
 
     /// 指定した色の玉の位置を探す
     pub fn find_king(&self, color: Color) -> Option<Square> {
-        for idx in 0..81 {
+        let mut bb = self.occupancy(color);
+        while bb != 0 {
+            let idx = bb.trailing_zeros() as usize;
+            bb &= bb - 1;
             if let Some(piece) = self.board[idx] {
-                if piece.color == color && piece.kind == PieceKind::King {
+                if piece.kind == PieceKind::King {
                     return Some(Square::from_index(idx));
                 }
             }
