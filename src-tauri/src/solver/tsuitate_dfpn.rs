@@ -450,6 +450,15 @@ pub struct TsuitateDfpnSolver {
     pub legal_moves_cache_misses: u64,
     /// 診断: try_replay_proof の累計時間 (ナノ秒)
     pub replay_nanos: u64,
+    /// 優越関係チェックの抑制フラグ（証明の実体化再探索中に使用）
+    /// 優越関係で証明されたノードは子の証明が転置表に残らず抽出できないため、
+    /// 実体化のための再探索では優越関係による即時証明を無効にする
+    dominance_suppressed: bool,
+    /// 余詰めチェックの除外探索が打ち切られた（ノード上限・時間切れ）
+    /// true の場合「余詰めなし」は確定ではなく判定不能として報告する
+    second_search_aborted: bool,
+    /// 余詰めチェックの除外探索1回あたりのノード上限（find_second_solution で設定）
+    second_probe_cap: u64,
 }
 
 impl TsuitateDfpnSolver {
@@ -488,6 +497,9 @@ impl TsuitateDfpnSolver {
             legal_moves_cache_hits: 0,
             legal_moves_cache_misses: 0,
             replay_nanos: 0,
+            dominance_suppressed: false,
+            second_search_aborted: false,
+            second_probe_cap: u64::MAX,
         }
     }
 
@@ -497,7 +509,7 @@ impl TsuitateDfpnSolver {
         self.root_hash = Some(hash);
         let mut path = vec![hash];
 
-        self.mid_or(meta, INF, INF, &mut path, 0);
+        self.mid_or(meta, hash, INF, INF, &mut path, 0);
 
         let budget = self.current_budget(0);
         let (pn, dn) = self
@@ -582,16 +594,19 @@ impl TsuitateDfpnSolver {
     /// OR ノード（攻め方）: 候補手から1つでも詰みに導ければ成功
     ///
     /// pn = min{pn_c}, dn = sum{dn_c}
+    ///
+    /// hash は meta_position_hash(meta) の事前計算値（呼び出し元が既に持って
+    /// いるため再計算を避ける。巨大メタポジションではハッシュ計算が重い）
     fn mid_or(
         &mut self,
         meta: &MetaPosition,
+        hash: u64,
         pn_limit: u32,
         dn_limit: u32,
         path: &mut Vec<u64>,
         depth: u32,
     ) {
         self.nodes_searched += 1;
-        let hash = meta_position_hash(meta);
         let budget_now = self.current_budget(depth);
 
         // MetaPosition サイズ記録
@@ -641,7 +656,8 @@ impl TsuitateDfpnSolver {
 
         // 優越関係チェック: proof_hand <= sente_hand (要素ごと) かつ予算が足りる場合
         // 同じ盤面セット + 同じ gote_hand で、sente_hand が proof_hand 以上なら証明済み
-        if !exclusions_at_root && !meta.positions.is_empty() {
+        // （実体化再探索中は抑制: 子の証明を転置表に残すため）
+        if !exclusions_at_root && !self.dominance_suppressed && !meta.positions.is_empty() {
             let board_hash = meta_board_set_hash(meta);
             let sente_hand = meta.positions[0].hand(Color::Sente).counts_array();
             let matched = self.dominance_table.get(&board_hash).and_then(|entries| {
@@ -878,6 +894,7 @@ impl TsuitateDfpnSolver {
             let best_mv = children[best_idx].0;
             self.mid_and(
                 meta,
+                hash,
                 best_mv,
                 &legal_move_sets,
                 child_pn_limit,
@@ -902,9 +919,13 @@ impl TsuitateDfpnSolver {
     ///
     /// pn = sum{pn_c}, dn = min{dn_c}
     /// 分岐は最大4つ: Illegal, Checkmate, Captured, NoCapture
+    ///
+    /// meta_hash は meta_position_hash(meta) の事前計算値
+    #[allow(clippy::too_many_arguments)]
     fn mid_and(
         &mut self,
         meta: &MetaPosition,
+        meta_hash: u64,
         mv: Move,
         legal_move_sets: &[Rc<Vec<Move>>],
         pn_limit: u32,
@@ -913,7 +934,6 @@ impl TsuitateDfpnSolver {
         depth: u32,
     ) {
         self.mid_and_calls += 1;
-        let meta_hash = meta_position_hash(meta);
         let and_key = Self::and_key(meta_hash, &mv);
         let budget_now = self.current_budget(depth);
 
@@ -1142,6 +1162,7 @@ impl TsuitateDfpnSolver {
             path.push(child_hash);
             self.mid_or(
                 &expansion.obs_metas[best_idx],
+                child_hash,
                 child_pn_limit,
                 child_dn_limit,
                 path,
@@ -1566,12 +1587,9 @@ impl TsuitateDfpnSolver {
                 // find_second_solution は self.nodes_searched を first_phase_nodes として使うため、
                 // shorten 分を含めた累計値を設定しておく
                 self.nodes_searched = nodes_before_second;
-                // 最短経路探索後は転置表に深さ制限付きの反証エントリが残るため、
-                // 一意性プレチェック（転置表ベース）は使えない
-                let allow_precheck = !find_shortest;
                 let (second_tree, kizu_trees, total_nodes, second_msg) = if find_second {
                     if let Some(ref t) = tree {
-                        self.find_second_solution(meta, t, allow_precheck)
+                        self.find_second_solution(meta, t)
                     } else {
                         (None, vec![], nodes_before_second, String::new())
                     }
@@ -1590,6 +1608,11 @@ impl TsuitateDfpnSolver {
                     format!(
                         "余詰めあり: {}手詰めと{}手詰めが見つかりました (探索ノード数: {}{})",
                         depth, second_depth, total_nodes, kizu_suffix
+                    )
+                } else if find_second && second_msg == "aborted" {
+                    format!(
+                        "{}手詰めが見つかりました（余詰め探索打ち切り・判定不能{}、探索ノード数: {}）",
+                        depth, kizu_suffix, total_nodes
                     )
                 } else if find_second && !second_msg.is_empty() {
                     if kizu_trees.is_empty() {
@@ -1757,119 +1780,6 @@ impl TsuitateDfpnSolver {
         }
     }
 
-    /// 最長応手経路上の全ORノードで証明手が一意かどうかをチェックする
-    ///
-    /// 初回solve後、テーブルをクリアする前に呼び出す。
-    /// 解の手順木をルートから最長応手分岐に沿って走査し、各ORノードで
-    /// ANDテーブルの pn==0 の手を数える。いずれかの最長経路上で全ORノードが
-    /// 一意（proven_count <= 1）であれば true を返す。
-    ///
-    /// extract_solution で保存された meta_hash を使用してANDテーブルを参照するため、
-    /// MetaPosition の再構築が不要。
-    fn has_unique_longest_path(&self, meta: &MetaPosition, node: &SolutionNode) -> bool {
-        self.check_unique_longest_recursive(meta, node)
-    }
-
-    fn check_unique_longest_recursive(
-        &self,
-        meta: &MetaPosition,
-        node: &SolutionNode,
-    ) -> bool {
-        let (mv_data, branches, meta_hash) = match node {
-            SolutionNode::Checkmate { .. } => return true,
-            SolutionNode::AttackMove { mv, branches, meta_hash } => (mv, branches, *meta_hash),
-        };
-
-        // 最終手は対象外（最終手余詰は余詰と見なさない）
-        if node.is_final_move() {
-            return true;
-        }
-
-        // extract_solution で保存された meta_hash を使用
-        // meta_hash がない場合（旧ソルバー等）は MetaPosition から計算
-        let hash = meta_hash.unwrap_or_else(|| meta_position_hash(meta));
-
-        // meta_hash がある場合はそれを使ってANDテーブルのみで証明手数を確認
-        // （MetaPosition から合法手を生成して全候補をチェックする）
-        let legal_move_sets: Vec<Vec<Move>> = meta
-            .positions
-            .iter()
-            .map(|pos| pos.generate_legal_moves())
-            .collect();
-
-        let mut seen = FxHashSet::default();
-        let mut all_moves = Vec::new();
-        for set in &legal_move_sets {
-            for mv in set {
-                if seen.insert(*mv) {
-                    all_moves.push(*mv);
-                }
-            }
-        }
-
-        // ANDテーブルで証明済みの手を数える
-        let proven_count = all_moves.iter().filter(|mv| {
-            let ak = Self::and_key(hash, mv);
-            self.and_table.get(&ak).map_or(false, |e| e.proven_bound().is_some())
-        }).count();
-
-        if proven_count > 1 {
-            return false; // 複数の証明手がある → 一意でない
-        }
-
-        // 最長分岐の深さを計算
-        let max_depth = node.max_moves();
-
-        // 最長分岐のみ再帰
-        // 子ノードの MetaPosition は extract_solution で meta_hash が保存されているため、
-        // MetaPosition 再構築の代わりに meta_hash を直接参照する。
-        // ただし子ノードの合法手生成には MetaPosition が必要なので、
-        // 再構築可能な場合のみ再帰する。再構築できない場合は保守的に false を返す。
-        let mv = Self::move_data_to_move(mv_data);
-        let (legal_meta, illegal_meta) = if !meta.is_empty() {
-            meta.apply_attack_move_split_fast(mv)
-        } else {
-            // meta が空の場合、子ノードの MetaPosition を再構築できないが、
-            // 子ノードに meta_hash があれば AND テーブルのハッシュ参照は可能。
-            // ただし合法手リスト生成ができないため保守的に false を返す。
-            return false;
-        };
-
-        let obs_metas: Vec<(Observation, MetaPosition)> =
-            if !legal_meta.is_empty() && !legal_meta.all_effectively_checkmate() {
-                let raw = legal_meta.expand_defense_moves(mv);
-                Self::merge_observation_branches(raw)
-            } else {
-                vec![]
-            };
-
-        for branch in branches {
-            let branch_depth = match branch.observation {
-                Observation::Checkmate => 1,
-                Observation::Illegal => branch.continuation.max_moves(),
-                _ => 2 + branch.continuation.max_moves(),
-            };
-            if branch_depth < max_depth {
-                continue; // 最長ではない分岐はスキップ
-            }
-
-            let child_meta = match &branch.observation {
-                Observation::Checkmate => continue,
-                Observation::Illegal => illegal_meta.clone(),
-                obs => match obs_metas.iter().find(|(o, _)| o == obs) {
-                    Some((_, m)) => m.clone(),
-                    None => continue, // 再構築不可 → この分岐をスキップ
-                },
-            };
-
-            if self.check_unique_longest_recursive(&child_meta, &branch.continuation) {
-                return true;
-            }
-        }
-
-        false
-    }
-
     /// キズ（許容余詰め）の判定
     ///
     /// 主解の手と別解の手が両方ともプローブ手（Illegal分岐を持つ）である場合、
@@ -1890,7 +1800,6 @@ impl TsuitateDfpnSolver {
         &mut self,
         meta: &MetaPosition,
         first_tree: &SolutionNode,
-        allow_precheck: bool,
     ) -> (Option<SolutionNode>, Vec<SolutionNode>, u64, String) {
         let first_mv = match first_tree {
             SolutionNode::AttackMove { mv, .. } => Self::move_data_to_move(mv),
@@ -1899,26 +1808,40 @@ impl TsuitateDfpnSolver {
             }
         };
 
-        // プレチェック: 最長応手経路の一意性を確認
-        // 深さ制限付きプローブが走っていない（転置表の反証が全て無制限探索由来の）
-        // 場合のみ有効。最短経路探索後は呼び出し側が allow_precheck=false にする。
+        // 注: 以前はここで「最長応手経路上の証明手の一意性」プレチェック
+        // （has_unique_longest_path）により早期リターンしていたが、
+        // 「転置表に証明済みの手が1つしかない」ことは「別手順が存在しない」
+        // ことを意味しないため不健全（初回探索が偶発的に別手を証明したか
+        // どうかで判定が変わり、実際に余詰めのある問題92を完全作と誤答した）。
+        // 除外プローブにノード上限が付いたため、常に実探索で確認する。
         let root_hash = meta_position_hash(meta);
-        let root_proven = self
-            .or_table
-            .get(&root_hash)
-            .map_or(false, |e| e.proven_bound().is_some());
-        if allow_precheck && root_proven && self.has_unique_longest_path(meta, first_tree) {
-            return (None, vec![], self.nodes_searched, "unique_longest_path".to_string());
-        }
 
         let first_hashes = first_tree.collect_attack_subtree_hashes();
         let initial_nodes = self.nodes_searched;
         let mut kizu_trees: Vec<SolutionNode> = vec![];
+        self.second_search_aborted = false;
+        self.second_probe_cap = self.second_probe_node_cap(initial_nodes);
+
+        // Phase 0: 転置表の既存証明から別手順を直接抽出する
+        // 初回探索が偶発的に複数の手を証明している場合（プレチェックが
+        // 一意でないと判定した場合）、除外付き再探索なしで別手順が見つかる。
+        // 問題によっては除外付き再探索が極端に高コスト（数百秒）になるため、
+        // まずテーブルだけで抽出を試みる。
+        if let Some(alt) = self.find_table_alternative(
+            meta, first_tree, &first_hashes, &mut kizu_trees, 0,
+        ) {
+            if std::env::var("SECOND_DEBUG").is_ok() {
+                eprintln!("[second] phase0 found table alternative");
+            }
+            return (Some(alt), kizu_trees, self.nodes_searched, "found_table".to_string());
+        }
 
         // Phase 1: 初手除外で再探索
         // 転置表・キャッシュは保持する: ルート以外のエントリと証明成果物
         // （dominance, proof_cache 等）は除外条件に依存しないため再利用できる。
-        // ルートの or エントリのみ除外条件に依存するため探索後に削除する。
+        // ルートの or エントリのみ除外条件に依存するため、探索の前後で削除する。
+        // （事前削除は必須: 残したまま探索が打ち切られると、solve() が
+        //   初回探索の証明＝除外手を使った証明を読んで偽の Proven を返す）
         let mut excluded = vec![first_mv];
         if first_mv.from.is_some() {
             let mut counterpart = first_mv;
@@ -1926,11 +1849,26 @@ impl TsuitateDfpnSolver {
             excluded.push(counterpart);
         }
 
+        self.or_table.remove(&root_hash);
         self.nodes_searched = 0;
         self.excluded_root_moves = excluded;
 
+        let saved_limit = self.node_limit;
+        self.node_limit = saved_limit.min(self.second_probe_cap);
+        let phase1_start = std::time::Instant::now();
         let result = self.solve(meta);
+        self.node_limit = saved_limit;
+        if result == TsuitateDfpnResult::Unknown {
+            self.second_search_aborted = true;
+        }
         let mut total_nodes = initial_nodes + self.nodes_searched;
+        if std::env::var("SECOND_DEBUG").is_ok() {
+            eprintln!(
+                "[second] phase1 exclude={:?} result={:?} nodes={} time={:.3}s",
+                first_mv, result, self.nodes_searched,
+                phase1_start.elapsed().as_secs_f64(),
+            );
+        }
 
         // 抽出はルート除外フィルタが効くよう excluded_root_moves を保持したまま行う
         let second_tree = if result == TsuitateDfpnResult::Proven {
@@ -1941,6 +1879,17 @@ impl TsuitateDfpnSolver {
         self.excluded_root_moves.clear();
         self.or_table.remove(&root_hash);
 
+        if std::env::var("SECOND_DEBUG").is_ok() {
+            match &second_tree {
+                None => eprintln!("[second] phase1 discard: extraction=None"),
+                Some(t) => eprintln!(
+                    "[second] phase1 tree: depth={} subsumed={} kizu={}",
+                    t.max_moves(),
+                    t.is_subsumed_by(&first_hashes),
+                    Self::is_kizu(first_tree, t),
+                ),
+            }
+        }
         if let Some(ref second) = second_tree {
             if !second.is_subsumed_by(&first_hashes) {
                 if Self::is_kizu(first_tree, second) {
@@ -1960,8 +1909,164 @@ impl TsuitateDfpnSolver {
             return (Some(alt_tree), kizu_trees, total_nodes, "found".to_string());
         }
 
-        let method = if kizu_trees.is_empty() { "not_found" } else { "kizu_only" };
+        // 打ち切られた除外探索がある場合、「余詰めなし」は確定ではない
+        let method = if self.second_search_aborted {
+            "aborted"
+        } else if kizu_trees.is_empty() {
+            "not_found"
+        } else {
+            "kizu_only"
+        };
         (None, kizu_trees, total_nodes, method.to_string())
+    }
+
+    /// 余詰めチェックの除外探索1回あたりのノード上限
+    /// 初回探索の規模に比例させ、極端に難しい除外探索（存在しない別解の反証）で
+    /// 制限時間全体を消費しないようにする。上限到達時は判定不能として報告される。
+    fn second_probe_node_cap(&self, first_solve_nodes: u64) -> u64 {
+        first_solve_nodes.saturating_mul(4).max(100_000)
+    }
+
+    /// 転置表に既にある証明だけで別手順（余詰め）を探す（Phase 0）
+    ///
+    /// 1つ目の解の手順木を最長応手分岐に沿って辿り、各 OR ノードで
+    /// 主解と異なる証明済みの手（AND テーブルで pn=0）を探して抽出する。
+    /// 初回探索が偶発的に複数の手を証明していた場合、除外付き再探索なしで
+    /// 別手順が得られる。抽出は自己修復（実体化）付き。
+    fn find_table_alternative(
+        &mut self,
+        meta: &MetaPosition,
+        node: &SolutionNode,
+        first_hashes: &HashSet<u64>,
+        kizu_trees: &mut Vec<SolutionNode>,
+        depth: u32,
+    ) -> Option<SolutionNode> {
+        if self.should_stop() {
+            return None;
+        }
+        let (mv_data, branches) = match node {
+            SolutionNode::Checkmate { .. } => return None,
+            SolutionNode::AttackMove { mv, branches, .. } => (mv, branches),
+        };
+        let chosen = Self::move_data_to_move(mv_data);
+
+        // このノードで転置表上の別の証明手を探す（最終手は余詰の対象外）
+        if !node.is_final_move() && !meta.is_empty() {
+            let hash = meta_position_hash(meta);
+            let budget_now = self.current_budget(depth);
+
+            let legal_move_sets: Vec<Vec<Move>> = meta
+                .positions
+                .iter()
+                .map(|pos| pos.generate_legal_moves())
+                .collect();
+            let mut seen = FxHashSet::default();
+            let mut all_moves = Vec::new();
+            for set in &legal_move_sets {
+                for mv in set {
+                    if seen.insert(*mv) {
+                        all_moves.push(*mv);
+                    }
+                }
+            }
+
+            for mv in &all_moves {
+                // 主解の手（成/不成違いを含む）は対象外
+                if mv.from == chosen.from
+                    && mv.to == chosen.to
+                    && mv.drop_piece == chosen.drop_piece
+                {
+                    continue;
+                }
+                let ak = Self::and_key(hash, mv);
+                let and_proven = self
+                    .and_table
+                    .get(&ak)
+                    .and_then(|e| e.proven_bound())
+                    .map_or(false, |k| k <= budget_now);
+                if !and_proven {
+                    continue;
+                }
+                let extracted = self.extract_and(meta, *mv, &legal_move_sets, depth);
+                if std::env::var("SECOND_DEBUG").is_ok() {
+                    eprintln!(
+                        "[second] phase0 candidate depth={} chosen={} alt={:?} extract_ok={}",
+                        depth, mv_data.notation, mv, extracted.is_some(),
+                    );
+                }
+                if let Some(alt_branches) = extracted {
+                    let alt = SolutionNode::AttackMove {
+                        mv: MoveData::from_move(*mv, Color::Sente),
+                        branches: alt_branches,
+                        meta_hash: Some(hash),
+                    };
+                    let subsumed = alt.is_subsumed_by(first_hashes);
+                    let kizu = Self::is_kizu(node, &alt);
+                    if std::env::var("SECOND_DEBUG").is_ok() {
+                        eprintln!(
+                            "[second] phase0 extracted alt_depth={} subsumed={} kizu={}",
+                            alt.max_moves(), subsumed, kizu,
+                        );
+                    }
+                    if !subsumed {
+                        if kizu {
+                            kizu_trees.push(alt);
+                        } else {
+                            return Some(alt);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 最長応手分岐のみ子へ再帰（find_inner_alt_recursive と同じ走査）
+        let (legal_meta, illegal_meta) = meta.apply_attack_move_split_fast(chosen);
+        let obs_metas: Vec<(Observation, MetaPosition)> =
+            if !legal_meta.is_empty() && !legal_meta.all_effectively_checkmate() {
+                let raw = legal_meta.expand_defense_moves(chosen);
+                Self::merge_observation_branches(raw)
+            } else {
+                vec![]
+            };
+
+        let max_depth = node.max_moves();
+        for (branch_idx, branch) in branches.iter().enumerate() {
+            let branch_depth = match branch.observation {
+                Observation::Checkmate => 1,
+                Observation::Illegal => branch.continuation.max_moves(),
+                _ => 2 + branch.continuation.max_moves(),
+            };
+            if branch_depth < max_depth {
+                continue;
+            }
+
+            let (child_meta, child_depth) = match &branch.observation {
+                Observation::Checkmate => continue,
+                Observation::Illegal => (illegal_meta.clone(), depth),
+                obs => match obs_metas.iter().find(|(o, _)| o == obs) {
+                    Some((_, m)) => (m.clone(), depth + 2),
+                    None => continue,
+                },
+            };
+
+            if let Some(alt_sub) = self.find_table_alternative(
+                &child_meta,
+                &branch.continuation,
+                first_hashes,
+                kizu_trees,
+                child_depth,
+            ) {
+                let mut new_branches = branches.clone();
+                new_branches[branch_idx].continuation = Box::new(alt_sub);
+                return Some(SolutionNode::AttackMove {
+                    mv: mv_data.clone(),
+                    branches: new_branches,
+                    meta_hash: None,
+                });
+            }
+        }
+
+        None
     }
 
     /// 手順木の内部ORノードで余詰め（別手順）を探す
@@ -2124,11 +2229,29 @@ impl TsuitateDfpnSolver {
         }
 
         // 転置表・キャッシュは保持（find_second_solution Phase 1 と同じ理由）
+        // ルートの or エントリは除外条件に依存するため探索の前後で削除する
+        // （事前削除は必須: 打ち切り時に既存の証明を読んで偽の Proven になる）
+        let probe_root_hash = meta_position_hash(meta);
+        self.or_table.remove(&probe_root_hash);
         self.nodes_searched = 0;
         self.excluded_root_moves = excluded;
 
+        let saved_limit = self.node_limit;
+        self.node_limit = saved_limit.min(self.second_probe_cap);
+        let probe_start = std::time::Instant::now();
         let result = self.solve(meta);
+        self.node_limit = saved_limit;
+        if result == TsuitateDfpnResult::Unknown {
+            self.second_search_aborted = true;
+        }
         *total_nodes += self.nodes_searched;
+        if std::env::var("SECOND_DEBUG").is_ok() {
+            eprintln!(
+                "[second] exclude={:?} meta_size={} result={:?} nodes={} time={:.3}s",
+                excluded_move, meta.positions.len(), result, self.nodes_searched,
+                probe_start.elapsed().as_secs_f64(),
+            );
+        }
 
         // 抽出はルート除外フィルタが効くよう excluded_root_moves を保持したまま行う
         let ret = match result {
@@ -2142,19 +2265,44 @@ impl TsuitateDfpnSolver {
             _ => None,
         };
         self.excluded_root_moves.clear();
-        // ルートの or エントリは除外条件に依存するため削除
-        // （後続の探索で通常ノードとして参照されると誤った反証になる）
-        self.or_table.remove(&meta_position_hash(meta));
+        self.or_table.remove(&probe_root_hash);
         ret
     }
 
     /// 証明木を抽出する（solve() で Proven になった後に呼ぶ）
-    pub fn extract_solution(&self, meta: &MetaPosition) -> Option<SolutionNode> {
-        self.extract_or(meta, 0)
+    ///
+    /// 抽出が完全に失敗した場合（優越関係などで「証明済み」の記録だけがあり、
+    /// 子の証明が転置表に実体化されていない場合）は、優越関係を抑制した
+    /// 限定再探索で証明を実体化してから1回だけ再試行する（自己修復）。
+    /// 実体化はトップレベルでのみ行う: 再帰中の各ノードで行うと、抽出の
+    /// 通常の失敗パス（親が別の手を試すための None）でも発火して激重になる。
+    pub fn extract_solution(&mut self, meta: &MetaPosition) -> Option<SolutionNode> {
+        if let Some(tree) = self.extract_or(meta, 0) {
+            return Some(tree);
+        }
+        if meta.is_empty() {
+            return None;
+        }
+        let hash = meta_position_hash(meta);
+        let proven = self
+            .or_table
+            .get(&hash)
+            .and_then(|e| e.proven_bound())
+            .map_or(false, |k| k <= self.current_budget(0));
+        if !proven {
+            return None;
+        }
+        if self.materialize_proof(meta, hash, 0) {
+            return self.extract_or(meta, 0);
+        }
+        None
     }
 
+    /// 証明の実体化再探索のノード上限
+    const MATERIALIZE_NODE_BUDGET: u64 = 1_000_000;
+
     /// OR ノードから証明木を抽出する
-    fn extract_or(&self, meta: &MetaPosition, depth: u32) -> Option<SolutionNode> {
+    fn extract_or(&mut self, meta: &MetaPosition, depth: u32) -> Option<SolutionNode> {
         if meta.is_empty() {
             return None;
         }
@@ -2164,8 +2312,12 @@ impl TsuitateDfpnSolver {
 
         let hash = meta_position_hash(meta);
         let budget_now = self.current_budget(depth);
-        let entry = self.or_table.get(&hash)?;
-        if !entry.proven_bound().map_or(false, |k| k <= budget_now) {
+        let proven = self
+            .or_table
+            .get(&hash)
+            .and_then(|e| e.proven_bound())
+            .map_or(false, |k| k <= budget_now);
+        if !proven {
             return None; // 証明されていない（または現在の深さ予算では未証明）
         }
 
@@ -2205,34 +2357,52 @@ impl TsuitateDfpnSolver {
         let at_root_with_exclusions =
             self.root_hash == Some(hash) && !self.excluded_root_moves.is_empty();
 
+        self.extract_or_move(
+            meta, hash, depth, budget_now, &legal_move_sets, &all_moves, at_root_with_exclusions,
+        )
+    }
+
+    /// 転置表から証明された手を探して抽出する（extract_or の本体）
+    #[allow(clippy::too_many_arguments)]
+    fn extract_or_move(
+        &mut self,
+        meta: &MetaPosition,
+        hash: u64,
+        depth: u32,
+        budget_now: u32,
+        legal_move_sets: &[Vec<Move>],
+        all_moves: &[Move],
+        at_root_with_exclusions: bool,
+    ) -> Option<SolutionNode> {
         // AND テーブルで pn=0 の手を探す
-        for mv in &all_moves {
+        for mv in all_moves {
             if at_root_with_exclusions && self.is_excluded_root_move(mv) {
                 continue;
             }
             let ak = Self::and_key(hash, mv);
-            if let Some(and_entry) = self.and_table.get(&ak) {
-                if and_entry.proven_bound().map_or(false, |k| k <= budget_now) {
-                    if let Some(branches) =
-                        self.extract_and(meta, *mv, &legal_move_sets, depth)
-                    {
-                        return Some(SolutionNode::AttackMove {
-                            mv: MoveData::from_move(*mv, Color::Sente),
-                            branches,
-                            meta_hash: Some(hash),
-                        });
-                    }
+            let and_proven = self
+                .and_table
+                .get(&ak)
+                .and_then(|e| e.proven_bound())
+                .map_or(false, |k| k <= budget_now);
+            if and_proven {
+                if let Some(branches) = self.extract_and(meta, *mv, legal_move_sets, depth) {
+                    return Some(SolutionNode::AttackMove {
+                        mv: MoveData::from_move(*mv, Color::Sente),
+                        branches,
+                        meta_hash: Some(hash),
+                    });
                 }
             }
         }
 
         // AND テーブルで見つからない場合（優越関係で証明されたノード）
         // 各候補手で直接 extract_and を試す
-        for mv in &all_moves {
+        for mv in all_moves {
             if at_root_with_exclusions && self.is_excluded_root_move(mv) {
                 continue;
             }
-            if let Some(branches) = self.extract_and(meta, *mv, &legal_move_sets, depth) {
+            if let Some(branches) = self.extract_and(meta, *mv, legal_move_sets, depth) {
                 return Some(SolutionNode::AttackMove {
                     mv: MoveData::from_move(*mv, Color::Sente),
                     branches,
@@ -2243,9 +2413,31 @@ impl TsuitateDfpnSolver {
         None
     }
 
+    /// 証明の実体化: 優越関係チェックを抑制したノード上限付き再探索で、
+    /// このノードの証明木（子ノードの証明エントリ）を転置表に展開する。
+    /// 再探索内の証明木リプレイは有効なため、リプレイ可能ならそちらで実体化される。
+    fn materialize_proof(&mut self, meta: &MetaPosition, hash: u64, depth: u32) -> bool {
+        if self.should_stop() {
+            return false;
+        }
+
+        let saved_limit = self.node_limit;
+        self.node_limit = saved_limit
+            .min(self.nodes_searched.saturating_add(Self::MATERIALIZE_NODE_BUDGET));
+        let saved_suppress = self.dominance_suppressed;
+        self.dominance_suppressed = true;
+
+        let mut path = vec![hash];
+        self.mid_or(meta, hash, INF, INF, &mut path, depth);
+
+        self.dominance_suppressed = saved_suppress;
+        self.node_limit = saved_limit;
+        true
+    }
+
     /// AND ノード（観測分岐）から証明木を抽出する
     fn extract_and(
-        &self,
+        &mut self,
         meta: &MetaPosition,
         mv: Move,
         legal_move_sets: &[Vec<Move>],
