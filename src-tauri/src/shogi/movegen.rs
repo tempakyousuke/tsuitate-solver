@@ -1,18 +1,31 @@
-use super::bitboard::{nearest_on_ray, NEAR_ATTACKER_MASK};
+use super::bitboard::{
+    nearest_on_ray, slide_targets, Bitboard, ALL_MASK, DIAG_STEPS, FILE_MASK, GOLD_STEPS,
+    KING_STEPS, KNIGHT_STEPS, NEAR_ATTACKER_MASK, ORTHO_STEPS, PAWN_STEPS, RANK_MASK,
+    SILVER_STEPS,
+};
 use super::position::Position;
 use super::types::*;
 
-/// 擬似合法手を生成（自玉の安全は確認しない）
+#[inline]
+const fn color_index(color: Color) -> usize {
+    match color {
+        Color::Sente => 0,
+        Color::Gote => 1,
+    }
+}
+
+/// 擬似合法手を生成（自玉の安全は確認しない、ビットボード版）
 pub fn generate_pseudo_legal_moves(pos: &Position, color: Color) -> Vec<Move> {
     let mut moves = Vec::new();
 
-    // 盤上の駒の移動
-    for idx in 0..81 {
+    // 盤上の駒の移動（占有ビットボードのビット走査）
+    let mut bb = pos.occupancy(color);
+    while bb != 0 {
+        let idx = bb.trailing_zeros() as usize;
+        bb &= bb - 1;
         let sq = Square::from_index(idx);
         if let Some(piece) = pos.piece_at(sq) {
-            if piece.color == color {
-                generate_piece_moves(pos, sq, piece, &mut moves);
-            }
+            generate_piece_moves(pos, sq, piece, &mut moves);
         }
     }
 
@@ -22,159 +35,81 @@ pub fn generate_pseudo_legal_moves(pos: &Position, color: Color) -> Vec<Move> {
     moves
 }
 
-/// 駒の移動手を生成
+/// 駒の移動手を生成（ビットボード版）
 fn generate_piece_moves(pos: &Position, from: Square, piece: Piece, moves: &mut Vec<Move>) {
     let color = piece.color;
+    let ci = color_index(color);
+    let own = pos.occupancy(color);
+    let occ_all = pos.occupancy_all();
+    let idx = from.index();
+
     match piece.kind {
-        PieceKind::King => generate_step_moves(pos, from, color, &king_offsets(), false, moves),
-        PieceKind::Gold | PieceKind::PromotedSilver | PieceKind::PromotedKnight
-        | PieceKind::PromotedLance | PieceKind::PromotedPawn => {
-            generate_step_moves(pos, from, color, &gold_offsets(color), false, moves)
+        PieceKind::King => {
+            emit_step_moves(KING_STEPS[idx] & !own, from, piece, false, color, moves);
+        }
+        PieceKind::Gold
+        | PieceKind::PromotedSilver
+        | PieceKind::PromotedKnight
+        | PieceKind::PromotedLance
+        | PieceKind::PromotedPawn => {
+            emit_step_moves(GOLD_STEPS[ci][idx] & !own, from, piece, false, color, moves);
         }
         PieceKind::Silver => {
-            generate_step_moves(pos, from, color, &silver_offsets(color), true, moves)
+            emit_step_moves(SILVER_STEPS[ci][idx] & !own, from, piece, true, color, moves);
         }
         PieceKind::Knight => {
-            generate_step_moves(pos, from, color, &knight_offsets(color), true, moves)
+            emit_step_moves(KNIGHT_STEPS[ci][idx] & !own, from, piece, true, color, moves);
         }
         PieceKind::Pawn => {
-            generate_step_moves(pos, from, color, &pawn_offsets(color), true, moves)
+            emit_step_moves(PAWN_STEPS[ci][idx] & !own, from, piece, true, color, moves);
         }
-        PieceKind::Lance => generate_lance_moves(pos, from, color, moves),
-        PieceKind::Rook => generate_rook_moves(pos, from, color, false, moves),
-        PieceKind::Bishop => generate_bishop_moves(pos, from, color, false, moves),
-        PieceKind::PromotedRook => generate_rook_moves(pos, from, color, true, moves),
-        PieceKind::PromotedBishop => generate_bishop_moves(pos, from, color, true, moves),
+        PieceKind::Lance => {
+            // 先手は rank 減少方向 (0,-1)=dir3、後手は rank 増加方向 (0,+1)=dir2
+            let dir = if color == Color::Sente { 3 } else { 2 };
+            emit_step_moves(
+                slide_targets(occ_all, dir, idx) & !own,
+                from, piece, true, color, moves,
+            );
+        }
+        PieceKind::Rook | PieceKind::PromotedRook => {
+            let promoted = piece.kind == PieceKind::PromotedRook;
+            let mut targets: Bitboard = 0;
+            for dir in 0..4 {
+                targets |= slide_targets(occ_all, dir, idx);
+            }
+            if promoted {
+                targets |= DIAG_STEPS[idx];
+            }
+            emit_step_moves(targets & !own, from, piece, !promoted, color, moves);
+        }
+        PieceKind::Bishop | PieceKind::PromotedBishop => {
+            let promoted = piece.kind == PieceKind::PromotedBishop;
+            let mut targets: Bitboard = 0;
+            for dir in 4..8 {
+                targets |= slide_targets(occ_all, dir, idx);
+            }
+            if promoted {
+                targets |= ORTHO_STEPS[idx];
+            }
+            emit_step_moves(targets & !own, from, piece, !promoted, color, moves);
+        }
     }
 }
 
-/// ステップ移動（1マス移動）の手を生成
-fn generate_step_moves(
-    pos: &Position,
+/// 移動先ビットボードの各マスに対して手を生成
+#[inline]
+fn emit_step_moves(
+    mut targets: Bitboard,
     from: Square,
-    color: Color,
-    offsets: &[(i8, i8)],
+    piece: Piece,
     can_promote: bool,
-    moves: &mut Vec<Move>,
-) {
-    for &(df, dr) in offsets {
-        let nf = from.file as i8 + df;
-        let nr = from.rank as i8 + dr;
-        if !Square::is_valid(nf, nr) {
-            continue;
-        }
-        let to = Square::new(nf as u8, nr as u8);
-        if let Some(target) = pos.piece_at(to) {
-            if target.color == color {
-                continue; // 自駒がある
-            }
-        }
-        add_move_with_promotion(from, to, color, can_promote, pos, moves);
-    }
-}
-
-/// 香車の移動
-fn generate_lance_moves(pos: &Position, from: Square, color: Color, moves: &mut Vec<Move>) {
-    let dr: i8 = if color == Color::Sente { -1 } else { 1 };
-    let mut rank = from.rank as i8 + dr;
-    while (1..=9).contains(&rank) {
-        let to = Square::new(from.file, rank as u8);
-        if let Some(target) = pos.piece_at(to) {
-            if target.color != color {
-                add_move_with_promotion(from, to, color, true, pos, moves);
-            }
-            break;
-        }
-        add_move_with_promotion(from, to, color, true, pos, moves);
-        rank += dr;
-    }
-}
-
-/// 飛車（+竜）の移動
-fn generate_rook_moves(
-    pos: &Position,
-    from: Square,
     color: Color,
-    promoted: bool,
     moves: &mut Vec<Move>,
 ) {
-    // 十字方向にスライド
-    for &(df, dr) in &[(0i8, -1i8), (0, 1), (-1, 0), (1, 0)] {
-        generate_slide_moves(pos, from, color, df, dr, !promoted, moves);
-    }
-    // 竜は斜め1マスも移動可能
-    if promoted {
-        for &(df, dr) in &[(-1i8, -1i8), (-1, 1), (1, -1), (1, 1)] {
-            let nf = from.file as i8 + df;
-            let nr = from.rank as i8 + dr;
-            if !Square::is_valid(nf, nr) {
-                continue;
-            }
-            let to = Square::new(nf as u8, nr as u8);
-            if let Some(target) = pos.piece_at(to) {
-                if target.color == color {
-                    continue;
-                }
-            }
-            moves.push(Move::normal(from, to, false, PieceKind::PromotedRook));
-        }
-    }
-}
-
-/// 角（+馬）の移動
-fn generate_bishop_moves(
-    pos: &Position,
-    from: Square,
-    color: Color,
-    promoted: bool,
-    moves: &mut Vec<Move>,
-) {
-    // 斜め方向にスライド
-    for &(df, dr) in &[(-1i8, -1i8), (-1, 1), (1, -1), (1, 1)] {
-        generate_slide_moves(pos, from, color, df, dr, !promoted, moves);
-    }
-    // 馬は十字1マスも移動可能
-    if promoted {
-        for &(df, dr) in &[(0i8, -1i8), (0, 1), (-1, 0), (1, 0)] {
-            let nf = from.file as i8 + df;
-            let nr = from.rank as i8 + dr;
-            if !Square::is_valid(nf, nr) {
-                continue;
-            }
-            let to = Square::new(nf as u8, nr as u8);
-            if let Some(target) = pos.piece_at(to) {
-                if target.color == color {
-                    continue;
-                }
-            }
-            moves.push(Move::normal(from, to, false, PieceKind::PromotedBishop));
-        }
-    }
-}
-
-/// スライド移動（飛び駒用）
-fn generate_slide_moves(
-    pos: &Position,
-    from: Square,
-    color: Color,
-    df: i8,
-    dr: i8,
-    can_promote: bool,
-    moves: &mut Vec<Move>,
-) {
-    let mut f = from.file as i8 + df;
-    let mut r = from.rank as i8 + dr;
-    while Square::is_valid(f, r) {
-        let to = Square::new(f as u8, r as u8);
-        if let Some(target) = pos.piece_at(to) {
-            if target.color != color {
-                add_move_with_promotion(from, to, color, can_promote, pos, moves);
-            }
-            break;
-        }
-        add_move_with_promotion(from, to, color, can_promote, pos, moves);
-        f += df;
-        r += dr;
+    while targets != 0 {
+        let to_idx = targets.trailing_zeros() as usize;
+        targets &= targets - 1;
+        add_move_with_promotion(from, Square::from_index(to_idx), color, can_promote, piece, moves);
     }
 }
 
@@ -184,10 +119,9 @@ fn add_move_with_promotion(
     to: Square,
     color: Color,
     can_promote: bool,
-    pos: &Position,
+    piece: Piece,
     moves: &mut Vec<Move>,
 ) {
-    let piece = pos.piece_at(from).unwrap();
     let promo_zone_start = if color == Color::Sente { 1 } else { 7 };
     let promo_zone_end = if color == Color::Sente { 3 } else { 9 };
     let in_promo_zone =
@@ -228,56 +162,81 @@ fn must_promote(kind: PieceKind, to: Square, color: Color) -> bool {
     }
 }
 
-/// 持ち駒を打つ手を生成
+/// 持ち駒を打つ手を生成（ビットボード版）
 fn generate_drop_moves(pos: &Position, color: Color, moves: &mut Vec<Move>) {
     let hand = pos.hand(color);
+    let empties = ALL_MASK & !pos.occupancy_all();
+
+    // 二歩マスク: 自分の歩がある筋の全マス（歩を持っている時のみ計算）
+    let pawn_file_mask: Bitboard = if hand.has(PieceKind::Pawn) {
+        let mut mask: Bitboard = 0;
+        let mut bb = pos.occupancy(color);
+        while bb != 0 {
+            let idx = bb.trailing_zeros() as usize;
+            bb &= bb - 1;
+            if let Some(p) = pos.piece_at(Square::from_index(idx)) {
+                if p.kind == PieceKind::Pawn {
+                    mask |= FILE_MASK[idx / 9];
+                }
+            }
+        }
+        mask
+    } else {
+        0
+    };
 
     for &kind in &PieceKind::HAND_PIECES {
         if !hand.has(kind) {
             continue;
         }
 
-        for idx in 0..81 {
-            let sq = Square::from_index(idx);
-            if pos.piece_at(sq).is_some() {
-                continue; // 駒がある
+        // 行き所のない段を除外
+        let zone: Bitboard = match kind {
+            PieceKind::Pawn | PieceKind::Lance => {
+                if color == Color::Sente {
+                    !RANK_MASK[0]
+                } else {
+                    !RANK_MASK[8]
+                }
             }
-
-            // 行き所のない駒は打てない
-            match kind {
-                PieceKind::Pawn => {
-                    if (color == Color::Sente && sq.rank == 1)
-                        || (color == Color::Gote && sq.rank == 9)
-                    {
-                        continue;
-                    }
-                    // 二歩チェック
-                    if pos.has_pawn_on_file(color, sq.file) {
-                        continue;
-                    }
-                    // 打ち歩詰めチェック
-                    if is_pawn_drop_mate(pos, sq, color) {
-                        continue;
-                    }
+            PieceKind::Knight => {
+                if color == Color::Sente {
+                    !(RANK_MASK[0] | RANK_MASK[1])
+                } else {
+                    !(RANK_MASK[7] | RANK_MASK[8])
                 }
-                PieceKind::Lance => {
-                    if (color == Color::Sente && sq.rank == 1)
-                        || (color == Color::Gote && sq.rank == 9)
-                    {
-                        continue;
-                    }
-                }
-                PieceKind::Knight => {
-                    if (color == Color::Sente && sq.rank <= 2)
-                        || (color == Color::Gote && sq.rank >= 8)
-                    {
-                        continue;
-                    }
-                }
-                _ => {}
             }
+            _ => ALL_MASK,
+        };
 
-            moves.push(Move::drop(sq, kind));
+        let mut targets = empties & zone;
+
+        if kind == PieceKind::Pawn {
+            // 二歩の筋を除外
+            targets &= !pawn_file_mask;
+
+            // 打ち歩詰めチェック: 歩打ちで王手になるのは敵玉の直前マスのみ
+            // なので、そのマスだけ精査すればよい
+            if let Some(ksq) = pos.find_king(color.opponent()) {
+                let front_rank = if color == Color::Sente {
+                    ksq.rank as i8 + 1
+                } else {
+                    ksq.rank as i8 - 1
+                };
+                if (1..=9).contains(&front_rank) {
+                    let front_sq = Square::new(ksq.file, front_rank as u8);
+                    let front_bit = 1u128 << front_sq.index();
+                    if targets & front_bit != 0 && is_pawn_drop_mate(pos, front_sq, color) {
+                        targets &= !front_bit;
+                    }
+                }
+            }
+        }
+
+        while targets != 0 {
+            let idx = targets.trailing_zeros() as usize;
+            targets &= targets - 1;
+            moves.push(Move::drop(Square::from_index(idx), kind));
         }
     }
 }
@@ -482,7 +441,7 @@ fn generate_moves_to_square(
                 continue;
             }
             if can_piece_reach(pos, from, piece, to) {
-                add_move_with_promotion(from, to, color, piece.kind.can_promote(), pos, &mut moves);
+                add_move_with_promotion(from, to, color, piece.kind.can_promote(), piece, &mut moves);
             }
         }
     }
