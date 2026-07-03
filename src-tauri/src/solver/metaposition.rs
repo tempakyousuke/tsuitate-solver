@@ -1,6 +1,6 @@
-use std::collections::{HashMap, HashSet};
-use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+
+use super::fasthash::{FxHashMap, FxHashSet, FxHasher};
 
 use crate::shogi::position::Position;
 use crate::shogi::types::*;
@@ -11,7 +11,7 @@ pub fn position_hash(pos: &Position) -> u64 {
 
 /// 攻め方の持ち駒のハッシュ（攻め方は自分の持ち駒を観測できる）
 fn sente_hand_hash(pos: &Position) -> u64 {
-    let mut h = DefaultHasher::new();
+    let mut h = FxHasher::default();
     pos.hand(Color::Sente).hash(&mut h);
     h.finish()
 }
@@ -63,7 +63,7 @@ impl MetaPosition {
             // 注意: 同じマスへの合駒でも、盤上の駒の移動と持ち駒の打ちでは
             // 結果が異なる場合がある（移動元マスが空くことで防御手が変わるため）。
             // そのため、打ち駒のみキャッシュし、盤上の駒の移動は個別にチェックする。
-            let mut futile_drop_squares: HashSet<Square> = HashSet::new();
+            let mut futile_drop_squares: FxHashSet<Square> = FxHashSet::default();
             for def_mv in &legal_moves {
                 let is_king_move = if let Some(from) = def_mv.from {
                     pos.piece_at(from).map_or(false, |p| p.kind == PieceKind::King)
@@ -144,8 +144,8 @@ impl MetaPosition {
         let mut legal_positions = Vec::new();
         let mut illegal_positions = Vec::new();
 
-        let mut legal_seen: HashSet<u64> = HashSet::new();
-        let mut illegal_seen: HashSet<u64> = HashSet::new();
+        let mut legal_seen: FxHashSet<u64> = FxHashSet::default();
+        let mut illegal_seen: FxHashSet<u64> = FxHashSet::default();
 
         for (i, pos) in self.positions.iter().enumerate() {
             if legal_move_sets[i].contains(&mv) {
@@ -172,8 +172,8 @@ impl MetaPosition {
     pub fn apply_attack_move_split_fast(&self, mv: Move) -> (MetaPosition, MetaPosition) {
         let mut legal_positions = Vec::new();
         let mut illegal_positions = Vec::new();
-        let mut legal_seen: HashSet<u64> = HashSet::new();
-        let mut illegal_seen: HashSet<u64> = HashSet::new();
+        let mut legal_seen: FxHashSet<u64> = FxHashSet::default();
+        let mut illegal_seen: FxHashSet<u64> = FxHashSet::default();
 
         for pos in &self.positions {
             let color = pos.side_to_move;
@@ -233,9 +233,9 @@ impl MetaPosition {
         let mut checkmate_positions = Vec::new();
         // グループキー: (地点, 攻め方持ち駒ハッシュ) → (重複排除用ハッシュ集合, 局面リスト)
         // 攻め方の持ち駒が異なる盤面は同じ観測でも区別する
-        let mut capture_groups: HashMap<(Square, u64), (HashSet<u64>, Vec<Position>)> = HashMap::new();
+        let mut capture_groups: FxHashMap<(Square, u64), (FxHashSet<u64>, Vec<Position>)> = FxHashMap::default();
         // NoCapture グループ: 攻め方持ち駒ハッシュ → (重複排除用ハッシュ集合, 局面リスト)
-        let mut no_capture_groups: HashMap<u64, (HashSet<u64>, Vec<Position>)> = HashMap::new();
+        let mut no_capture_groups: FxHashMap<u64, (FxHashSet<u64>, Vec<Position>)> = FxHashMap::default();
 
         for pos in &self.positions {
             // posは既に攻め方の手を指した後の状態（玉方手番）
@@ -264,14 +264,14 @@ impl MetaPosition {
                     if captured {
                         let (seen, positions) = capture_groups
                             .entry((def_mv.to, hand_hash))
-                            .or_insert_with(|| (HashSet::new(), Vec::new()));
+                            .or_insert_with(|| (FxHashSet::default(), Vec::new()));
                         if seen.insert(scratch.zobrist_hash) {
                             positions.push(scratch.clone());
                         }
                     } else {
                         let (seen, positions) = no_capture_groups
                             .entry(hand_hash)
-                            .or_insert_with(|| (HashSet::new(), Vec::new()));
+                            .or_insert_with(|| (FxHashSet::default(), Vec::new()));
                         if seen.insert(scratch.zobrist_hash) {
                             positions.push(scratch.clone());
                         }
@@ -313,14 +313,14 @@ impl MetaPosition {
                 if captured {
                     let (seen, positions) = capture_groups
                         .entry((def_mv.to, hand_hash))
-                        .or_insert_with(|| (HashSet::new(), Vec::new()));
+                        .or_insert_with(|| (FxHashSet::default(), Vec::new()));
                     if seen.insert(scratch.zobrist_hash) {
                         positions.push(scratch.clone());
                     }
                 } else {
                     let (seen, positions) = no_capture_groups
                         .entry(hand_hash)
-                        .or_insert_with(|| (HashSet::new(), Vec::new()));
+                        .or_insert_with(|| (FxHashSet::default(), Vec::new()));
                     if seen.insert(scratch.zobrist_hash) {
                         positions.push(scratch.clone());
                     }

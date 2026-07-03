@@ -1,6 +1,7 @@
-use std::collections::{HashMap, HashSet};
-use std::collections::hash_map::DefaultHasher;
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
+
+use super::fasthash::{FxHashMap, FxHashSet, FxHasher};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -136,7 +137,7 @@ fn meta_position_hash(meta: &MetaPosition) -> u64 {
         .map(|p| p.zobrist_hash)
         .collect();
     hashes.sort();
-    let mut h = DefaultHasher::new();
+    let mut h = FxHasher::default();
     hashes.hash(&mut h);
     h.finish()
 }
@@ -145,13 +146,11 @@ fn meta_position_hash(meta: &MetaPosition) -> u64 {
 /// 優越関係の判定用: 同じ盤面配置で sente_hand のみ異なるメタポジションを同一グループにまとめる
 /// ソートしてから結合することで XOR より衝突に強いハッシュを生成
 fn meta_board_set_hash(meta: &MetaPosition) -> u64 {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
     let mut hashes: Vec<u64> = meta.positions.iter()
         .map(|pos| pos.hash_without_sente_hand())
         .collect();
     hashes.sort();
-    let mut h = DefaultHasher::new();
+    let mut h = FxHasher::default();
     hashes.hash(&mut h);
     h.finish()
 }
@@ -163,7 +162,7 @@ fn meta_board_only_hash(meta: &MetaPosition) -> u64 {
         .map(|pos| pos.hash_board_only())
         .collect();
     hashes.sort();
-    let mut h = DefaultHasher::new();
+    let mut h = FxHasher::default();
     hashes.hash(&mut h);
     h.finish()
 }
@@ -383,9 +382,9 @@ struct CachedAndExpansion {
 /// （王手回避手＝数十手）に比べて大幅に効率的。
 pub struct TsuitateDfpnSolver {
     /// OR ノードの転置表: MetaPosition ハッシュ → (pn, dn)
-    or_table: HashMap<u64, PnDn>,
+    or_table: FxHashMap<u64, PnDn>,
     /// AND ノードの転置表: hash(meta_hash, move) → (pn, dn)
-    and_table: HashMap<u64, PnDn>,
+    and_table: FxHashMap<u64, PnDn>,
     /// 探索ノード数
     pub nodes_searched: u64,
     /// 優越関係ヒット数（診断用）
@@ -402,28 +401,28 @@ pub struct TsuitateDfpnSolver {
     depth_limit: Option<u32>,
     /// 優越関係テーブル: board_set_hash → Vec<(proof_hand, budget)> (Pareto最小)
     /// proof_hand <= sente_hand (要素ごと) かつ 現在の残り深さ予算 >= budget で証明済み
-    dominance_table: HashMap<u64, Vec<([u8; 7], u32)>>,
+    dominance_table: FxHashMap<u64, Vec<([u8; 7], u32)>>,
     /// OR ノードの証明駒: meta_hash → proof_hand (証明に必要な最小の攻め方持ち駒)
-    or_proof_hands: HashMap<u64, [u8; 7]>,
+    or_proof_hands: FxHashMap<u64, [u8; 7]>,
     /// AND ノードの証明駒: and_key → proof_hand
-    and_proof_hands: HashMap<u64, [u8; 7]>,
+    and_proof_hands: FxHashMap<u64, [u8; 7]>,
     /// 盤面のみのハッシュ → 証明された手（手順ヒント用）
-    move_hints: HashMap<u64, Move>,
+    move_hints: FxHashMap<u64, Move>,
     /// 盤面のみのハッシュ → (証明深さ, 証明木) リスト（リプレイキャッシュ、複数手順対応）
     /// 証明深さは深さ制限付きプローブでのリプレイ可否の事前判定に使う
-    proof_cache: HashMap<u64, Vec<(u32, ProofNode)>>,
+    proof_cache: FxHashMap<u64, Vec<(u32, ProofNode)>>,
     /// AND ノードの展開結果キャッシュ: and_key → 構造データ
     /// mid_and が同一 AND ノードを再訪問する際の expand_defense_moves 再計算を回避
-    and_expansion_cache: HashMap<u64, CachedAndExpansion>,
+    and_expansion_cache: FxHashMap<u64, CachedAndExpansion>,
     /// OR ノードの候補手キャッシュ: meta_hash → 候補手 + 合法手セット
     /// mid_or が同一 OR ノードを再訪問する際の generate_attack_candidates 再計算を回避
-    or_candidate_cache: HashMap<u64, CachedOrCandidates>,
+    or_candidate_cache: FxHashMap<u64, CachedOrCandidates>,
     /// 局面レベルの合法手キャッシュ: zobrist_hash → 合法手リスト
     /// 同一局面が異なるMetaPositionに出現する場合の重複計算を回避
-    legal_moves_cache: HashMap<u64, Vec<Move>>,
+    legal_moves_cache: FxHashMap<u64, Vec<Move>>,
     /// 局面レベルの王手手キャッシュ: zobrist_hash → 王手になる手のリスト
     /// 同一局面が異なるMetaPositionに出現する場合の重複計算を回避
-    check_moves_cache: HashMap<u64, Vec<Move>>,
+    check_moves_cache: FxHashMap<u64, Vec<Move>>,
     /// 診断用カウンタ
     pub proof_replay_attempts: u64,
     pub proof_replay_full_success: u64,
@@ -454,8 +453,8 @@ pub struct TsuitateDfpnSolver {
 impl TsuitateDfpnSolver {
     pub fn new(node_limit: u64, cancelled: Arc<AtomicBool>) -> Self {
         Self {
-            or_table: HashMap::new(),
-            and_table: HashMap::new(),
+            or_table: FxHashMap::default(),
+            and_table: FxHashMap::default(),
             nodes_searched: 0,
             dominance_hits: 0,
             node_limit,
@@ -463,15 +462,15 @@ impl TsuitateDfpnSolver {
             excluded_root_moves: Vec::new(),
             root_hash: None,
             depth_limit: None,
-            dominance_table: HashMap::new(),
-            or_proof_hands: HashMap::new(),
-            and_proof_hands: HashMap::new(),
-            move_hints: HashMap::new(),
-            proof_cache: HashMap::new(),
-            and_expansion_cache: HashMap::new(),
-            or_candidate_cache: HashMap::new(),
-            legal_moves_cache: HashMap::new(),
-            check_moves_cache: HashMap::new(),
+            dominance_table: FxHashMap::default(),
+            or_proof_hands: FxHashMap::default(),
+            and_proof_hands: FxHashMap::default(),
+            move_hints: FxHashMap::default(),
+            proof_cache: FxHashMap::default(),
+            and_expansion_cache: FxHashMap::default(),
+            or_candidate_cache: FxHashMap::default(),
+            legal_moves_cache: FxHashMap::default(),
+            check_moves_cache: FxHashMap::default(),
             proof_replay_attempts: 0,
             proof_replay_full_success: 0,
             proof_replay_partial: 0,
@@ -530,7 +529,7 @@ impl TsuitateDfpnSolver {
     }
 
     fn and_key(meta_hash: u64, mv: &Move) -> u64 {
-        let mut h = DefaultHasher::new();
+        let mut h = FxHasher::default();
         h.write_u64(meta_hash);
         mv.hash(&mut h);
         h.finish()
@@ -1192,8 +1191,8 @@ impl TsuitateDfpnSolver {
         use super::metaposition::position_hash;
 
         // 各観測タイプの出現回数と合計 position 数をカウント
-        let mut obs_counts: HashMap<Observation, usize> = HashMap::new();
-        let mut obs_total_positions: HashMap<Observation, usize> = HashMap::new();
+        let mut obs_counts: FxHashMap<Observation, usize> = FxHashMap::default();
+        let mut obs_total_positions: FxHashMap<Observation, usize> = FxHashMap::default();
         for (obs, meta) in &branches {
             *obs_counts.entry(obs.clone()).or_default() += 1;
             *obs_total_positions.entry(obs.clone()).or_default() += meta.positions.len();
@@ -1206,7 +1205,7 @@ impl TsuitateDfpnSolver {
             if count >= 3 && total_pos <= Self::MAX_MERGE_POSITIONS {
                 // マージ対象: 同一観測の既存分岐に統合（重複排除つき）
                 if let Some(existing) = result.iter_mut().find(|(o, _)| *o == obs) {
-                    let mut seen: HashSet<u64> = existing.1.positions.iter()
+                    let mut seen: FxHashSet<u64> = existing.1.positions.iter()
                         .map(|p| position_hash(p))
                         .collect();
                     for pos in meta.positions {
@@ -1346,7 +1345,7 @@ impl TsuitateDfpnSolver {
             return (Vec::new(), legal_move_sets);
         }
 
-        let mut seen = HashSet::new();
+        let mut seen = FxHashSet::default();
         let mut check_moves = Vec::new();
 
         // 全盤面から王手の手を収集（union）
@@ -1495,7 +1494,7 @@ impl TsuitateDfpnSolver {
         }
 
         // プローブ手: 一部の盤面でのみ合法な手
-        let mut move_counts: HashMap<Move, usize> = HashMap::new();
+        let mut move_counts: FxHashMap<Move, usize> = FxHashMap::default();
         for legal_set in &legal_move_sets {
             for mv in legal_set {
                 *move_counts.entry(*mv).or_insert(0) += 1;
@@ -1512,6 +1511,11 @@ impl TsuitateDfpnSolver {
                 probe_moves.push(*mv);
             }
         }
+
+        // HashMap の反復順に依存しないよう決定的にソートする
+        // （未ソートだと探索順が実行ごとに変わり、同一問題でも実行時間が
+        //   大きく変動する。王手候補と同じ優先順位を適用する）
+        probe_moves.sort_by_key(|mv| sort_key(mv));
 
         check_moves.extend(probe_moves);
         (check_moves, legal_move_sets)
@@ -1791,7 +1795,7 @@ impl TsuitateDfpnSolver {
             .map(|pos| pos.generate_legal_moves())
             .collect();
 
-        let mut seen = HashSet::new();
+        let mut seen = FxHashSet::default();
         let mut all_moves = Vec::new();
         for set in &legal_move_sets {
             for mv in set {
@@ -2170,7 +2174,7 @@ impl TsuitateDfpnSolver {
             .map(|pos| pos.generate_legal_moves())
             .collect();
 
-        let mut seen = HashSet::new();
+        let mut seen = FxHashSet::default();
         let mut all_moves = Vec::new();
         for set in &legal_move_sets {
             for mv in set {
@@ -2321,7 +2325,7 @@ impl TsuitateDfpnSolver {
         let legal_move_sets: Vec<Vec<Move>> = meta.positions.iter()
             .map(|pos| pos.generate_legal_moves())
             .collect();
-        let mut seen = HashSet::new();
+        let mut seen = FxHashSet::default();
         let mut all_moves = Vec::new();
         for set in &legal_move_sets {
             for mv in set {
