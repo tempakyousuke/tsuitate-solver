@@ -5,8 +5,13 @@
 //!
 //! 使い方:
 //!   tsuitate-solver-cli <question.json> [--find-second] [--shortest]
-//!                       [--node-limit N] [--timeout-secs N]
+//!                       [--node-limit N] [--timeout-secs N] [--memory-limit-mb N]
 //!   tsuitate-solver-cli --solve-meta <request.json> [--node-limit N]
+//!
+//! --memory-limit-mb は本プロセスのピーク RSS の上限（MB）。超過すると探索を
+//! 打ち切り、出力の memoryLimited が true になる。本解の発見後（余詰め探索中）に
+//! 超過した場合は found=true のまま memoryLimited=true が報告される。
+//! 決定性が必要な --solve-meta には適用されない。
 //!
 //! --solve-meta は Webサイトの挑戦モード用。情報集合（局面リスト、全て先手番・
 //! 持ち駒は両者とも明示）と深さ制限のクエリ列を受け取り、それぞれ
@@ -20,6 +25,31 @@
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+
+/// 本プロセスのピーク RSS（bytes）。--memory-limit-mb 用。
+/// ヒープの生存量ではなく OS が見る常駐量（= OOM killer の判定対象）を使う。
+/// malloc は解放済みページをすぐには OS に返さないため、生存ヒープ量での
+/// 制限では RSS を抑えられない（実測: 生存 1GB 制限で RSS 4.9GB）。
+#[cfg(unix)]
+fn peak_rss_bytes() -> u64 {
+    let mut ru = std::mem::MaybeUninit::<libc::rusage>::zeroed();
+    if unsafe { libc::getrusage(libc::RUSAGE_SELF, ru.as_mut_ptr()) } != 0 {
+        return 0;
+    }
+    let ru = unsafe { ru.assume_init() };
+    let v = ru.ru_maxrss as u64;
+    // ru_maxrss の単位: macOS は bytes、Linux は KB
+    if cfg!(target_os = "macos") {
+        v
+    } else {
+        v * 1024
+    }
+}
+
+#[cfg(not(unix))]
+fn peak_rss_bytes() -> u64 {
+    0 // 非対応プラットフォームでは上限は発火しない
+}
 
 use serde::Deserialize;
 use serde_json::json;
@@ -166,6 +196,8 @@ struct Args {
     node_limit: u64,
     node_limit_given: bool,
     timeout_secs: u64,
+    /// ヒープ確保量の上限（MB）。0 なら無制限
+    memory_limit_mb: u64,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -176,6 +208,7 @@ fn parse_args() -> Result<Args, String> {
     let mut node_limit: u64 = 50_000_000;
     let mut node_limit_given = false;
     let mut timeout_secs: u64 = 120;
+    let mut memory_limit_mb: u64 = 0;
 
     let mut iter = std::env::args().skip(1);
     while let Some(arg) = iter.next() {
@@ -192,6 +225,11 @@ fn parse_args() -> Result<Args, String> {
                 let v = iter.next().ok_or("--timeout-secs requires a value")?;
                 timeout_secs = v.parse().map_err(|_| format!("Invalid --timeout-secs: {}", v))?;
             }
+            "--memory-limit-mb" => {
+                let v = iter.next().ok_or("--memory-limit-mb requires a value")?;
+                memory_limit_mb =
+                    v.parse().map_err(|_| format!("Invalid --memory-limit-mb: {}", v))?;
+            }
             _ if arg.starts_with("--") => return Err(format!("Unknown option: {}", arg)),
             _ => {
                 if input.is_some() {
@@ -203,13 +241,14 @@ fn parse_args() -> Result<Args, String> {
     }
 
     Ok(Args {
-        input: input.ok_or("Usage: tsuitate-solver-cli <question.json> [--find-second] [--shortest] [--node-limit N] [--timeout-secs N] | --solve-meta <request.json> [--node-limit N]")?,
+        input: input.ok_or("Usage: tsuitate-solver-cli <question.json> [--find-second] [--shortest] [--node-limit N] [--timeout-secs N] [--memory-limit-mb N] | --solve-meta <request.json> [--node-limit N]")?,
         find_second,
         shortest,
         solve_meta,
         node_limit,
         node_limit_given,
         timeout_secs,
+        memory_limit_mb,
     })
 }
 
@@ -363,14 +402,66 @@ fn main() -> ExitCode {
         }
     };
 
-    // タイムアウト用キャンセルフラグ
+    // タイムアウト・メモリ上限用キャンセルフラグ（どちらが発火したかは個別フラグで区別）
     let cancel = Arc::new(AtomicBool::new(false));
+    let timeout_fired = Arc::new(AtomicBool::new(false));
+    let memory_fired = Arc::new(AtomicBool::new(false));
+    // メインスレッドが結果 JSON の出力を開始したら true。ハードキルとの
+    // stdout 書き込み競合（出力の破損）を防ぐ
+    let output_started = Arc::new(AtomicBool::new(false));
+    // 巨大な情報集合の展開（expand_defense_moves）を途中で打ち切れるようにする
+    tsuitate_solver_lib::solver::metaposition::set_expansion_cancel(cancel.clone());
     if args.timeout_secs > 0 {
         let cancel_clone = cancel.clone();
+        let fired = timeout_fired.clone();
         let secs = args.timeout_secs;
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_secs(secs));
+            fired.store(true, Ordering::Relaxed);
             cancel_clone.store(true, Ordering::Relaxed);
+        });
+    }
+    if args.memory_limit_mb > 0 {
+        let cancel_clone = cancel.clone();
+        let fired = memory_fired.clone();
+        let soft_limit = args.memory_limit_mb.saturating_mul(1024 * 1024);
+        // ソフト上限で協調キャンセル。それでも成長が止まらない経路（キャンセル
+        // チェックのない大確保など）への最終防衛として、1.5倍でフォールバック
+        // JSON を出力して正常終了する（OOM killer に殺されて出力ゼロになるより良い）
+        let hard_limit = soft_limit.saturating_add(soft_limit / 2);
+        let output_started = output_started.clone();
+        std::thread::spawn(move || loop {
+            let rss = peak_rss_bytes();
+            if output_started.load(Ordering::Relaxed) {
+                // 探索は終了済みでメインが結果を出力中。killせず任せる
+                return;
+            }
+            if rss >= hard_limit && fired.load(Ordering::Relaxed) {
+                println!(
+                    "{}",
+                    json!({
+                        "found": false,
+                        "depth": null,
+                        "hasSecondSolution": false,
+                        "secondDepth": null,
+                        "hasPieceSurplus": false,
+                        "kizuCount": 0,
+                        "unknown": true,
+                        "timedOut": false,
+                        "memoryLimited": true,
+                        "nodesSearched": null,
+                        "message": "メモリ上限に達したため探索を強制終了しました",
+                        "tree": null,
+                        "secondTree": null,
+                    })
+                );
+                std::process::exit(0);
+            }
+            if rss >= soft_limit {
+                fired.store(true, Ordering::Relaxed);
+                cancel_clone.store(true, Ordering::Relaxed);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
         });
     }
 
@@ -386,16 +477,29 @@ fn main() -> ExitCode {
     let second_depth = result.second_tree.as_ref().map(|t| t.max_moves());
     // found=false のうち「詰み不存在の証明」ではなく打ち切りだったか
     let unknown = !result.found && result.message.starts_with("探索を打ち切りました");
-    let timed_out = unknown && cancel.load(Ordering::Relaxed);
+    // memoryLimited は found=true でも報告する（余詰め探索がメモリ上限で
+    // 打ち切られた場合、サイト側が大きい予算で再検証できるように）
+    let memory_limited = memory_fired.load(Ordering::Relaxed);
+    let timed_out = unknown && !memory_limited && timeout_fired.load(Ordering::Relaxed);
 
+    // 駒余り: 最長手順の詰め上がりで攻め方の持ち駒が余るか（変化での駒余りは不問）
+    let has_piece_surplus = result
+        .tree
+        .as_ref()
+        .map_or(false, |t| t.has_piece_surplus());
+
+    // 以降はハードキル禁止（結果確定済み。出力の競合・破損を防ぐ）
+    output_started.store(true, Ordering::Relaxed);
     let output = json!({
         "found": result.found,
         "depth": depth,
         "hasSecondSolution": result.second_tree.is_some(),
         "secondDepth": second_depth,
+        "hasPieceSurplus": has_piece_surplus,
         "kizuCount": result.kizu_trees.len(),
         "unknown": unknown,
         "timedOut": timed_out,
+        "memoryLimited": memory_limited,
         "nodesSearched": solver.nodes_searched,
         "message": result.message,
         "tree": result.tree,

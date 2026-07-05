@@ -1,9 +1,29 @@
 use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use super::fasthash::{FxHashMap, FxHashSet, FxHasher};
 
 use crate::shogi::position::Position;
 use crate::shogi::types::*;
+
+/// 展開処理の協調的キャンセル（CLI のタイムアウト/メモリ上限用）。
+/// セットされている場合、expand_defense_moves は一定局面数ごとにフラグを確認し、
+/// 立っていれば部分結果を捨てて空を返す。**空の戻り値を「応手なし＝詰み」と
+/// 解釈しないよう、呼び出し側はキャンセル発火時に結果を使わず打ち切ること**
+/// （tsuitate_dfpn.rs の各呼び出し箇所にガードあり。CLI 以外＝Tauri UI では
+/// フラグ未設定のため挙動は変わらない）。
+static EXPANSION_CANCEL: OnceLock<Arc<AtomicBool>> = OnceLock::new();
+
+pub fn set_expansion_cancel(flag: Arc<AtomicBool>) {
+    let _ = EXPANSION_CANCEL.set(flag);
+}
+
+pub fn expansion_cancelled() -> bool {
+    EXPANSION_CANCEL
+        .get()
+        .map_or(false, |f| f.load(Ordering::Relaxed))
+}
 
 pub fn position_hash(pos: &Position) -> u64 {
     pos.zobrist_hash
@@ -37,6 +57,16 @@ impl MetaPosition {
     /// メタポジションが空かどうか
     pub fn is_empty(&self) -> bool {
         self.positions.is_empty()
+    }
+
+    /// 情報集合内の攻め方（先手）持ち駒枚数の最大値（駒余り判定用）。
+    /// 盤面によって「最終手で駒を取ったかどうか」が異なる場合があるため最大値を採る
+    pub fn max_sente_hand_count(&self) -> u8 {
+        self.positions
+            .iter()
+            .map(|pos| pos.sente_hand.total())
+            .max()
+            .unwrap_or(0)
     }
 
     /// 全ての盤面で詰んでいるか
@@ -238,7 +268,12 @@ impl MetaPosition {
         // NoCapture グループ: 攻め方持ち駒ハッシュ → (重複排除用ハッシュ集合, 局面リスト)
         let mut no_capture_groups: FxHashMap<u64, (FxHashSet<u64>, Vec<Position>)> = FxHashMap::default();
 
-        for pos in &self.positions {
+        for (pos_idx, pos) in self.positions.iter().enumerate() {
+            // 巨大な情報集合の展開が数GB規模になり得るため、協調キャンセルを確認
+            // （呼び出し側はキャンセル発火時にこの戻り値を使わない契約）
+            if pos_idx % 256 == 0 && expansion_cancelled() {
+                return Vec::new();
+            }
             // posは既に攻め方の手を指した後の状態（玉方手番）
             let defender_color = pos.side_to_move;
             let in_check = pos.is_in_check(defender_color);

@@ -88,6 +88,14 @@ GUIおよびベンチマークで使用する df-pn (Depth-First Proof Number Se
 - 余詰めチェック対応: 初手を除外して再探索
 - 証明木の抽出: 転置表を辿って SolutionNode ツリーを構築
 
+### ソルバーCLI（tsuitate-solver-cli）
+
+`src-tauri/src/bin/cli.rs`。Webサイト（tsuitate リポジトリ）の投稿検証・挑戦モードから spawn されるヘッドレスバイナリ。ビルド: `cargo build --release --bin tsuitate-solver-cli`
+
+- 通常モード: `<question.json> [--find-second] [--shortest] [--node-limit N] [--timeout-secs N] [--memory-limit-mb N]`
+- 挑戦モード: `--solve-meta <request.json> [--node-limit N]`（決定性のためタイムアウト・メモリ上限なし）
+- **--memory-limit-mb**: ピークRSSの上限。監視スレッドがソフト上限でキャンセルフラグを立て（出力に `memoryLimited: true`）、1.5倍のハード上限でフォールバックJSONを出して正常終了する（OOM killer 対策）。余詰め探索（find_second）は情報集合の再展開でGB級のメモリを食うことがあり、走査系（find_table_alternative / find_inner_alt_recursive）には MAX_META_POSITIONS 超のメタで打ち切って「判定不能」扱いにするガードがある。`expand_defense_moves` は協調キャンセル（`metaposition.rs` の `set_expansion_cancel`）を確認し、**キャンセル発火後の戻り値は部分結果の可能性があるため呼び出し側は必ず破棄する**こと（空の分岐を「詰み」と誤認すると偽の証明になる）
+
 ### TsuitateSolver（旧ソルバー）
 
 指数的反復深化ベースのソルバー。ベンチマーク比較用に残してある。

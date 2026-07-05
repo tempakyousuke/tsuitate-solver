@@ -1048,6 +1048,13 @@ impl TsuitateDfpnSolver {
                     let raw_branches = legal_meta.expand_defense_moves(mv);
                     self.expand_defense_nanos += ed_start.elapsed().as_nanos() as u64;
 
+                    // キャンセル発火時、expand_defense_moves は部分結果（または空）を
+                    // 返すことがある。空を「応手なし＝詰み」と誤認して偽の証明を
+                    // 作らないよう、結果を捨てて打ち切る
+                    if self.is_cancelled() {
+                        return;
+                    }
+
                     // 同一観測タイプの分岐をマージ
                     // sente_hand_hash で分かれた分岐を統合し、AND の分岐数を削減
                     // 異なる合駒で生じた持ち駒の違いは legal/illegal split で処理される
@@ -1986,7 +1993,9 @@ impl TsuitateDfpnSolver {
         kizu_trees: &mut Vec<SolutionNode>,
         depth: u32,
     ) -> Option<SolutionNode> {
-        if self.should_stop() {
+        // 打ち切り・巨大メタは「余詰めなし」ではなく「判定不能」として報告する
+        if self.should_stop() || meta.positions.len() > MAX_META_POSITIONS {
+            self.second_search_aborted = true;
             return None;
         }
         let (mv_data, branches) = match node {
@@ -2073,6 +2082,11 @@ impl TsuitateDfpnSolver {
             } else {
                 vec![]
             };
+        if self.is_cancelled() {
+            // 展開が協調キャンセルで部分結果の可能性があるため使わない
+            self.second_search_aborted = true;
+            return None;
+        }
 
         let max_depth = node.max_moves();
         for (branch_idx, branch) in branches.iter().enumerate() {
@@ -2139,6 +2153,14 @@ impl TsuitateDfpnSolver {
         total_nodes: &mut u64,
         kizu_trees: &mut Vec<SolutionNode>,
     ) -> Option<SolutionNode> {
+        // 打ち切り・巨大メタは「余詰めなし」ではなく「判定不能」として報告する。
+        // 探索本体（mid_or/mid_and）は MAX_META_POSITIONS 超の分岐を不詰扱いで
+        // 枝刈りするが、この走査は手順木を再展開するため同じ上限で守らないと
+        // 情報集合が指数的に膨張してメモリを食い潰す（実測: 数GB）
+        if self.should_stop() || meta.positions.len() > MAX_META_POSITIONS {
+            self.second_search_aborted = true;
+            return None;
+        }
         let (mv_data, branches) = match node {
             SolutionNode::Checkmate { .. } => return None,
             SolutionNode::AttackMove { mv, branches, .. } => (mv, branches),
@@ -2156,6 +2178,11 @@ impl TsuitateDfpnSolver {
             } else {
                 vec![]
             };
+        if self.is_cancelled() {
+            // 展開が協調キャンセルで部分結果の可能性があるため使わない
+            self.second_search_aborted = true;
+            return None;
+        }
 
         // 最長応手分岐のみ探索
         let max_depth = node.max_moves();
@@ -2348,11 +2375,17 @@ impl TsuitateDfpnSolver {
 
     /// OR ノードから証明木を抽出する
     fn extract_or(&mut self, meta: &MetaPosition, depth: u32) -> Option<SolutionNode> {
+        if self.is_cancelled() {
+            return None;
+        }
         if meta.is_empty() {
             return None;
         }
         if meta.all_effectively_checkmate() {
-            return Some(SolutionNode::Checkmate { depth });
+            return Some(SolutionNode::Checkmate {
+                depth,
+                hand_count: meta.max_sente_hand_count(),
+            });
         }
 
         let hash = meta_position_hash(meta);
@@ -2514,13 +2547,20 @@ impl TsuitateDfpnSolver {
         if legal_meta.all_effectively_checkmate() {
             branches.push(SolutionBranch {
                 observation: Observation::Checkmate,
-                continuation: Box::new(SolutionNode::Checkmate { depth: depth + 1 }),
+                continuation: Box::new(SolutionNode::Checkmate {
+                    depth: depth + 1,
+                    hand_count: legal_meta.max_sente_hand_count(),
+                }),
             });
             return Some(branches);
         }
 
         // 玉方の応手を展開（mid_and と同じマージを適用）
         let raw_obs_branches = legal_meta.expand_defense_moves(mv);
+        if self.is_cancelled() {
+            // 協調キャンセルによる部分展開を抽出に使わない
+            return None;
+        }
         let obs_branches = Self::merge_observation_branches(raw_obs_branches);
         for (obs, branch_meta) in obs_branches {
             match obs {
@@ -2529,6 +2569,7 @@ impl TsuitateDfpnSolver {
                         observation: Observation::Checkmate,
                         continuation: Box::new(SolutionNode::Checkmate {
                             depth: depth + 1,
+                            hand_count: branch_meta.max_sente_hand_count(),
                         }),
                     });
                 }
@@ -2625,6 +2666,10 @@ impl TsuitateDfpnSolver {
         }
 
         let raw_obs_branches = legal_meta.expand_defense_moves(mv);
+        if self.is_cancelled() {
+            // 協調キャンセルによる部分展開を証明木に使わない
+            return None;
+        }
         let obs_branches = Self::merge_observation_branches(raw_obs_branches);
         for (obs, branch_meta) in obs_branches {
             match obs {
@@ -2706,6 +2751,11 @@ impl TsuitateDfpnSolver {
                         actual_branches.push((Observation::Checkmate, MetaPosition { positions: Vec::new() }));
                     } else {
                         let raw_obs = legal_meta.expand_defense_moves(*mv);
+                        if self.is_cancelled() {
+                            // 協調キャンセルによる部分展開をリプレイに使わない
+                            // （不完全な分岐で store_or に偽の証明を書かないため）
+                            return None;
+                        }
                         let obs = Self::merge_observation_branches(raw_obs);
                         actual_branches.extend(obs);
                     }
