@@ -1,3 +1,4 @@
+#[cfg(feature = "gui")]
 mod commands;
 pub mod shogi;
 pub mod solver;
@@ -7,6 +8,7 @@ use std::sync::Arc;
 
 pub type CancelFlag = Arc<AtomicBool>;
 
+#[cfg(feature = "gui")]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()

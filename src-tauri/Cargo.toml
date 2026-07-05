@@ -10,6 +10,11 @@ name = "tsuitate_solver_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [[bin]]
+name = "tsuitate-solver"
+path = "src/main.rs"
+required-features = ["gui"]
+
+[[bin]]
 name = "tsuitate-solver-cli"
 path = "src/bin/cli.rs"
 
@@ -17,13 +22,20 @@ path = "src/bin/cli.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
-tauri-plugin-shell = "2"
+tauri = { version = "2", features = [], optional = true }
+tauri-plugin-shell = { version = "2", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[features]
+# gui を外す（--no-default-features）と tauri 依存なしで CLI だけビルドできる。
+# サーバー（Linux）では webkit2gtk 等の GUI 系システムライブラリが不要になる:
+#   cargo build --release --bin tsuitate-solver-cli --no-default-features
+default = ["gui"]
+gui = ["dep:tauri", "dep:tauri-plugin-shell"]
 
 [dev-dependencies]
 chrono = "0.4"
