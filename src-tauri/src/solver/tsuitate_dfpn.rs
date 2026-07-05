@@ -533,16 +533,37 @@ impl TsuitateDfpnSolver {
     /// 下方向スキャン（shorten_solution と同じ proof_k ジャンプ）で求めて返す。
     /// ノード上限は全スキャンの合計に適用される。タイムアウトを併用しなければ
     /// 同一入力に対して決定的。
+    ///
+    /// scan_node_limit は下方向スキャン専用の追加ノード予算。スキャンは
+    /// タイブレーク（最長抵抗の選択）用の精密化であり真偽判定には影響しない
+    /// ため、予算を使い切ったら「そこまでに証明できた深さ」を返して打ち切る
+    /// （ノード数ベースなので決定的）。u64::MAX で無制限。
     pub fn solve_bounded(
         &mut self,
         meta: &MetaPosition,
         depth_limit: u32,
+        scan_node_limit: u64,
     ) -> (TsuitateDfpnResult, Option<u32>) {
         let root_hash = meta_position_hash(meta);
+        let debug_timing = std::env::var("META_SOLVE_TIMING").is_ok();
+        let t0 = std::time::Instant::now();
         self.depth_limit = Some(depth_limit);
         let result = self.solve(meta);
+        if debug_timing {
+            eprintln!(
+                "[timing] first solve d{}: {:?} nodes={}",
+                depth_limit,
+                t0.elapsed(),
+                self.nodes_searched
+            );
+        }
         let mut proven_limit: Option<u32> = None;
         if result == TsuitateDfpnResult::Proven {
+            // スキャン中だけノード上限を「現在ノード + スキャン予算」に絞る。
+            // 予算に達したイテレーションは Unknown で返り、ループが終了する
+            let full_node_limit = self.node_limit;
+            self.node_limit = full_node_limit
+                .min(self.nodes_searched.saturating_add(scan_node_limit));
             let mut limit = self
                 .or_table
                 .get(&root_hash)
@@ -554,7 +575,18 @@ impl TsuitateDfpnSolver {
             while limit > 2 && !self.should_stop() {
                 let target = limit - 2;
                 self.depth_limit = Some(target);
-                if self.solve(meta) != TsuitateDfpnResult::Proven {
+                let ti = std::time::Instant::now();
+                let r = self.solve(meta);
+                if debug_timing {
+                    eprintln!(
+                        "[timing] scan d{}: {:?} nodes={} → {:?}",
+                        target,
+                        ti.elapsed(),
+                        self.nodes_searched,
+                        r
+                    );
+                }
+                if r != TsuitateDfpnResult::Proven {
                     break;
                 }
                 limit = self
@@ -566,6 +598,7 @@ impl TsuitateDfpnSolver {
                     .max(1);
                 proven_limit = Some(limit);
             }
+            self.node_limit = full_node_limit;
         }
         self.depth_limit = None;
         (result, proven_limit)

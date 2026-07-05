@@ -7,6 +7,7 @@
 //!   tsuitate-solver-cli <question.json> [--find-second] [--shortest]
 //!                       [--node-limit N] [--timeout-secs N] [--memory-limit-mb N]
 //!   tsuitate-solver-cli --solve-meta <request.json> [--node-limit N]
+//!                       [--scan-node-limit N] [--parallel N]
 //!
 //! --memory-limit-mb は本プロセスのピーク RSS の上限（MB）。超過すると探索を
 //! 打ち切り、出力の memoryLimited が true になる。本解の発見後（余詰め探索中）に
@@ -17,6 +18,11 @@
 //! 持ち駒は両者とも明示）と深さ制限のクエリ列を受け取り、それぞれ
 //! 「先手が制限内に詰みを強制できるか」を判定する。決定性を保つため
 //! タイムアウトは使わない（--node-limit はクエリごとの上限。既定 2,000,000）。
+//! --scan-node-limit は Proven 時の最小証明深さスキャン（タイブレーク用の
+//! 精密化）専用の追加ノード予算（0 = 無制限）。予算に達したら「そこまでに
+//! 証明できた深さ」で打ち切る。ノード数ベースなので決定的。
+//! --parallel はクエリの並列実行数（既定 1）。クエリは独立なので結果は
+//! 直列実行と同一。
 //! 出力: {"ok":true,"results":[{"result":"proven|disproven|unknown",
 //!        "provenDepth":N|null,"nodes":N}, ...]}
 //!
@@ -198,6 +204,10 @@ struct Args {
     timeout_secs: u64,
     /// ヒープ確保量の上限（MB）。0 なら無制限
     memory_limit_mb: u64,
+    /// --solve-meta: 最小証明深さスキャン専用の追加ノード予算。0 なら無制限
+    scan_node_limit: u64,
+    /// --solve-meta: クエリの並列実行数。既定 1（直列）
+    parallel: usize,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -209,6 +219,8 @@ fn parse_args() -> Result<Args, String> {
     let mut node_limit_given = false;
     let mut timeout_secs: u64 = 120;
     let mut memory_limit_mb: u64 = 0;
+    let mut scan_node_limit: u64 = 0;
+    let mut parallel: usize = 1;
 
     let mut iter = std::env::args().skip(1);
     while let Some(arg) = iter.next() {
@@ -230,6 +242,18 @@ fn parse_args() -> Result<Args, String> {
                 memory_limit_mb =
                     v.parse().map_err(|_| format!("Invalid --memory-limit-mb: {}", v))?;
             }
+            "--scan-node-limit" => {
+                let v = iter.next().ok_or("--scan-node-limit requires a value")?;
+                scan_node_limit =
+                    v.parse().map_err(|_| format!("Invalid --scan-node-limit: {}", v))?;
+            }
+            "--parallel" => {
+                let v = iter.next().ok_or("--parallel requires a value")?;
+                parallel = v.parse().map_err(|_| format!("Invalid --parallel: {}", v))?;
+                if parallel == 0 {
+                    return Err("--parallel must be >= 1".to_string());
+                }
+            }
             _ if arg.starts_with("--") => return Err(format!("Unknown option: {}", arg)),
             _ => {
                 if input.is_some() {
@@ -241,7 +265,7 @@ fn parse_args() -> Result<Args, String> {
     }
 
     Ok(Args {
-        input: input.ok_or("Usage: tsuitate-solver-cli <question.json> [--find-second] [--shortest] [--node-limit N] [--timeout-secs N] [--memory-limit-mb N] | --solve-meta <request.json> [--node-limit N]")?,
+        input: input.ok_or("Usage: tsuitate-solver-cli <question.json> [--find-second] [--shortest] [--node-limit N] [--timeout-secs N] [--memory-limit-mb N] | --solve-meta <request.json> [--node-limit N] [--scan-node-limit N] [--parallel N]")?,
         find_second,
         shortest,
         solve_meta,
@@ -249,6 +273,8 @@ fn parse_args() -> Result<Args, String> {
         node_limit_given,
         timeout_secs,
         memory_limit_mb,
+        scan_node_limit,
+        parallel,
     })
 }
 
@@ -325,7 +351,12 @@ fn position_from_meta_json(p: &MetaPositionJson) -> Result<Position, String> {
     Ok(pos)
 }
 
-fn run_solve_meta(json_str: &str, node_limit: u64) -> ExitCode {
+fn run_solve_meta(
+    json_str: &str,
+    node_limit: u64,
+    scan_node_limit: u64,
+    parallel: usize,
+) -> ExitCode {
     let request: SolveMetaRequestJson = match serde_json::from_str(json_str) {
         Ok(r) => r,
         Err(e) => {
@@ -333,13 +364,16 @@ fn run_solve_meta(json_str: &str, node_limit: u64) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    // 0 は無制限
+    let scan_node_limit = if scan_node_limit == 0 { u64::MAX } else { scan_node_limit };
 
-    let mut results = Vec::new();
+    // 入力の検証は先に直列で行う（不正入力は探索前に exit 2）
+    let mut parsed_queries: Vec<(Vec<Position>, u32)> = Vec::new();
     for query in &request.queries {
         let positions: Result<Vec<Position>, String> =
             query.positions.iter().map(position_from_meta_json).collect();
-        let positions = match positions {
-            Ok(ps) if !ps.is_empty() => ps,
+        match positions {
+            Ok(ps) if !ps.is_empty() => parsed_queries.push((ps, query.depth_limit)),
             Ok(_) => {
                 eprintln!("Empty positions in query");
                 return ExitCode::from(2);
@@ -348,19 +382,42 @@ fn run_solve_meta(json_str: &str, node_limit: u64) -> ExitCode {
                 eprintln!("Invalid position: {}", e);
                 return ExitCode::from(2);
             }
-        };
-        let outcome = solve_meta_query(positions, query.depth_limit, node_limit);
-        results.push(json!({
-            "result": match outcome.result {
-                MetaQueryResult::Proven => "proven",
-                MetaQueryResult::Disproven => "disproven",
-                MetaQueryResult::Unknown => "unknown",
-            },
-            "provenDepth": outcome.proven_depth,
-            "nodes": outcome.nodes,
-        }));
+        }
     }
 
+    // クエリは互いに独立で、各クエリの探索はノード上限のみで打ち切るため、
+    // 並列に実行しても結果は直列実行と同一（決定性は保たれる）
+    let workers = parallel.min(parsed_queries.len()).max(1);
+    let queries: Vec<Option<(Vec<Position>, u32)>> =
+        parsed_queries.into_iter().map(Some).collect();
+    let queries = std::sync::Mutex::new(queries.into_iter().enumerate().collect::<Vec<_>>());
+    let outcomes: Vec<std::sync::Mutex<Option<serde_json::Value>>> =
+        (0..request.queries.len()).map(|_| std::sync::Mutex::new(None)).collect();
+
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| loop {
+                let next = queries.lock().unwrap().pop();
+                let Some((idx, slot)) = next else { break };
+                let (positions, depth_limit) = slot.expect("query taken twice");
+                let outcome = solve_meta_query(positions, depth_limit, node_limit, scan_node_limit);
+                *outcomes[idx].lock().unwrap() = Some(json!({
+                    "result": match outcome.result {
+                        MetaQueryResult::Proven => "proven",
+                        MetaQueryResult::Disproven => "disproven",
+                        MetaQueryResult::Unknown => "unknown",
+                    },
+                    "provenDepth": outcome.proven_depth,
+                    "nodes": outcome.nodes,
+                }));
+            });
+        }
+    });
+
+    let results: Vec<serde_json::Value> = outcomes
+        .into_iter()
+        .map(|m| m.into_inner().unwrap().expect("query not solved"))
+        .collect();
     println!("{}", json!({ "ok": true, "results": results }));
     ExitCode::SUCCESS
 }
@@ -385,7 +442,7 @@ fn main() -> ExitCode {
         // 挑戦モードの判定は決定性が必要なためタイムアウトなし・ノード上限のみ。
         // 既定の 50M は求解用なので、未指定なら応答時間を抑えた上限にする
         let node_limit = if args.node_limit_given { args.node_limit } else { 2_000_000 };
-        return run_solve_meta(&json_str, node_limit);
+        return run_solve_meta(&json_str, node_limit, args.scan_node_limit, args.parallel);
     }
     let question: QuestionJson = match serde_json::from_str(&json_str) {
         Ok(q) => q,

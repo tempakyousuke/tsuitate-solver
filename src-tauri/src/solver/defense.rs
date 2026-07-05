@@ -32,11 +32,13 @@ pub struct MetaQueryOutcome {
     pub nodes: u64,
 }
 
-/// 情報集合（全局面が先手番）に対する深さ制限付きの詰み判定
+/// 情報集合（全局面が先手番）に対する深さ制限付きの詰み判定。
+/// scan_node_limit は最小証明深さスキャン専用の追加ノード予算（u64::MAX で無制限）
 pub fn solve_meta_query(
     positions: Vec<Position>,
     depth_limit: u32,
     node_limit: u64,
+    scan_node_limit: u64,
 ) -> MetaQueryOutcome {
     let mut inited: Vec<Position> = positions;
     for pos in &mut inited {
@@ -46,7 +48,7 @@ pub fn solve_meta_query(
 
     let cancel = Arc::new(AtomicBool::new(false));
     let mut solver = TsuitateDfpnSolver::new(node_limit, cancel);
-    let (result, proven_depth) = solver.solve_bounded(&meta, depth_limit);
+    let (result, proven_depth) = solver.solve_bounded(&meta, depth_limit, scan_node_limit);
 
     MetaQueryOutcome {
         result: match result {
@@ -91,7 +93,7 @@ mod tests {
 
     #[test]
     fn proven_within_budget() {
-        let outcome = solve_meta_query(vec![mate_in_one()], 5, 1_000_000);
+        let outcome = solve_meta_query(vec![mate_in_one()], 5, 1_000_000, u64::MAX);
         assert_eq!(outcome.result, MetaQueryResult::Proven);
         assert_eq!(outcome.proven_depth, Some(1));
     }
@@ -102,7 +104,7 @@ mod tests {
         let mut pos = mate_in_one();
         pos.sente_hand.remove(PieceKind::Gold);
         pos.gote_hand.add(PieceKind::Gold);
-        let outcome = solve_meta_query(vec![pos], 5, 1_000_000);
+        let outcome = solve_meta_query(vec![pos], 5, 1_000_000, u64::MAX);
         assert_eq!(outcome.result, MetaQueryResult::Disproven);
     }
 }
