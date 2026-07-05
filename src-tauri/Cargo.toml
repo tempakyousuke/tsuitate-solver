@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Tsuitate Tsumeshogi Solver"
 authors = ["you"]
 edition = "2021"
+default-run = "tsuitate-solver"
 
 [lib]
 name = "tsuitate_solver_lib"
