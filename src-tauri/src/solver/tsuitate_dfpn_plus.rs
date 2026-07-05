@@ -1410,7 +1410,10 @@ impl TsuitateDfpnPlusSolver {
             return None;
         }
         if meta.all_effectively_checkmate() {
-            return Some(SolutionNode::Checkmate { depth });
+            return Some(SolutionNode::Checkmate {
+                depth,
+                hand_count: meta.max_sente_hand_count(),
+            });
         }
         // 深さガード（指数爆発防止）
         if depth > 200 {
@@ -1543,7 +1546,10 @@ impl TsuitateDfpnPlusSolver {
                 if expansion.obs_terminal[i] {
                     branches.push(SolutionBranch {
                         observation: obs,
-                        continuation: Box::new(SolutionNode::Checkmate { depth: depth + 1 }),
+                        continuation: Box::new(SolutionNode::Checkmate {
+                            depth: depth + 1,
+                            hand_count: expansion.obs_hands[i].iter().copied().sum(),
+                        }),
                     });
                 } else {
                     let d_inc = expansion.obs_depth_inc[i];
@@ -1582,7 +1588,10 @@ impl TsuitateDfpnPlusSolver {
         if legal_meta.all_effectively_checkmate() {
             branches.push(SolutionBranch {
                 observation: Observation::Checkmate,
-                continuation: Box::new(SolutionNode::Checkmate { depth: depth + 1 }),
+                continuation: Box::new(SolutionNode::Checkmate {
+                    depth: depth + 1,
+                    hand_count: legal_meta.max_sente_hand_count(),
+                }),
             });
             return Some(branches);
         }
@@ -1596,6 +1605,7 @@ impl TsuitateDfpnPlusSolver {
                         observation: Observation::Checkmate,
                         continuation: Box::new(SolutionNode::Checkmate {
                             depth: depth + 1,
+                            hand_count: branch_meta.max_sente_hand_count(),
                         }),
                     });
                 }

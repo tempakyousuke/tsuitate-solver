@@ -180,7 +180,7 @@ fn print_position(pos: &Position) {
 fn print_solution_tree(node: &SolutionNode, indent: usize) {
     let pad = " ".repeat(indent);
     match node {
-        SolutionNode::Checkmate { depth } => {
+        SolutionNode::Checkmate { depth, .. } => {
             println!("{}詰み (depth={})", pad, depth);
         }
         SolutionNode::AttackMove { mv, branches, .. } => {

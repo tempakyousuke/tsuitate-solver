@@ -285,6 +285,11 @@ impl HandPieces {
     pub fn counts_array(&self) -> [u8; 7] {
         self.counts
     }
+
+    /// 持ち駒の合計枚数
+    pub fn total(&self) -> u8 {
+        self.counts.iter().sum()
+    }
 }
 
 impl Default for HandPieces {

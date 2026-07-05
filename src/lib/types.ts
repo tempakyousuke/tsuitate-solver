@@ -62,6 +62,8 @@ export type SolutionNode = CheckmateNode | AttackMoveNode;
 export interface CheckmateNode {
   Checkmate: {
     depth: number;
+    /** 詰め上がり時に攻め方（先手）の持ち駒に残っている枚数（駒余り判定用） */
+    hand_count?: number;
   };
 }
 

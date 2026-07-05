@@ -306,6 +306,7 @@ impl TsuitateSolver {
             ));
             return Some(SolutionNode::Checkmate {
                 depth: current_depth,
+                hand_count: meta.max_sente_hand_count(),
             });
         }
 
@@ -490,6 +491,7 @@ impl TsuitateSolver {
                         observation: Observation::Checkmate,
                         continuation: Box::new(SolutionNode::Checkmate {
                             depth: current_depth + 1,
+                            hand_count: legal_meta.max_sente_hand_count(),
                         }),
                     });
                 } else {
@@ -520,6 +522,7 @@ impl TsuitateSolver {
                                 observation: observation.clone(),
                                 continuation: Box::new(SolutionNode::Checkmate {
                                     depth: current_depth + 1,
+                                    hand_count: branch_meta.max_sente_hand_count(),
                                 }),
                             });
                         }

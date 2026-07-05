@@ -27,6 +27,10 @@ pub enum SolutionNode {
     Checkmate {
         /// 詰みまでの手数
         depth: u32,
+        /// 詰め上がり時に攻め方（先手）の持ち駒に残っている枚数
+        /// （情報集合内の最大値。駒余り判定用。旧データは 0 扱い）
+        #[serde(default)]
+        hand_count: u8,
     },
     /// 攻め方の手
     AttackMove {
@@ -234,6 +238,29 @@ impl SolutionNode {
             }
         }
     }
+
+    /// 駒余り判定: 最長手順（最深の詰み）の詰め上がりで攻め方の持ち駒が余るか。
+    /// 変化（短い分岐）で余るのは通常の詰将棋の慣例に合わせて不問とする。
+    pub fn has_piece_surplus(&self) -> bool {
+        let mut leaves: Vec<(u32, u8)> = Vec::new();
+        self.collect_checkmate_leaves(&mut leaves);
+        let Some(max_depth) = leaves.iter().map(|&(d, _)| d).max() else {
+            return false;
+        };
+        leaves.iter().any(|&(d, h)| d == max_depth && h > 0)
+    }
+
+    /// 全 Checkmate 葉の (詰みまでの手数, 残り持ち駒枚数) を収集
+    fn collect_checkmate_leaves(&self, out: &mut Vec<(u32, u8)>) {
+        match self {
+            SolutionNode::Checkmate { depth, hand_count } => out.push((*depth, *hand_count)),
+            SolutionNode::AttackMove { branches, .. } => {
+                for branch in branches {
+                    branch.continuation.collect_checkmate_leaves(out);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -270,7 +297,7 @@ mod tests {
                         mv: make_move_data("▲２二金打", 2, 2, Some("金")),
                         branches: vec![SolutionBranch {
                             observation: Observation::Checkmate,
-                            continuation: Box::new(SolutionNode::Checkmate { depth: 3 }),
+                            continuation: Box::new(SolutionNode::Checkmate { depth: 3, hand_count: 0 }),
                         }],
                     }),
                 },
@@ -294,7 +321,7 @@ mod tests {
                                     mv: make_move_data("▲２二金打", 2, 2, Some("金")),
                                     branches: vec![SolutionBranch {
                                         observation: Observation::Checkmate,
-                                        continuation: Box::new(SolutionNode::Checkmate { depth: 5 }),
+                                        continuation: Box::new(SolutionNode::Checkmate { depth: 5, hand_count: 0 }),
                                     }],
                                 }),
                             },
@@ -322,7 +349,7 @@ mod tests {
             mv: make_move_data("▲１一金打", 1, 1, Some("金")),
             branches: vec![SolutionBranch {
                 observation: Observation::Checkmate,
-                continuation: Box::new(SolutionNode::Checkmate { depth: 1 }),
+                continuation: Box::new(SolutionNode::Checkmate { depth: 1, hand_count: 0 }),
             }],
         };
 
@@ -331,7 +358,7 @@ mod tests {
             mv: make_move_data("▲２二銀打", 2, 2, Some("銀")),
             branches: vec![SolutionBranch {
                 observation: Observation::Checkmate,
-                continuation: Box::new(SolutionNode::Checkmate { depth: 1 }),
+                continuation: Box::new(SolutionNode::Checkmate { depth: 1, hand_count: 0 }),
             }],
         };
 
@@ -351,7 +378,7 @@ mod tests {
             mv: make_move_data("▲２二金打", 2, 2, Some("金")),
             branches: vec![SolutionBranch {
                 observation: Observation::Checkmate,
-                continuation: Box::new(SolutionNode::Checkmate { depth: 3 }),
+                continuation: Box::new(SolutionNode::Checkmate { depth: 3, hand_count: 0 }),
             }],
         };
         assert!(final_node.is_final_move(), "全分岐がCheckmateに至るNodeは最終手");
@@ -363,11 +390,11 @@ mod tests {
             branches: vec![
                 SolutionBranch {
                     observation: Observation::Checkmate,
-                    continuation: Box::new(SolutionNode::Checkmate { depth: 3 }),
+                    continuation: Box::new(SolutionNode::Checkmate { depth: 3, hand_count: 0 }),
                 },
                 SolutionBranch {
                     observation: Observation::Illegal,
-                    continuation: Box::new(SolutionNode::Checkmate { depth: 3 }),
+                    continuation: Box::new(SolutionNode::Checkmate { depth: 3, hand_count: 0 }),
                 },
             ],
         };
@@ -384,7 +411,7 @@ mod tests {
                     mv: make_move_data("▲２二金打", 2, 2, Some("金")),
                     branches: vec![SolutionBranch {
                         observation: Observation::Checkmate,
-                        continuation: Box::new(SolutionNode::Checkmate { depth: 3 }),
+                        continuation: Box::new(SolutionNode::Checkmate { depth: 3, hand_count: 0 }),
                     }],
                 }),
             }],
@@ -392,7 +419,7 @@ mod tests {
         assert!(!non_final.is_final_move(), "継続にAttackMoveがあれば最終手ではない");
 
         // Checkmate ノード自体は最終手ではない
-        let checkmate = SolutionNode::Checkmate { depth: 1 };
+        let checkmate = SolutionNode::Checkmate { depth: 1, hand_count: 0 };
         assert!(!checkmate.is_final_move(), "Checkmateノードは最終手ではない");
     }
 
@@ -407,7 +434,7 @@ mod tests {
             mv: make_move_data("▲１一金打", 1, 1, Some("金")),
             branches: vec![SolutionBranch {
                 observation: Observation::Checkmate,
-                continuation: Box::new(SolutionNode::Checkmate { depth: 1 }),
+                continuation: Box::new(SolutionNode::Checkmate { depth: 1, hand_count: 0 }),
             }],
         };
 
@@ -435,7 +462,7 @@ mod tests {
             mv: make_move_data("▲２一飛打", 2, 1, Some("飛")),
             branches: vec![SolutionBranch {
                 observation: Observation::Checkmate,
-                continuation: Box::new(SolutionNode::Checkmate { depth: 1 }),
+                continuation: Box::new(SolutionNode::Checkmate { depth: 1, hand_count: 0 }),
             }],
         };
 
@@ -456,7 +483,7 @@ mod tests {
                         mv: make_move_data("▲３三角打", 3, 3, Some("角")),
                         branches: vec![SolutionBranch {
                             observation: Observation::Checkmate,
-                            continuation: Box::new(SolutionNode::Checkmate { depth: 3 }),
+                            continuation: Box::new(SolutionNode::Checkmate { depth: 3, hand_count: 0 }),
                         }],
                     }),
                 },

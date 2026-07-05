@@ -223,7 +223,7 @@ fn print_solution_tree(node: &tsuitate_solver_lib::solver::solution::SolutionNod
     use tsuitate_solver_lib::solver::solution::{Observation, SolutionNode};
     let pad = " ".repeat(indent);
     match node {
-        SolutionNode::Checkmate { depth } => {
+        SolutionNode::Checkmate { depth, .. } => {
             println!("{}詰み (depth={})", pad, depth);
         }
         SolutionNode::AttackMove { mv, branches, .. } => {
