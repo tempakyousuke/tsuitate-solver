@@ -239,15 +239,20 @@ impl SolutionNode {
         }
     }
 
-    /// 駒余り判定: 最長手順（最深の詰み）の詰め上がりで攻め方の持ち駒が余るか。
+    /// 駒余り判定: 最長手順（最深の詰み）の全ての詰め上がりで攻め方の持ち駒が余るか。
     /// 変化（短い分岐）で余るのは通常の詰将棋の慣例に合わせて不問とする。
+    /// 同じ最長手数でも観測分岐（反則分岐など）によって余らない詰め上がりが
+    /// 1つでもあれば不問（余る側の駒は別分岐で使われる必要駒とみなす）。
     pub fn has_piece_surplus(&self) -> bool {
         let mut leaves: Vec<(u32, u8)> = Vec::new();
         self.collect_checkmate_leaves(&mut leaves);
         let Some(max_depth) = leaves.iter().map(|&(d, _)| d).max() else {
             return false;
         };
-        leaves.iter().any(|&(d, h)| d == max_depth && h > 0)
+        leaves
+            .iter()
+            .filter(|&&(d, _)| d == max_depth)
+            .all(|&(_, h)| h > 0)
     }
 
     /// 全 Checkmate 葉の (詰みまでの手数, 残り持ち駒枚数) を収集
@@ -451,6 +456,101 @@ mod tests {
         assert!(
             solution2.is_subsumed_by(&first_hashes),
             "Illegal プローブ後の合流は包含されるべき"
+        );
+    }
+
+    /// 駒余り判定: 最長手数の詰め上がりが全て駒余りなら駒余り
+    #[test]
+    fn test_piece_surplus_all_max_depth_leaves() {
+        let tree = SolutionNode::AttackMove {
+            meta_hash: None,
+            mv: make_move_data("▲２二金打", 2, 2, Some("金")),
+            branches: vec![SolutionBranch {
+                observation: Observation::Checkmate,
+                continuation: Box::new(SolutionNode::Checkmate { depth: 1, hand_count: 1 }),
+            }],
+        };
+        assert!(tree.has_piece_surplus(), "唯一の最長詰め上がりで余るなら駒余り");
+    }
+
+    /// ユーザ報告のケース（「同？確認」）:
+    /// ▲１五歩 → Captured(1,5) → ▲１三角成 の分岐:
+    ///   - Checkmate: 角成で詰み（香が余る、hand_count=1）
+    ///   - Illegal: 角成が反則 → ▲１六香打 → Checkmate（余りなし、hand_count=0）
+    /// 反則分岐は depth を進めないので両葉は同じ最長手数。
+    /// 余らない詰め上がりがあるので駒余りではない。
+    #[test]
+    fn test_no_piece_surplus_when_illegal_branch_uses_piece() {
+        let tree = SolutionNode::AttackMove {
+            meta_hash: None,
+            mv: make_move_data("▲１五歩", 1, 5, Some("歩")),
+            branches: vec![SolutionBranch {
+                observation: Observation::Captured { file: 1, rank: 5 },
+                continuation: Box::new(SolutionNode::AttackMove {
+                    meta_hash: None,
+                    mv: make_move_data("▲１三角成", 1, 3, None),
+                    branches: vec![
+                        SolutionBranch {
+                            observation: Observation::Checkmate,
+                            continuation: Box::new(SolutionNode::Checkmate {
+                                depth: 3,
+                                hand_count: 1,
+                            }),
+                        },
+                        SolutionBranch {
+                            observation: Observation::Illegal,
+                            continuation: Box::new(SolutionNode::AttackMove {
+                                meta_hash: None,
+                                mv: make_move_data("▲１六香打", 1, 6, Some("香")),
+                                branches: vec![SolutionBranch {
+                                    observation: Observation::Checkmate,
+                                    continuation: Box::new(SolutionNode::Checkmate {
+                                        depth: 3,
+                                        hand_count: 0,
+                                    }),
+                                }],
+                            }),
+                        },
+                    ],
+                }),
+            }],
+        };
+        assert!(
+            !tree.has_piece_surplus(),
+            "同じ最長手数に余らない詰め上がりがあれば駒余りではない"
+        );
+    }
+
+    /// 変化（短い分岐）で余らなくても最長手順が全て余るなら駒余り
+    #[test]
+    fn test_piece_surplus_ignores_shorter_leaves() {
+        let tree = SolutionNode::AttackMove {
+            meta_hash: None,
+            mv: make_move_data("▲２一飛打", 2, 1, Some("飛")),
+            branches: vec![
+                SolutionBranch {
+                    observation: Observation::Checkmate,
+                    continuation: Box::new(SolutionNode::Checkmate { depth: 1, hand_count: 0 }),
+                },
+                SolutionBranch {
+                    observation: Observation::Captured { file: 2, rank: 1 },
+                    continuation: Box::new(SolutionNode::AttackMove {
+                        meta_hash: None,
+                        mv: make_move_data("▲２二金打", 2, 2, Some("金")),
+                        branches: vec![SolutionBranch {
+                            observation: Observation::Checkmate,
+                            continuation: Box::new(SolutionNode::Checkmate {
+                                depth: 3,
+                                hand_count: 1,
+                            }),
+                        }],
+                    }),
+                },
+            ],
+        };
+        assert!(
+            tree.has_piece_surplus(),
+            "短い変化で余らなくても最長手順が全て余るなら駒余り"
         );
     }
 
