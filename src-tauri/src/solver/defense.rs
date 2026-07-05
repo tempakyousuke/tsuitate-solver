@@ -40,14 +40,28 @@ pub fn solve_meta_query(
     node_limit: u64,
     scan_node_limit: u64,
 ) -> MetaQueryOutcome {
+    let cancel = Arc::new(AtomicBool::new(false));
+    let mut solver = TsuitateDfpnSolver::new(node_limit, cancel);
+    solve_meta_query_with(&mut solver, positions, depth_limit, node_limit, scan_node_limit)
+}
+
+/// 既存のソルバー（温存された転置表つき）でクエリを判定する常駐モード用。
+/// ノード予算は現在の累計 nodes_searched を起点にクエリ単位で適用する
+pub fn solve_meta_query_with(
+    solver: &mut TsuitateDfpnSolver,
+    positions: Vec<Position>,
+    depth_limit: u32,
+    node_limit: u64,
+    scan_node_limit: u64,
+) -> MetaQueryOutcome {
     let mut inited: Vec<Position> = positions;
     for pos in &mut inited {
         pos.init_zobrist_hash();
     }
     let meta = MetaPosition { positions: inited };
 
-    let cancel = Arc::new(AtomicBool::new(false));
-    let mut solver = TsuitateDfpnSolver::new(node_limit, cancel);
+    let start_nodes = solver.nodes_searched;
+    solver.set_node_limit(start_nodes.saturating_add(node_limit));
     let (result, proven_depth) = solver.solve_bounded(&meta, depth_limit, scan_node_limit);
 
     MetaQueryOutcome {
@@ -57,7 +71,7 @@ pub fn solve_meta_query(
             TsuitateDfpnResult::Unknown => MetaQueryResult::Unknown,
         },
         proven_depth,
-        nodes: solver.nodes_searched,
+        nodes: solver.nodes_searched - start_nodes,
     }
 }
 

@@ -8,6 +8,7 @@
 //!                       [--node-limit N] [--timeout-secs N] [--memory-limit-mb N]
 //!   tsuitate-solver-cli --solve-meta <request.json> [--node-limit N]
 //!                       [--scan-node-limit N] [--parallel N]
+//!   tsuitate-solver-cli --solve-meta-server [--node-limit N] [--scan-node-limit N]
 //!
 //! --memory-limit-mb は本プロセスのピーク RSS の上限（MB）。超過すると探索を
 //! 打ち切り、出力の memoryLimited が true になる。本解の発見後（余詰め探索中）に
@@ -23,6 +24,13 @@
 //! 証明できた深さ」で打ち切る。ノード数ベースなので決定的。
 //! --parallel はクエリの並列実行数（既定 1）。クエリは独立なので結果は
 //! 直列実行と同一。
+//!
+//! --solve-meta-server は常駐モード。stdin から行区切りJSON（--solve-meta と
+//! 同じリクエスト形式）を受け、1行ずつ結果を返す。ソルバーの転置表
+//! （証明・反証の恒久的事実）を手をまたいで温存するため、挑戦モードの
+//! 2手目以降がほぼ即答になる。warm start の分だけ結果が一発実行と変わり得る
+//! （unknown が proven/disproven になる方向のみ）ので、決定性は呼び出し側の
+//! 選択の永続化で担保すること。stdin が閉じたら終了。
 //! 出力: {"ok":true,"results":[{"result":"proven|disproven|unknown",
 //!        "provenDepth":N|null,"nodes":N}, ...]}
 //!
@@ -61,7 +69,9 @@ use serde::Deserialize;
 use serde_json::json;
 use tsuitate_solver_lib::shogi::position::Position;
 use tsuitate_solver_lib::shogi::types::*;
-use tsuitate_solver_lib::solver::defense::{solve_meta_query, MetaQueryResult};
+use tsuitate_solver_lib::solver::defense::{
+    solve_meta_query, solve_meta_query_with, MetaQueryResult,
+};
 use tsuitate_solver_lib::solver::metaposition::MetaPosition;
 use tsuitate_solver_lib::solver::tsuitate_dfpn::TsuitateDfpnSolver;
 
@@ -195,10 +205,13 @@ fn position_from_question(q: &QuestionJson) -> Result<Position, String> {
 }
 
 struct Args {
-    input: String,
+    /// 入力ファイル。--solve-meta-server では不要（stdin を使う）
+    input: Option<String>,
     find_second: bool,
     shortest: bool,
     solve_meta: bool,
+    /// 常駐モード: stdin から行区切りJSONでクエリを受け続ける
+    solve_meta_server: bool,
     node_limit: u64,
     node_limit_given: bool,
     timeout_secs: u64,
@@ -215,6 +228,7 @@ fn parse_args() -> Result<Args, String> {
     let mut find_second = false;
     let mut shortest = false;
     let mut solve_meta = false;
+    let mut solve_meta_server = false;
     let mut node_limit: u64 = 50_000_000;
     let mut node_limit_given = false;
     let mut timeout_secs: u64 = 120;
@@ -228,6 +242,7 @@ fn parse_args() -> Result<Args, String> {
             "--find-second" => find_second = true,
             "--shortest" => shortest = true,
             "--solve-meta" => solve_meta = true,
+            "--solve-meta-server" => solve_meta_server = true,
             "--node-limit" => {
                 let v = iter.next().ok_or("--node-limit requires a value")?;
                 node_limit = v.parse().map_err(|_| format!("Invalid --node-limit: {}", v))?;
@@ -264,11 +279,15 @@ fn parse_args() -> Result<Args, String> {
         }
     }
 
+    if input.is_none() && !solve_meta_server {
+        return Err("Usage: tsuitate-solver-cli <question.json> [--find-second] [--shortest] [--node-limit N] [--timeout-secs N] [--memory-limit-mb N] | --solve-meta <request.json> [--node-limit N] [--scan-node-limit N] [--parallel N] | --solve-meta-server [--node-limit N] [--scan-node-limit N]".to_string());
+    }
     Ok(Args {
-        input: input.ok_or("Usage: tsuitate-solver-cli <question.json> [--find-second] [--shortest] [--node-limit N] [--timeout-secs N] [--memory-limit-mb N] | --solve-meta <request.json> [--node-limit N] [--scan-node-limit N] [--parallel N]")?,
+        input,
         find_second,
         shortest,
         solve_meta,
+        solve_meta_server,
         node_limit,
         node_limit_given,
         timeout_secs,
@@ -351,6 +370,80 @@ fn position_from_meta_json(p: &MetaPositionJson) -> Result<Position, String> {
     Ok(pos)
 }
 
+/// 常駐モード: stdin から行区切りJSON（--solve-meta と同じリクエスト形式）を
+/// 受け続け、1行ずつ結果を返す。ソルバーは使い回し、証明・反証の事実
+/// （転置表）を温存して後続クエリを warm start する。挑戦モードは1手ごとに
+/// 「前の手の証明の部分木」を問い直すため、これが支配的なコストを消す。
+/// リクエストの合間に再開用キャッシュを trim してメモリを頭打ちにする。
+/// クエリは直列実行（--parallel は無視。温存された転置表の共有が優先）
+fn run_solve_meta_server(node_limit: u64, scan_node_limit: u64) -> ExitCode {
+    use std::io::{BufRead, Write};
+
+    let scan_node_limit = if scan_node_limit == 0 { u64::MAX } else { scan_node_limit };
+    let cancel = Arc::new(AtomicBool::new(false));
+    let mut solver = TsuitateDfpnSolver::new(u64::MAX, cancel);
+
+    let stdin = std::io::stdin();
+    for line in stdin.lock().lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let response = match serde_json::from_str::<SolveMetaRequestJson>(&line) {
+            Err(e) => json!({ "ok": false, "error": format!("parse: {}", e) }),
+            Ok(request) => {
+                let mut results = Vec::new();
+                let mut error: Option<String> = None;
+                for query in &request.queries {
+                    let positions: Result<Vec<Position>, String> =
+                        query.positions.iter().map(position_from_meta_json).collect();
+                    match positions {
+                        Ok(ps) if !ps.is_empty() => {
+                            let outcome = solve_meta_query_with(
+                                &mut solver,
+                                ps,
+                                query.depth_limit,
+                                node_limit,
+                                scan_node_limit,
+                            );
+                            results.push(json!({
+                                "result": match outcome.result {
+                                    MetaQueryResult::Proven => "proven",
+                                    MetaQueryResult::Disproven => "disproven",
+                                    MetaQueryResult::Unknown => "unknown",
+                                },
+                                "provenDepth": outcome.proven_depth,
+                                "nodes": outcome.nodes,
+                            }));
+                        }
+                        Ok(_) => {
+                            error = Some("empty positions in query".to_string());
+                            break;
+                        }
+                        Err(e) => {
+                            error = Some(format!("invalid position: {}", e));
+                            break;
+                        }
+                    }
+                }
+                solver.trim_transient_caches();
+                match error {
+                    Some(e) => json!({ "ok": false, "error": e }),
+                    None => json!({ "ok": true, "results": results }),
+                }
+            }
+        };
+        let mut out = std::io::stdout().lock();
+        if writeln!(out, "{}", response).and_then(|_| out.flush()).is_err() {
+            break; // 親プロセスが死んだら終了
+        }
+    }
+    ExitCode::SUCCESS
+}
+
 fn run_solve_meta(
     json_str: &str,
     node_limit: u64,
@@ -431,23 +524,28 @@ fn main() -> ExitCode {
         }
     };
 
-    let json_str = match std::fs::read_to_string(&args.input) {
+    // 挑戦モードの判定は決定性が必要なためタイムアウトなし・ノード上限のみ。
+    // 既定の 50M は求解用なので、未指定なら応答時間を抑えた上限にする
+    let meta_node_limit = if args.node_limit_given { args.node_limit } else { 2_000_000 };
+    if args.solve_meta_server {
+        return run_solve_meta_server(meta_node_limit, args.scan_node_limit);
+    }
+
+    let input = args.input.as_deref().expect("parse_args で検証済み");
+    let json_str = match std::fs::read_to_string(input) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("Failed to read {}: {}", args.input, e);
+            eprintln!("Failed to read {}: {}", input, e);
             return ExitCode::from(2);
         }
     };
     if args.solve_meta {
-        // 挑戦モードの判定は決定性が必要なためタイムアウトなし・ノード上限のみ。
-        // 既定の 50M は求解用なので、未指定なら応答時間を抑えた上限にする
-        let node_limit = if args.node_limit_given { args.node_limit } else { 2_000_000 };
-        return run_solve_meta(&json_str, node_limit, args.scan_node_limit, args.parallel);
+        return run_solve_meta(&json_str, meta_node_limit, args.scan_node_limit, args.parallel);
     }
     let question: QuestionJson = match serde_json::from_str(&json_str) {
         Ok(q) => q,
         Err(e) => {
-            eprintln!("Failed to parse {}: {}", args.input, e);
+            eprintln!("Failed to parse {}: {}", input, e);
             return ExitCode::from(2);
         }
     };

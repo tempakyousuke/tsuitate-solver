@@ -503,6 +503,27 @@ impl TsuitateDfpnSolver {
         }
     }
 
+    /// ノード上限を再設定する（常駐モードでクエリごとの予算を
+    /// nodes_searched 起点で適用するため）
+    pub fn set_node_limit(&mut self, node_limit: u64) {
+        self.node_limit = node_limit;
+    }
+
+    /// 探索の再開用キャッシュ（メモリの大半を占める）を解放し、
+    /// 証明・反証の事実（or/and 転置表・優越関係・証明駒）だけを残す。
+    ///
+    /// 常駐モード（--solve-meta-server）でリクエストの合間に呼ぶ。
+    /// 転置表エントリは予算ゲート（PnDn::effective）で再利用可否を判定する
+    /// 恒久的事実なので、後続クエリの warm start に安全に使える。
+    /// 解放するのは再計算可能なキャッシュのみで、探索結果には影響しない
+    pub fn trim_transient_caches(&mut self) {
+        self.proof_cache = FxHashMap::default();
+        self.and_expansion_cache = FxHashMap::default();
+        self.or_candidate_cache = FxHashMap::default();
+        self.legal_moves_cache = FxHashMap::default();
+        self.check_moves_cache = FxHashMap::default();
+    }
+
     /// メタポジションが詰むかどうかを判定する
     pub fn solve(&mut self, meta: &MetaPosition) -> TsuitateDfpnResult {
         let hash = meta_position_hash(meta);
