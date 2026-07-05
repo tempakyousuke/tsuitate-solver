@@ -526,6 +526,51 @@ impl TsuitateDfpnSolver {
         }
     }
 
+    /// 深さ制限付きの詰み判定（挑戦モードの応手・観測分岐の選択用）。
+    ///
+    /// depth_limit 手（先手・後手合計）以内に攻め方が詰ませられるかを判定する。
+    /// Proven の場合、「証明できた最小の深さ制限」（最短詰み手数の上界）を
+    /// 下方向スキャン（shorten_solution と同じ proof_k ジャンプ）で求めて返す。
+    /// ノード上限は全スキャンの合計に適用される。タイムアウトを併用しなければ
+    /// 同一入力に対して決定的。
+    pub fn solve_bounded(
+        &mut self,
+        meta: &MetaPosition,
+        depth_limit: u32,
+    ) -> (TsuitateDfpnResult, Option<u32>) {
+        let root_hash = meta_position_hash(meta);
+        self.depth_limit = Some(depth_limit);
+        let result = self.solve(meta);
+        let mut proven_limit: Option<u32> = None;
+        if result == TsuitateDfpnResult::Proven {
+            let mut limit = self
+                .or_table
+                .get(&root_hash)
+                .and_then(|e| e.proven_bound())
+                .unwrap_or(depth_limit)
+                .min(depth_limit)
+                .max(1);
+            proven_limit = Some(limit);
+            while limit > 2 && !self.should_stop() {
+                let target = limit - 2;
+                self.depth_limit = Some(target);
+                if self.solve(meta) != TsuitateDfpnResult::Proven {
+                    break;
+                }
+                limit = self
+                    .or_table
+                    .get(&root_hash)
+                    .and_then(|e| e.proven_bound())
+                    .unwrap_or(target)
+                    .min(target)
+                    .max(1);
+                proven_limit = Some(limit);
+            }
+        }
+        self.depth_limit = None;
+        (result, proven_limit)
+    }
+
     /// 深さ depth における残り深さ予算（深さ制限なしは INF）
     fn current_budget(&self, depth: u32) -> u32 {
         match self.depth_limit {
