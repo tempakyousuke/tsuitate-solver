@@ -2143,6 +2143,11 @@ impl TsuitateDfpnSolver {
         }
 
         let max_depth = node.max_moves();
+        // find_inner_alt_recursive と同じ理由: 最善防御が反則分岐にある場合、
+        // 非反則の同長分岐は玉方最善で到達しないため走査しない。
+        let has_longest_illegal = branches.iter().any(|b| {
+            b.observation == Observation::Illegal && b.continuation.max_moves() >= max_depth
+        });
         for (branch_idx, branch) in branches.iter().enumerate() {
             let branch_depth = match branch.observation {
                 Observation::Checkmate => 1,
@@ -2150,6 +2155,9 @@ impl TsuitateDfpnSolver {
                 _ => 2 + branch.continuation.max_moves(),
             };
             if branch_depth < max_depth {
+                continue;
+            }
+            if has_longest_illegal && branch.observation != Observation::Illegal {
                 continue;
             }
 
@@ -2241,6 +2249,15 @@ impl TsuitateDfpnSolver {
         // 最長応手分岐のみ探索
         let max_depth = node.max_moves();
 
+        // プローブ手の Illegal 分岐が最長応手（＝玉方の最善防御）である場合、
+        // 非 Illegal 分岐（Captured/NoCapture）は玉方が最善を尽くせば到達しない
+        // 変化であり、そこで見つかる別手順は余詰めに当たらない（ユーザー判断）。
+        // 例: 問題46 では ▲８四桂打（プローブ手）の反則分岐が最善防御で先手の
+        // 続手が一意に決まる。取られる分岐（非最善）での別手順は余詰めではない。
+        let has_longest_illegal = branches.iter().any(|b| {
+            b.observation == Observation::Illegal && b.continuation.max_moves() >= max_depth
+        });
+
         // 各ブランチの子MetaPositionを特定して再帰
         for (branch_idx, branch) in branches.iter().enumerate() {
             // 最長でない分岐はスキップ
@@ -2250,6 +2267,10 @@ impl TsuitateDfpnSolver {
                 _ => 2 + branch.continuation.max_moves(),
             };
             if branch_depth < max_depth {
+                continue;
+            }
+            // 最善防御が反則分岐にある場合、非反則の同長分岐は走査しない
+            if has_longest_illegal && branch.observation != Observation::Illegal {
                 continue;
             }
 
