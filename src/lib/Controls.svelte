@@ -10,6 +10,7 @@
     errorMessage,
     findSecondSolution,
     findShortestPath,
+    omitFutile,
     clearBoard,
     saveInitialPosition,
     exitPreview,
@@ -159,7 +160,9 @@
       const result = await invoke<SolutionData>("solve", {
         position: posData,
         findSecondSolution: $findSecondSolution,
-        findShortestPath: $findShortestPath,
+        // 無駄合い除外は最短の木に適用するのが正しいので最短探索を強制する
+        findShortestPath: $findShortestPath || $omitFutile,
+        omitFutile: $omitFutile,
       });
 
       solution.set(result);
@@ -207,6 +210,10 @@
     <label>
       <input type="checkbox" bind:checked={$findShortestPath} disabled={$solving} />
       最短経路を調べる
+    </label>
+    <label title="玉方は無駄合いを着手しないものとして手数を数えます（最短探索を伴います）。">
+      <input type="checkbox" bind:checked={$omitFutile} disabled={$solving} />
+      無駄合いを省く
     </label>
   </div>
 

@@ -17,6 +17,345 @@ const INF: u32 = u32::MAX / 2;
 /// メタポジションのサイズ上限
 const MAX_META_POSITIONS: usize = 5000;
 
+// ===== 無駄合い判定（衝立の正しい定義） =====
+// 合駒 S が無駄合い ⟺ ①スライダーで S を取れて王手継続 ②後手が取り返せない
+// ③取った後（スライダー@S）から先手が依然として詰ませられる。
+// ③は完全情報の単一局面詰み探索で検証する（メタポジション探索を単一局面に再利用）。
+
+thread_local! {
+    /// muda_ai の結果キャッシュ（局面ハッシュ+手 → 真偽）。純関数なので安全。
+    static MUDA_CACHE: std::cell::RefCell<FxHashMap<(u64, u64), bool>> =
+        std::cell::RefCell::new(FxHashMap::default());
+}
+
+fn muda_move_key(m: &Move) -> u64 {
+    let to = m.to.index() as u64;
+    let from = m.from.map_or(127u64, |s| s.index() as u64);
+    let promo = m.promotion as u64;
+    let drop = m.drop_piece.map_or(15u64, |k| k as u64);
+    to | (from << 7) | (promo << 14) | (drop << 15)
+}
+
+fn is_slider_kind(k: PieceKind) -> bool {
+    matches!(
+        k,
+        PieceKind::Rook
+            | PieceKind::Bishop
+            | PieceKind::Lance
+            | PieceKind::PromotedRook
+            | PieceKind::PromotedBishop
+    )
+}
+
+/// pos（先手手番）から先手が詰ませられるか（完全情報の詰み検証、境界付き）。
+/// サブ探索中は無駄合い除外を無効化して再帰を防ぐ。
+thread_local! {
+    /// 完全情報の詰み検証の結果キャッシュ（局面ハッシュ → 詰ませられるか）。
+    static MATE_CACHE: std::cell::RefCell<FxHashMap<u64, bool>> =
+        std::cell::RefCell::new(FxHashMap::default());
+    /// muda_corrected_moves 1回あたりのサブ詰み探索の総ノード予算（残り）。
+    /// 枯渇したら sente_can_mate は false を返す（＝無駄合いにしない＝長い手数のまま。
+    /// 安全側：誤って短く報告しない）。病的問題の後処理暴走を防ぐ。
+    static MUDA_BUDGET: std::cell::Cell<i64> = const { std::cell::Cell::new(0) };
+    /// muda_corrected_moves 1回あたりの実時間デッドライン。多数の小さな詰み検証で
+    /// ノード予算が枯れない病的ケース（ソルバー生成オーバーヘッド律速）を止める。
+    static MUDA_DEADLINE: std::cell::Cell<Option<std::time::Instant>> =
+        const { std::cell::Cell::new(None) };
+    /// 中断フラグ。デッドライン超過で立て、mcm は以降即座に戻る（O(木²)回避）。
+    /// muda_corrected_moves は立っていたら事前計算した通常手数を返す。
+    static MUDA_ABORTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// サブ詰み探索に渡す共有キャンセルフラグ。タイマースレッドがデッドラインで立て、
+    /// 走行中のサブ探索も含めて打ち切る（1回のサブ探索が長い病的ケースを止める）。
+    static MUDA_CANCEL: std::cell::RefCell<Option<Arc<AtomicBool>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn sente_can_mate(pos: &Position) -> bool {
+    let key = pos.zobrist_hash;
+    if let Some(v) = MATE_CACHE.with(|c| c.borrow().get(&key).copied()) {
+        return v; // キャッシュヒットは予算を消費しない
+    }
+    // 総予算 or 実時間デッドラインを超えたら詰み検証を諦める（保守的に false）
+    if MUDA_BUDGET.with(|c| c.get()) <= 0 {
+        return false;
+    }
+    if MUDA_DEADLINE.with(|c| c.get()).map_or(false, |d| std::time::Instant::now() >= d) {
+        return false;
+    }
+    let meta = MetaPosition::new(pos.clone());
+    // 予算を絞って有界化。無駄合いの詰みは短いので少数ノードで足りる。
+    // 予算超過（Unknown）は「詰ませられない」と保守的に扱う（＝無駄合いにしない）。
+    // 共有キャンセルフラグ（タイマー）で走行中でも実時間で打ち切る。
+    let cancel = MUDA_CANCEL
+        .with(|c| c.borrow().clone())
+        .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+    let mut solver = TsuitateDfpnSolver::new(300_000, cancel);
+    let r = solver.solve(&meta);
+    // 消費ノードを総予算から差し引く
+    MUDA_BUDGET.with(|c| c.set(c.get() - solver.nodes_searched as i64));
+    let v = matches!(r, TsuitateDfpnResult::Proven);
+    MATE_CACHE.with(|c| {
+        let mut m = c.borrow_mut();
+        if m.len() >= 200_000 {
+            m.clear();
+        }
+        m.insert(key, v);
+    });
+    v
+}
+
+/// q（後手手番・王手されている）から先手が詰ませ切れるか（全応手に対して詰み）。
+fn sente_mates_after(q: &Position) -> bool {
+    let evasions = q.generate_check_evasions();
+    if evasions.is_empty() {
+        return true;
+    }
+    for ev in evasions {
+        let mut r = q.clone();
+        r.make_move(ev);
+        if !sente_can_mate(&r) {
+            return false;
+        }
+    }
+    true
+}
+
+/// 無駄合い判定。pos: 後手手番・王手されている。def_mv: 後手の合駒。
+pub fn muda_ai(pos: &Position, def_mv: &Move) -> bool {
+    let key = (pos.zobrist_hash, muda_move_key(def_mv));
+    if let Some(v) = MUDA_CACHE.with(|c| c.borrow().get(&key).copied()) {
+        return v;
+    }
+    let v = muda_ai_impl(pos, def_mv);
+    MUDA_CACHE.with(|c| {
+        let mut m = c.borrow_mut();
+        if m.len() >= 500_000 {
+            m.clear();
+        }
+        m.insert(key, v);
+    });
+    v
+}
+
+fn muda_ai_impl(pos: &Position, def_mv: &Move) -> bool {
+    let s = def_mv.to;
+    let mut p = pos.clone();
+    p.make_move(*def_mv); // 先手手番
+    is_muda_position(&p)
+}
+
+/// p（先手手番。後手の合駒が先手スライダーの王手を塞いでいる局面）が無駄合い局面か。
+/// スライダーで合駒を取って王手継続でき、後手が取り返せず、取った後に先手が詰ませ
+/// られるなら真。合駒（＝取ると再王手になる後手駒）は列挙内で暗黙に特定される。
+fn is_muda_position(p: &Position) -> bool {
+    // 予算/デッドライン超過なら判定を諦める（保守的に false ＝無駄合いにしない）。
+    if MUDA_ABORTED.with(|c| c.get()) || MUDA_BUDGET.with(|c| c.get()) <= 0 {
+        return false;
+    }
+    if MUDA_DEADLINE.with(|c| c.get()).map_or(false, |d| std::time::Instant::now() >= d) {
+        MUDA_ABORTED.with(|c| c.set(true));
+        return false;
+    }
+    let moves = crate::shogi::movegen::generate_pseudo_legal_moves(p, Color::Sente);
+    for mv in moves {
+        let Some(from) = mv.from else { continue };
+        let Some(piece) = p.piece_at(from) else { continue };
+        if !is_slider_kind(piece.kind) {
+            continue;
+        }
+        // 後手駒を取る手のみ（合駒を取る）
+        match p.piece_at(mv.to) {
+            Some(t) if t.color == Color::Gote => {}
+            _ => continue,
+        }
+        let s = mv.to;
+        let mut q = p.clone();
+        q.make_move(mv); // 後手手番
+        if q.is_in_check(Color::Sente) {
+            continue;
+        }
+        if !q.is_in_check(Color::Gote) {
+            continue; // 取った後に王手でなければ対象外
+        }
+        // 条件2: 後手が S を取り返せない
+        let evs = q.generate_check_evasions();
+        if evs.iter().any(|m| m.to == s) {
+            continue;
+        }
+        // 条件3: スライダー@S から先手が詰ませられる
+        if sente_mates_after(&q) {
+            return true;
+        }
+    }
+    false
+}
+
+fn muda_kanji_to_kind(s: &str) -> Option<PieceKind> {
+    Some(match s {
+        "飛" => PieceKind::Rook,
+        "角" => PieceKind::Bishop,
+        "金" => PieceKind::Gold,
+        "銀" => PieceKind::Silver,
+        "桂" => PieceKind::Knight,
+        "香" => PieceKind::Lance,
+        "歩" => PieceKind::Pawn,
+        _ => return None,
+    })
+}
+
+/// MoveData を Move に復元（盤上手は meta から動かす駒種を得る）
+fn md_to_move(md: &MoveData, meta: &MetaPosition) -> Option<Move> {
+    if let Some(dp) = &md.drop_piece {
+        Some(Move::drop(Square::new(md.to_file, md.to_rank), muda_kanji_to_kind(dp)?))
+    } else {
+        let from = Square::new(md.from_file?, md.from_rank?);
+        let kind = meta.positions.iter().find_map(|p| {
+            p.piece_at(from)
+                .filter(|pc| pc.color == Color::Sente)
+                .map(|pc| pc.kind)
+        })?;
+        Some(Move::normal(
+            from,
+            Square::new(md.to_file, md.to_rank),
+            md.promotion,
+            kind,
+        ))
+    }
+}
+
+/// M0（反則枝の局面集合）が全て無駄合い局面か
+fn all_muda(m0: &MetaPosition) -> bool {
+    !m0.positions.is_empty() && m0.positions.iter().all(is_muda_position)
+}
+
+/// 事前計算した応手グループ列から観測 obs に一致するものを合成
+fn group_union(groups: &[(Observation, MetaPosition)], obs: &Observation) -> MetaPosition {
+    let mut positions = Vec::new();
+    let mut seen: FxHashSet<u64> = FxHashSet::default();
+    for (gobs, gmeta) in groups {
+        if gobs == obs {
+            for p in &gmeta.positions {
+                if seen.insert(p.zobrist_hash) {
+                    positions.push(p.clone());
+                }
+            }
+        }
+    }
+    MetaPosition { positions }
+}
+
+/// 無駄合いを除外した手数を計算する（後処理）。
+/// 手順木をメタポジションと共に再生し、反則枝が全て無駄合いならその枝を手数から除く。
+///
+/// TODO(表示木の畳み込み): 現在は「手数」だけを補正して報告する。表示される
+/// SolutionNode ツリーには無駄合い反則枝がそのまま残るため、報告手数（例: 27手）と
+/// 木に現れる最長手順（例: 29手）が不整合になる。無駄合い反則枝を木からも畳み込む/
+/// 除去する処理が別途必要。全反則枝の無駄合い判定が要りコストが高い（mcm は最大候補の
+/// 反則枝しか検証しない）ので、実装時は muda_corrected_moves と同様の境界（メタ上限・
+/// 実時間デッドライン・共有キャンセル）を掛けること。
+pub fn muda_corrected_moves(tree: &SolutionNode, root: &MetaPosition) -> u32 {
+    // 病的問題の打ち切り時に返す通常手数を先に計算しておく。
+    let orig = tree.max_moves();
+    // 1問あたりのサブ詰み探索の総ノード予算＋実時間デッドライン＋中断フラグをリセット。
+    // 正当な無駄合い検証は通し、病的問題は打ち切って補正なし（通常手数）に
+    // フォールバックする（安全側：誤って短く報告しない）。
+    MUDA_BUDGET.with(|c| c.set(5_000_000));
+    MUDA_DEADLINE.with(|c| c.set(Some(std::time::Instant::now() + std::time::Duration::from_secs(8))));
+    MUDA_ABORTED.with(|c| c.set(false));
+    // 実時間デッドラインで発火する共有キャンセルフラグ＋タイマースレッドを用意。
+    // 走行中のサブ探索も打ち切れる。タイマーは spawn しっぱなしで良い（8秒後に
+    // 旧フラグを立てるだけ。次回呼び出しは新フラグに差し替わる）。
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_timer = cancel.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(8));
+        cancel_timer.store(true, Ordering::Relaxed);
+    });
+    MUDA_CANCEL.with(|c| *c.borrow_mut() = Some(cancel));
+    let r = mcm(tree, root);
+    MUDA_CANCEL.with(|c| *c.borrow_mut() = None);
+    if MUDA_ABORTED.with(|c| c.get()) {
+        orig
+    } else {
+        r
+    }
+}
+
+fn mcm(node: &SolutionNode, meta: &MetaPosition) -> u32 {
+    // 既に中断済みなら即座に戻る（戻り値は muda_corrected_moves で無視される）。
+    if MUDA_ABORTED.with(|c| c.get()) {
+        return 0;
+    }
+    // 実時間デッドライン超過なら中断フラグを立てて即戻る（O(木²)フォールバック回避）。
+    if MUDA_DEADLINE.with(|c| c.get()).map_or(false, |d| std::time::Instant::now() >= d) {
+        MUDA_ABORTED.with(|c| c.set(true));
+        return 0;
+    }
+    match node {
+        SolutionNode::Checkmate { .. } => 0,
+        SolutionNode::AttackMove { mv, branches, .. } => {
+            // メタポジションが空/再構成不能、または大きすぎて再構成コストが高い場合は
+            // 無駄合い判定を諦めて通常の max_moves にフォールバック（保守的・安全側）。
+            const MAX_MUDA_META: usize = 300;
+            if meta.positions.is_empty() || meta.positions.len() > MAX_MUDA_META {
+                return node.max_moves();
+            }
+            let Some(m) = md_to_move(mv, meta) else {
+                return node.max_moves();
+            };
+            let (legal_after, illegal_before) = meta.apply_attack_move_split(m);
+            // 展開先が大きい場合も無駄合い判定を諦める（expand_defense_moves の爆発回避）。
+            if legal_after.positions.len() > MAX_MUDA_META
+                || illegal_before.positions.len() > MAX_MUDA_META
+            {
+                return node.max_moves();
+            }
+
+            // 玉方応手の展開は1ノード1回だけ（幅広ノードでの再実行を回避）。
+            // 反則/詰みしかない場合は展開不要。
+            let need_groups = branches
+                .iter()
+                .any(|b| !matches!(b.observation, Observation::Illegal | Observation::Checkmate));
+            let groups = if need_groups {
+                legal_after.expand_defense_moves(m)
+            } else {
+                Vec::new()
+            };
+
+            // 各枝の「残した場合の手数」を先に計算（ここでは無駄合い判定は呼ばない）。
+            // 反則枝は各ノードで高々1つ。
+            let mut cands: Vec<(u32, bool)> = Vec::with_capacity(branches.len());
+            for b in branches {
+                match &b.observation {
+                    Observation::Checkmate => cands.push((1, false)),
+                    Observation::Illegal => {
+                        let v = mcm(&b.continuation, &illegal_before);
+                        cands.push((v, true));
+                    }
+                    obs => {
+                        let sub = group_union(&groups, obs);
+                        cands.push((2 + mcm(&b.continuation, &sub), false));
+                    }
+                }
+            }
+            // 手数の高い順に見て、最大候補が「反則枝かつ全て無駄合い」なら除外して次へ。
+            // これにより高コストな all_muda（サブ探索）は最大候補の反則枝にのみ走る。
+            // 子で中断済みなら all_muda を呼ばず即戻る。
+            if MUDA_ABORTED.with(|c| c.get()) {
+                return 0;
+            }
+            cands.sort_by(|a, b| b.0.cmp(&a.0));
+            for (v, is_illegal) in cands {
+                if is_illegal && all_muda(&illegal_before) {
+                    continue; // 無駄合いにつき除外
+                }
+                return v;
+            }
+            0
+        }
+    }
+}
+
 /// 衝立df-pnの探索結果
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TsuitateDfpnResult {
@@ -459,6 +798,9 @@ pub struct TsuitateDfpnSolver {
     second_search_aborted: bool,
     /// 余詰めチェックの除外探索1回あたりのノード上限（find_second_solution で設定）
     second_probe_cap: u64,
+    /// 無駄合いを省いた手数を報告するか（後処理で muda_corrected_moves を適用）。
+    /// 最短探索とペアで使うのが正しい。既定 false。
+    omit_futile: bool,
 }
 
 impl TsuitateDfpnSolver {
@@ -500,7 +842,13 @@ impl TsuitateDfpnSolver {
             dominance_suppressed: false,
             second_search_aborted: false,
             second_probe_cap: u64::MAX,
+            omit_futile: false,
         }
+    }
+
+    /// 無駄合いを省いた手数を報告するか設定する（最短探索とペアで使う）
+    pub fn set_omit_futile(&mut self, v: bool) {
+        self.omit_futile = v;
     }
 
     /// ノード上限を再設定する（常駐モードでクエリごとの予算を
@@ -1686,6 +2034,15 @@ impl TsuitateDfpnSolver {
                     self.shorten_solution(meta, tree, depth)
                 } else {
                     (tree, depth, 0)
+                };
+
+                // 無駄合いを省いた手数に補正（最短の木に対して適用するのが正しい）
+                let depth = if self.omit_futile {
+                    tree.as_ref()
+                        .map(|t| muda_corrected_moves(t, meta))
+                        .unwrap_or(depth)
+                } else {
+                    depth
                 };
                 let nodes_before_second = initial_nodes + shorten_nodes;
 

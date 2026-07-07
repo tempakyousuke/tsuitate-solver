@@ -84,6 +84,10 @@ export const findSecondSolution = writable<boolean>(false);
 /** 最短経路を探すかどうか */
 export const findShortestPath = writable<boolean>(false);
 
+/** 無駄合いを省くかどうか（玉方は無駄合いを着手しない慣例で手数を数える）。
+ *  正しく機能させるため最短探索とペアで使う。 */
+export const omitFutile = writable<boolean>(false);
+
 /** 現在の問題タイトル */
 export const questionTitle = writable<string>("");
 

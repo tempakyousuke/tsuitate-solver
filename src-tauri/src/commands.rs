@@ -126,6 +126,7 @@ pub async fn solve(
     position: PositionData,
     find_second_solution: Option<bool>,
     find_shortest_path: Option<bool>,
+    omit_futile: Option<bool>,
     cancel_flag: tauri::State<'_, CancelFlag>,
 ) -> Result<SolutionData, String> {
     let pos = position_from_data(&position)?;
@@ -137,6 +138,7 @@ pub async fn solve(
 
     let find_second = find_second_solution.unwrap_or(false);
     let shortest_path = find_shortest_path.unwrap_or(false);
+    let omit_futile = omit_futile.unwrap_or(false);
 
     // キャンセルフラグをリセット
     cancel_flag.store(false, Ordering::Relaxed);
@@ -148,6 +150,8 @@ pub async fn solve(
         let meta = MetaPosition::new(pos);
         let node_limit = 50_000_000; // df-pnのノード上限
         let mut solver = TsuitateDfpnSolver::new(node_limit, cancelled);
+        // 無駄合いを省いた手数で報告する（後処理で補正。最短探索とペア）
+        solver.set_omit_futile(omit_futile);
         let result = if find_second {
             solver.solve_to_solution_with_second(&meta, shortest_path)
         } else {
