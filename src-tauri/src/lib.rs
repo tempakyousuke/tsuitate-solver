@@ -3,6 +3,11 @@ mod commands;
 pub mod shogi;
 pub mod solver;
 
+/// ソルバーの確保・解放パターン（小サイズ Vec・Position クローンの高頻度 churn）に
+/// 対してシステム malloc より高速なため、全バイナリ（GUI/CLI/テスト）で mimalloc を使う
+#[global_allocator]
+static GLOBAL_ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 

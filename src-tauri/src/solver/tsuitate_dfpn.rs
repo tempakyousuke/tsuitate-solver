@@ -813,6 +813,16 @@ pub struct TsuitateDfpnSolver {
     /// 無駄合いを省くか（後処理で muda_folded_tree により表示木と報告手数を補正）。
     /// 最短探索とペアで使うのが正しい。既定 false。
     omit_futile: bool,
+    /// 反証シングルトンレジストリ: 局面 zobrist → {p} が反証されたときの残り予算の最大値。
+    /// 情報集合の単調性による反証の伝播: 攻め方の情報が増えて不利になることはないため、
+    /// 単独局面 {p}（完全情報）で詰みがなければ、p を含む任意の情報集合でも詰みはない。
+    /// 予算ゲートは転置表の反証と同じ向き（budget_now <= 記録予算 で再利用可）。
+    /// 除外探索のルート（除外条件付きの反証）は記録しない。
+    pos_disproven: FxHashMap<u64, u32>,
+    /// 診断: シングルトン反証の記録数
+    pub singleton_disproof_stores: u64,
+    /// 診断: シングルトン反証による OR ノード即時反証の回数
+    pub singleton_disproof_hits: u64,
 }
 
 impl TsuitateDfpnSolver {
@@ -855,6 +865,9 @@ impl TsuitateDfpnSolver {
             second_search_aborted: false,
             second_probe_cap: u64::MAX,
             omit_futile: false,
+            pos_disproven: FxHashMap::default(),
+            singleton_disproof_stores: 0,
+            singleton_disproof_hits: 0,
         }
     }
 
@@ -1113,6 +1126,26 @@ impl TsuitateDfpnSolver {
         let exclusions_at_root =
             self.root_hash == Some(hash) && !self.excluded_root_moves.is_empty();
 
+        // シングルトン反証の伝播: 情報集合内に「単独でも詰まない」ことが確定した
+        // 局面が含まれていれば、この情報集合にも詰みはない（情報の単調性）。
+        // 反証の予算ゲートは転置表と同じ向き（budget_now <= 記録予算）
+        if !exclusions_at_root && !self.dominance_suppressed && !self.pos_disproven.is_empty() {
+            let mut matched_budget: Option<u32> = None;
+            for pos in &meta.positions {
+                if let Some(&b) = self.pos_disproven.get(&pos.zobrist_hash) {
+                    if budget_now <= b {
+                        matched_budget = Some(b);
+                        break;
+                    }
+                }
+            }
+            if let Some(b) = matched_budget {
+                self.store_or(hash, INF, 0, b);
+                self.singleton_disproof_hits += 1;
+                return;
+            }
+        }
+
         // 優越関係チェック: proof_hand <= sente_hand (要素ごと) かつ予算が足りる場合
         // 同じ盤面セット + 同じ gote_hand で、sente_hand が proof_hand 以上なら証明済み
         // （実体化再探索中は抑制: 子の証明を転置表に残すため）
@@ -1217,6 +1250,13 @@ impl TsuitateDfpnSolver {
 
         if candidates.is_empty() {
             self.store_or(hash, INF, 0, INF);
+            // 王手候補なし＝どの予算でも詰まない恒久的な反証。シングルトンなら伝播用に記録
+            // （除外探索のルートは除外条件付きの反証のため記録しない）
+            if !exclusions_at_root && meta.positions.len() == 1 {
+                let e = self.pos_disproven.entry(meta.positions[0].zobrist_hash).or_insert(0);
+                *e = (*e).max(INF);
+                self.singleton_disproof_stores += 1;
+            }
             self.or_candidate_cache.insert(hash, CachedOrCandidates { candidates: candidates_raw });
             return;
         }
@@ -1321,6 +1361,15 @@ impl TsuitateDfpnSolver {
                                 }
                             }
                         }
+                    }
+                } else {
+                    // dn_n == 0: 反証確定。シングルトンなら「単独局面で予算 budget_now 以内に
+                    // 詰みなし」として記録し、以降この局面を含む任意の情報集合を即時反証する。
+                    // 除外探索のルートは除外条件付きの反証（真の反証ではない）ため記録しない
+                    if !exclusions_at_root && meta.positions.len() == 1 {
+                        let e = self.pos_disproven.entry(meta.positions[0].zobrist_hash).or_insert(0);
+                        *e = (*e).max(entry_budget);
+                        self.singleton_disproof_stores += 1;
                     }
                 }
                 self.or_candidate_cache.insert(hash, CachedOrCandidates { candidates: candidates_raw });

@@ -186,6 +186,10 @@ fn run_question_second(number: u32, node_limit: u64, time_limit_secs: u64) {
         number, result.found, depth, has_second, second_depth, kizu_count,
         elapsed.as_secs_f64(), solver.nodes_searched, result.message,
     );
+    println!(
+        "  singleton反証: 記録={} ヒット={}, dominance_hits={}",
+        solver.singleton_disproof_stores, solver.singleton_disproof_hits, solver.dominance_hits,
+    );
     if let Some(ref tree) = result.tree {
         println!("  主解:");
         print_solution_tree(tree, 2);
