@@ -2091,7 +2091,12 @@ impl TsuitateDfpnSolver {
                 let initial_nodes = self.nodes_searched;
 
                 // 最短解を探す
-                let (tree, depth, shorten_nodes) = if find_shortest && depth > 1 {
+                // 余詰めチェック時は常に最短化する: 余詰めチェックは「見つかった主解木」の
+                // 内部を除外プローブする実装のため、非最短の主解木を検査すると判定が
+                // 探索順依存で不安定になる（例: 問題115 は最短19手だが最短化なしでは
+                // 21手の木が主解になり、その木に対する別手順で「余詰めあり」になる）。
+                // 常に最短木を対象にすることで「最短解に対する余詰め」として一意に定まる
+                let (tree, depth, shorten_nodes) = if (find_shortest || find_second) && depth > 1 {
                     self.shorten_solution(meta, tree, depth)
                 } else {
                     (tree, depth, 0)
