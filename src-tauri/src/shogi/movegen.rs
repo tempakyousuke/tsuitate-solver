@@ -426,7 +426,7 @@ pub fn generate_check_evasions(pos: &Position) -> Vec<Move> {
 }
 
 /// 指定マスに到達可能な指し手を生成（玉以外、合法性チェックなし）
-fn generate_moves_to_square(
+pub fn generate_moves_to_square(
     pos: &Position,
     to: Square,
     color: Color,

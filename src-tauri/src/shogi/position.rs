@@ -631,15 +631,14 @@ impl Position {
             return false;
         }
 
-        // 全合法手の代わりに擬似合法手を生成し、取り返しマスのみフィルタして
-        // 合法性を個別チェック（全合法手生成より大幅に高速）
-        let pseudo_moves = movegen::generate_pseudo_legal_moves(&pos_after, attacker_color);
+        // 取り返しマスへ到達する手だけを生成（全手生成より大幅に高速）。
+        // 玉での取り返しは王手にならず（玉は王手できない）以降の再王手条件を
+        // 満たさないため、玉を除く generate_moves_to_square で正しい。取り返しは
+        // 駒取り（着手先は敵駒）なので打ちは不要（include_drops=false）。
+        let recaptures =
+            movegen::generate_moves_to_square(&pos_after, capture_sq, attacker_color, false);
 
-        for cap_mv in &pseudo_moves {
-            if cap_mv.to != capture_sq {
-                continue;
-            }
-
+        for cap_mv in &recaptures {
             let undo_cap = pos_after.make_move(*cap_mv);
 
             // 合法性チェック: 自玉が王手されていないか
