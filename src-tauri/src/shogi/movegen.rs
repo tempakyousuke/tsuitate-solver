@@ -256,17 +256,28 @@ fn is_pawn_drop_mate(pos: &Position, sq: Square, color: Color) -> bool {
         return false;
     }
 
+    // 打った歩が敵玉に王手でなければ打ち歩詰めはあり得ない（クローン不要の事前判定）。
+    // 歩の利きは1マス前のみなので、敵玉の直前マスへの打ちだけが対象
+    let Some(ksq) = pos.find_king(color.opponent()) else {
+        return false;
+    };
+    let front_rank = match color {
+        Color::Sente => ksq.rank + 1,
+        Color::Gote => ksq.rank.wrapping_sub(1),
+    };
+    if sq.file != ksq.file || sq.rank != front_rank {
+        return false;
+    }
+
     let mut test_pos = pos.clone();
     test_pos.set_piece(sq, Piece::new(color, PieceKind::Pawn));
     test_pos.side_to_move = color.opponent();
 
-    if !test_pos.is_in_check(color.opponent()) {
-        return false;
-    }
-
-    // ネストした generate_legal_moves では打ち歩詰めチェックをスキップ
+    // 歩の王手は接触王手なので、王手回避専用ジェネレータで詰み判定する。
+    // generate_legal_moves は持ち駒全種の打ち込みまで列挙して1手ずつ検証するため、
+    // 持ち駒が多い局面では極端に遅い（プロファイルで探索時間の約4割を占めていた）
     IN_PAWN_DROP_MATE_CHECK.with(|f| f.set(true));
-    let result = test_pos.generate_legal_moves().is_empty();
+    let result = test_pos.generate_check_evasions().is_empty();
     IN_PAWN_DROP_MATE_CHECK.with(|f| f.set(false));
 
     result
