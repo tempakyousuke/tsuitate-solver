@@ -47,22 +47,22 @@ fn is_slider_kind(k: PieceKind) -> bool {
     )
 }
 
-/// pos（先手手番）から先手が詰ませられるか（完全情報の詰み検証、境界付き）。
-/// サブ探索中は無駄合い除外を無効化して再帰を防ぐ。
+// pos（先手手番）から先手が詰ませられるか（完全情報の詰み検証、境界付き）。
+// サブ探索中は無駄合い除外を無効化して再帰を防ぐ。
 thread_local! {
     /// 完全情報の詰み検証の結果キャッシュ（局面ハッシュ → 詰ませられるか）。
     static MATE_CACHE: std::cell::RefCell<FxHashMap<u64, bool>> =
         std::cell::RefCell::new(FxHashMap::default());
-    /// muda_corrected_moves 1回あたりのサブ詰み探索の総ノード予算（残り）。
-    /// 枯渇したら sente_can_mate は false を返す（＝無駄合いにしない＝長い手数のまま。
+    /// muda_folded_tree 1回あたりのサブ詰み探索の総ノード予算（残り）。
+    /// 枯渇したら sente_can_mate は false を返す（＝無駄合いにしない＝枝を残す。
     /// 安全側：誤って短く報告しない）。病的問題の後処理暴走を防ぐ。
     static MUDA_BUDGET: std::cell::Cell<i64> = const { std::cell::Cell::new(0) };
-    /// muda_corrected_moves 1回あたりの実時間デッドライン。多数の小さな詰み検証で
+    /// muda_folded_tree 1回あたりの実時間デッドライン。多数の小さな詰み検証で
     /// ノード予算が枯れない病的ケース（ソルバー生成オーバーヘッド律速）を止める。
     static MUDA_DEADLINE: std::cell::Cell<Option<std::time::Instant>> =
         const { std::cell::Cell::new(None) };
-    /// 中断フラグ。デッドライン超過で立て、mcm は以降即座に戻る（O(木²)回避）。
-    /// muda_corrected_moves は立っていたら事前計算した通常手数を返す。
+    /// 中断フラグ。デッドライン超過で立て、mfold は以降即座に戻る（O(木²)回避）。
+    /// muda_folded_tree は立っていたら None を返す（畳み込みなし＝補正なし）。
     static MUDA_ABORTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// サブ詰み探索に渡す共有キャンセルフラグ。タイマースレッドがデッドラインで立て、
     /// 走行中のサブ探索も含めて打ち切る（1回のサブ探索が長い病的ケースを止める）。
@@ -138,7 +138,6 @@ pub fn muda_ai(pos: &Position, def_mv: &Move) -> bool {
 }
 
 fn muda_ai_impl(pos: &Position, def_mv: &Move) -> bool {
-    let s = def_mv.to;
     let mut p = pos.clone();
     p.make_move(*def_mv); // 先手手番
     is_muda_position(&p)
@@ -244,21 +243,18 @@ fn group_union(groups: &[(Observation, MetaPosition)], obs: &Observation) -> Met
     MetaPosition { positions }
 }
 
-/// 無駄合いを除外した手数を計算する（後処理）。
-/// 手順木をメタポジションと共に再生し、反則枝が全て無駄合いならその枝を手数から除く。
+/// 無駄合い反則枝を畳み込んだ表示木を構築する（後処理）。
+/// 手順木をメタポジションと共に再生し、反則枝の局面集合が全て無駄合い局面なら
+/// その枝を木から除去する。報告手数を畳み込み後の木の max_moves() から取ることで、
+/// 報告手数と表示木に現れる最長手順が常に一致する。
 ///
-/// TODO(表示木の畳み込み): 現在は「手数」だけを補正して報告する。表示される
-/// SolutionNode ツリーには無駄合い反則枝がそのまま残るため、報告手数（例: 27手）と
-/// 木に現れる最長手順（例: 29手）が不整合になる。無駄合い反則枝を木からも畳み込む/
-/// 除去する処理が別途必要。全反則枝の無駄合い判定が要りコストが高い（mcm は最大候補の
-/// 反則枝しか検証しない）ので、実装時は muda_corrected_moves と同様の境界（メタ上限・
-/// 実時間デッドライン・共有キャンセル）を掛けること。
-pub fn muda_corrected_moves(tree: &SolutionNode, root: &MetaPosition) -> u32 {
-    // 病的問題の打ち切り時に返す通常手数を先に計算しておく。
-    let orig = tree.max_moves();
+/// 全反則枝の無駄合い判定（サブ詰み探索）が要りコストが高いため、メタ上限・
+/// 実時間デッドライン・ノード予算・共有キャンセルで有界化する。中断時は None を
+/// 返す（部分的に畳み込まれた木は使わず、呼び出し側は元の木・通常手数に
+/// フォールバックすること。安全側：誤って短く報告しない）。
+pub fn muda_folded_tree(tree: &SolutionNode, root: &MetaPosition) -> Option<SolutionNode> {
     // 1問あたりのサブ詰み探索の総ノード予算＋実時間デッドライン＋中断フラグをリセット。
-    // 正当な無駄合い検証は通し、病的問題は打ち切って補正なし（通常手数）に
-    // フォールバックする（安全側：誤って短く報告しない）。
+    // 正当な無駄合い検証は通し、病的問題は打ち切って畳み込みなしにフォールバックする。
     MUDA_BUDGET.with(|c| c.set(5_000_000));
     MUDA_DEADLINE.with(|c| c.set(Some(std::time::Instant::now() + std::time::Duration::from_secs(8))));
     MUDA_ABORTED.with(|c| c.set(false));
@@ -272,43 +268,53 @@ pub fn muda_corrected_moves(tree: &SolutionNode, root: &MetaPosition) -> u32 {
         cancel_timer.store(true, Ordering::Relaxed);
     });
     MUDA_CANCEL.with(|c| *c.borrow_mut() = Some(cancel));
-    let r = mcm(tree, root);
+    let folded = mfold(tree, root);
     MUDA_CANCEL.with(|c| *c.borrow_mut() = None);
     if MUDA_ABORTED.with(|c| c.get()) {
-        orig
+        None
     } else {
-        r
+        Some(folded)
     }
 }
 
-fn mcm(node: &SolutionNode, meta: &MetaPosition) -> u32 {
-    // 既に中断済みなら即座に戻る（戻り値は muda_corrected_moves で無視される）。
+/// 無駄合いを除外した手数を計算する（後処理）。
+/// 畳み込み後の木の最長手順を返すため、muda_folded_tree の表示木と常に一致する。
+/// 中断時は補正なし＝通常手数（安全側・誤って短く報告しない）。
+pub fn muda_corrected_moves(tree: &SolutionNode, root: &MetaPosition) -> u32 {
+    muda_folded_tree(tree, root).map_or_else(|| tree.max_moves(), |t| t.max_moves())
+}
+
+/// 木を再帰的に再構築し、無駄合い反則枝を除去する。
+/// 中断時（MUDA_ABORTED）の戻り値は部分結果の可能性があるため、
+/// muda_folded_tree が必ず破棄する。
+fn mfold(node: &SolutionNode, meta: &MetaPosition) -> SolutionNode {
+    // 既に中断済みなら即座に戻る（戻り値は muda_folded_tree で破棄される）。
     if MUDA_ABORTED.with(|c| c.get()) {
-        return 0;
+        return node.clone();
     }
     // 実時間デッドライン超過なら中断フラグを立てて即戻る（O(木²)フォールバック回避）。
     if MUDA_DEADLINE.with(|c| c.get()).map_or(false, |d| std::time::Instant::now() >= d) {
         MUDA_ABORTED.with(|c| c.set(true));
-        return 0;
+        return node.clone();
     }
     match node {
-        SolutionNode::Checkmate { .. } => 0,
-        SolutionNode::AttackMove { mv, branches, .. } => {
+        SolutionNode::Checkmate { .. } => node.clone(),
+        SolutionNode::AttackMove { mv, branches, meta_hash } => {
             // メタポジションが空/再構成不能、または大きすぎて再構成コストが高い場合は
-            // 無駄合い判定を諦めて通常の max_moves にフォールバック（保守的・安全側）。
+            // このサブツリーの畳み込みを諦めてそのまま残す（保守的・安全側）。
             const MAX_MUDA_META: usize = 300;
             if meta.positions.is_empty() || meta.positions.len() > MAX_MUDA_META {
-                return node.max_moves();
+                return node.clone();
             }
             let Some(m) = md_to_move(mv, meta) else {
-                return node.max_moves();
+                return node.clone();
             };
             let (legal_after, illegal_before) = meta.apply_attack_move_split(m);
-            // 展開先が大きい場合も無駄合い判定を諦める（expand_defense_moves の爆発回避）。
+            // 展開先が大きい場合も畳み込みを諦める（expand_defense_moves の爆発回避）。
             if legal_after.positions.len() > MAX_MUDA_META
                 || illegal_before.positions.len() > MAX_MUDA_META
             {
-                return node.max_moves();
+                return node.clone();
             }
 
             // 玉方応手の展開は1ノード1回だけ（幅広ノードでの再実行を回避）。
@@ -322,36 +328,42 @@ fn mcm(node: &SolutionNode, meta: &MetaPosition) -> u32 {
                 Vec::new()
             };
 
-            // 各枝の「残した場合の手数」を先に計算（ここでは無駄合い判定は呼ばない）。
-            // 反則枝は各ノードで高々1つ。
-            let mut cands: Vec<(u32, bool)> = Vec::with_capacity(branches.len());
+            // 反則枝は各ノードで高々1つ。局面集合が全て無駄合いなら枝ごと除去する。
+            // 最長枝に限らず除去する（非最長の除去は手数に影響せず、表示から無駄合い
+            // 変化を消すのが目的）。除去する枝の内部には再帰しない（サブ探索予算の節約。
+            // all_muda を子の再帰より先に呼ぶため、予算消費前で判定が通りやすい）。
+            let mut folded: Vec<SolutionBranch> = Vec::with_capacity(branches.len());
             for b in branches {
                 match &b.observation {
-                    Observation::Checkmate => cands.push((1, false)),
+                    Observation::Checkmate => folded.push(b.clone()),
                     Observation::Illegal => {
-                        let v = mcm(&b.continuation, &illegal_before);
-                        cands.push((v, true));
+                        if all_muda(&illegal_before) {
+                            continue; // 無駄合いにつき畳み込み
+                        }
+                        folded.push(SolutionBranch {
+                            observation: b.observation.clone(),
+                            continuation: Box::new(mfold(&b.continuation, &illegal_before)),
+                        });
                     }
                     obs => {
                         let sub = group_union(&groups, obs);
-                        cands.push((2 + mcm(&b.continuation, &sub), false));
+                        folded.push(SolutionBranch {
+                            observation: b.observation.clone(),
+                            continuation: Box::new(mfold(&b.continuation, &sub)),
+                        });
                     }
                 }
             }
-            // 手数の高い順に見て、最大候補が「反則枝かつ全て無駄合い」なら除外して次へ。
-            // これにより高コストな all_muda（サブ探索）は最大候補の反則枝にのみ走る。
-            // 子で中断済みなら all_muda を呼ばず即戻る。
-            if MUDA_ABORTED.with(|c| c.get()) {
-                return 0;
+            // 防御: 全枝が消える手（反則枝しか持たない手）は証明木に現れないはず
+            // だが、万一の場合は畳み込まずそのまま残す。
+            if folded.is_empty() {
+                return node.clone();
             }
-            cands.sort_by(|a, b| b.0.cmp(&a.0));
-            for (v, is_illegal) in cands {
-                if is_illegal && all_muda(&illegal_before) {
-                    continue; // 無駄合いにつき除外
-                }
-                return v;
+            SolutionNode::AttackMove {
+                mv: mv.clone(),
+                branches: folded,
+                meta_hash: *meta_hash,
             }
-            0
         }
     }
 }
@@ -798,7 +810,7 @@ pub struct TsuitateDfpnSolver {
     second_search_aborted: bool,
     /// 余詰めチェックの除外探索1回あたりのノード上限（find_second_solution で設定）
     second_probe_cap: u64,
-    /// 無駄合いを省いた手数を報告するか（後処理で muda_corrected_moves を適用）。
+    /// 無駄合いを省くか（後処理で muda_folded_tree により表示木と報告手数を補正）。
     /// 最短探索とペアで使うのが正しい。既定 false。
     omit_futile: bool,
 }
@@ -2036,14 +2048,21 @@ impl TsuitateDfpnSolver {
                     (tree, depth, 0)
                 };
 
-                // 無駄合いを省いた手数に補正（最短の木に対して適用するのが正しい）
-                let depth = if self.omit_futile {
-                    tree.as_ref()
-                        .map(|t| muda_corrected_moves(t, meta))
-                        .unwrap_or(depth)
+                // 無駄合い反則枝を畳み込む（最短の木に対して適用するのが正しい）。
+                // 表示木と報告手数の両方を畳み込み後の木から取り、常に一致させる。
+                // 中断時（None）は補正なし＝元の木と手数のまま（安全側）。
+                // 余詰めチェックには畳み込み前の木を渡す: is_subsumed_by の
+                // サブツリーハッシュ包含判定は、畳み込みされない第2解の木と
+                // 同じ形で比較する必要があるため。
+                let folded_tree = if self.omit_futile {
+                    tree.as_ref().and_then(|t| muda_folded_tree(t, meta))
                 } else {
-                    depth
+                    None
                 };
+                let depth = folded_tree
+                    .as_ref()
+                    .map(|t| t.max_moves())
+                    .unwrap_or(depth);
                 let nodes_before_second = initial_nodes + shorten_nodes;
 
                 // 余詰めチェック
@@ -2098,7 +2117,8 @@ impl TsuitateDfpnSolver {
 
                 SolutionData {
                     found: true,
-                    tree,
+                    // 畳み込みに成功していれば表示木も畳み込み後のものに置き換える
+                    tree: folded_tree.or(tree),
                     second_tree,
                     kizu_trees,
                     message,

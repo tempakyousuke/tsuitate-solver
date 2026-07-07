@@ -223,11 +223,15 @@ fn posthoc_muda() {
     }
 }
 
-/// エンドツーエンド: set_omit_futile → solve_to_solution のメッセージが補正手数か
+/// エンドツーエンド: set_omit_futile → solve_to_solution のメッセージが補正手数か。
+/// 表示木の畳み込み: 返却される木の最長手順がメッセージの報告手数と一致するか。
 #[test]
 #[ignore]
 fn e2e_omit_futile() {
-    for (rel, shortest) in [("../8_kanryaku.json", true), ("../sample-questions/8.json", true)] {
+    for (rel, shortest, expected) in [
+        ("../8_kanryaku.json", true, 13),
+        ("../sample-questions/8.json", true, 27),
+    ] {
         let path = format!("{}/{}", env!("CARGO_MANIFEST_DIR"), rel);
         let q: QuestionJson = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         let root = MetaPosition::new(build_position(&q));
@@ -235,6 +239,72 @@ fn e2e_omit_futile() {
         s.set_omit_futile(true);
         let r = s.solve_to_solution(&root, shortest);
         println!("{}: found={} msg={}", rel, r.found, r.message);
+        let tree = r.tree.expect("解が見つかるはず");
+        // 表示木の畳み込み: 木の最長手順＝報告手数（メッセージ）＝期待手数
+        assert_eq!(
+            tree.max_moves(),
+            expected,
+            "{}: 畳み込み後の木の最長手順が期待手数と不一致",
+            rel
+        );
+        assert!(
+            r.message.starts_with(&format!("{}手詰め", expected)),
+            "{}: メッセージが期待手数で始まらない: {}",
+            rel,
+            r.message
+        );
+    }
+}
+
+/// 表示木の畳み込み: muda_folded_tree の木が muda_corrected_moves と一致し、
+/// 無駄合い反則枝が除去されて元の木より短くなっているか
+#[test]
+#[ignore]
+fn posthoc_fold_tree() {
+    /// 木に含まれる Illegal 枝の数
+    fn count_illegal(n: &SolutionNode) -> usize {
+        match n {
+            SolutionNode::Checkmate { .. } => 0,
+            SolutionNode::AttackMove { branches, .. } => branches
+                .iter()
+                .map(|b| {
+                    (b.observation == Observation::Illegal) as usize
+                        + count_illegal(&b.continuation)
+                })
+                .sum(),
+        }
+    }
+    for (rel, shortest, expected) in [
+        ("../8_kanryaku.json", false, 13),
+        ("../sample-questions/8.json", true, 27),
+    ] {
+        let path = format!("{}/{}", env!("CARGO_MANIFEST_DIR"), rel);
+        let q: QuestionJson = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let root = MetaPosition::new(build_position(&q));
+        let mut s = TsuitateDfpnSolver::new(50_000_000, Arc::new(AtomicBool::new(false)));
+        let r = s.solve_to_solution(&root, shortest);
+        let tree = r.tree.expect("解が見つかるはず");
+        let orig = tree.max_moves();
+
+        let folded = tsuitate_solver_lib::solver::tsuitate_dfpn::muda_folded_tree(&tree, &root)
+            .expect("この規模の問題では中断しないはず");
+        let corrected =
+            tsuitate_solver_lib::solver::tsuitate_dfpn::muda_corrected_moves(&tree, &root);
+        println!(
+            "{}: 通常={}手 / 畳み込み後={}手 (Illegal枝 {}→{})",
+            rel,
+            orig,
+            folded.max_moves(),
+            count_illegal(&tree),
+            count_illegal(&folded)
+        );
+        assert_eq!(folded.max_moves(), corrected, "{}: 木と手数が不一致", rel);
+        assert_eq!(folded.max_moves(), expected, "{}: 期待手数と不一致", rel);
+        assert!(
+            count_illegal(&folded) < count_illegal(&tree),
+            "{}: 無駄合い反則枝が除去されていない",
+            rel
+        );
     }
 }
 
