@@ -69,6 +69,24 @@ impl MetaPosition {
             .unwrap_or(0)
     }
 
+    /// 情報集合内で保証される攻め方（先手）の持ち駒枚数（種類別の最小値）。
+    /// 順序は PieceKind::HAND_PIECES と同じ [飛, 角, 金, 銀, 桂, 香, 歩]。
+    /// 「最終手で取った駒の種類」が盤面によって異なる場合は共通部分だけが残る
+    pub fn min_sente_hand_counts(&self) -> [u8; 7] {
+        let mut iter = self.positions.iter();
+        let Some(first) = iter.next() else {
+            return [0; 7];
+        };
+        let mut result = first.hand(Color::Sente).counts_array();
+        for pos in iter {
+            let h = pos.hand(Color::Sente).counts_array();
+            for j in 0..7 {
+                result[j] = result[j].min(h[j]);
+            }
+        }
+        result
+    }
+
     /// 全ての盤面で詰んでいるか
     pub fn all_checkmate(&self) -> bool {
         !self.positions.is_empty() && self.positions.iter().all(|pos| pos.is_checkmate())

@@ -474,6 +474,7 @@ impl TsuitateSolver {
                     self.log(current_depth, "  反則分岐: 解決！".to_string());
                     solution_branches.push(SolutionBranch {
                         observation: Observation::Illegal,
+                        sente_hand: None,
                         continuation: Box::new(continuation),
                     });
                 } else {
@@ -489,6 +490,7 @@ impl TsuitateSolver {
                     self.log(current_depth, "  合法分岐: 全盤面で実質詰み！".to_string());
                     solution_branches.push(SolutionBranch {
                         observation: Observation::Checkmate,
+                        sente_hand: Some(legal_meta.min_sente_hand_counts()),
                         continuation: Box::new(SolutionNode::Checkmate {
                             depth: current_depth + 1,
                             hand_count: legal_meta.max_sente_hand_count(),
@@ -520,6 +522,7 @@ impl TsuitateSolver {
                             self.log(current_depth, "  → 詰み分岐: 成功".to_string());
                             solution_branches.push(SolutionBranch {
                                 observation: observation.clone(),
+                                sente_hand: Some(branch_meta.min_sente_hand_counts()),
                                 continuation: Box::new(SolutionNode::Checkmate {
                                     depth: current_depth + 1,
                                     hand_count: branch_meta.max_sente_hand_count(),
@@ -548,6 +551,7 @@ impl TsuitateSolver {
                                 ));
                                 solution_branches.push(SolutionBranch {
                                     observation: observation.clone(),
+                                    sente_hand: Some(branch_meta.min_sente_hand_counts()),
                                     continuation: Box::new(continuation),
                                 });
                             } else {

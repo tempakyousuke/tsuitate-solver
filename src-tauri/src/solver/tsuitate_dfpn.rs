@@ -342,6 +342,7 @@ fn mfold(node: &SolutionNode, meta: &MetaPosition) -> SolutionNode {
                         }
                         folded.push(SolutionBranch {
                             observation: b.observation.clone(),
+                            sente_hand: b.sente_hand,
                             continuation: Box::new(mfold(&b.continuation, &illegal_before)),
                         });
                     }
@@ -349,6 +350,7 @@ fn mfold(node: &SolutionNode, meta: &MetaPosition) -> SolutionNode {
                         let sub = group_union(&groups, obs);
                         folded.push(SolutionBranch {
                             observation: b.observation.clone(),
+                            sente_hand: b.sente_hand,
                             continuation: Box::new(mfold(&b.continuation, &sub)),
                         });
                     }
@@ -3037,6 +3039,7 @@ impl TsuitateDfpnSolver {
             let continuation = self.extract_or(&illegal_meta, depth)?;
             branches.push(SolutionBranch {
                 observation: Observation::Illegal,
+                sente_hand: None,
                 continuation: Box::new(continuation),
             });
         }
@@ -3053,6 +3056,7 @@ impl TsuitateDfpnSolver {
         if legal_meta.all_effectively_checkmate() {
             branches.push(SolutionBranch {
                 observation: Observation::Checkmate,
+                sente_hand: Some(legal_meta.min_sente_hand_counts()),
                 continuation: Box::new(SolutionNode::Checkmate {
                     depth: depth + 1,
                     hand_count: legal_meta.max_sente_hand_count(),
@@ -3073,6 +3077,7 @@ impl TsuitateDfpnSolver {
                 Observation::Checkmate => {
                     branches.push(SolutionBranch {
                         observation: Observation::Checkmate,
+                        sente_hand: Some(branch_meta.min_sente_hand_counts()),
                         continuation: Box::new(SolutionNode::Checkmate {
                             depth: depth + 1,
                             hand_count: branch_meta.max_sente_hand_count(),
@@ -3084,6 +3089,7 @@ impl TsuitateDfpnSolver {
                     let continuation = self.extract_or(&branch_meta, depth + 2)?;
                     branches.push(SolutionBranch {
                         observation: obs,
+                        sente_hand: Some(branch_meta.min_sente_hand_counts()),
                         continuation: Box::new(continuation),
                     });
                 }

@@ -49,6 +49,12 @@ pub enum SolutionNode {
 pub struct SolutionBranch {
     /// 観測結果
     pub observation: Observation,
+    /// この分岐に入った時点（攻め方の着手後）の攻め方の持ち駒枚数。
+    /// 順序は [飛, 角, 金, 銀, 桂, 香, 歩]（PieceKind::HAND_PIECES と同順）。
+    /// 情報集合内で枚数が一致しない場合（観測分岐のマージ後など）は保証枚数（最小値）。
+    /// Illegal 分岐は着手が無効で持ち駒が変わらないため None。旧ソルバー出力にも無い。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sente_hand: Option<[u8; 7]>,
     /// この観測の後の継続
     pub continuation: Box<SolutionNode>,
 }
@@ -295,12 +301,12 @@ mod tests {
             meta_hash: None,
             mv: make_move_data("▲２一飛打", 2, 1, Some("飛")),
             branches: vec![
-                SolutionBranch {
+                SolutionBranch { sente_hand: None,
                     observation: Observation::Captured { file: 2, rank: 1 },
                     continuation: Box::new(SolutionNode::AttackMove {
                         meta_hash: None,
                         mv: make_move_data("▲２二金打", 2, 2, Some("金")),
-                        branches: vec![SolutionBranch {
+                        branches: vec![SolutionBranch { sente_hand: None,
                             observation: Observation::Checkmate,
                             continuation: Box::new(SolutionNode::Checkmate { depth: 3, hand_count: 0 }),
                         }],
@@ -313,18 +319,18 @@ mod tests {
             meta_hash: None,
             mv: make_move_data("▲１一飛打", 1, 1, Some("飛")),
             branches: vec![
-                SolutionBranch {
+                SolutionBranch { sente_hand: None,
                     observation: Observation::NoCapture,
                     continuation: Box::new(SolutionNode::AttackMove {
                         meta_hash: None,
                         mv: make_move_data("▲２一飛成", 2, 1, None),
                         branches: vec![
-                            SolutionBranch {
+                            SolutionBranch { sente_hand: None,
                                 observation: Observation::Captured { file: 2, rank: 1 },
                                 continuation: Box::new(SolutionNode::AttackMove {
                                     meta_hash: None,
                                     mv: make_move_data("▲２二金打", 2, 2, Some("金")),
-                                    branches: vec![SolutionBranch {
+                                    branches: vec![SolutionBranch { sente_hand: None,
                                         observation: Observation::Checkmate,
                                         continuation: Box::new(SolutionNode::Checkmate { depth: 5, hand_count: 0 }),
                                     }],
@@ -352,7 +358,7 @@ mod tests {
         let solution1 = SolutionNode::AttackMove {
             meta_hash: None,
             mv: make_move_data("▲１一金打", 1, 1, Some("金")),
-            branches: vec![SolutionBranch {
+            branches: vec![SolutionBranch { sente_hand: None,
                 observation: Observation::Checkmate,
                 continuation: Box::new(SolutionNode::Checkmate { depth: 1, hand_count: 0 }),
             }],
@@ -361,7 +367,7 @@ mod tests {
         let solution2 = SolutionNode::AttackMove {
             meta_hash: None,
             mv: make_move_data("▲２二銀打", 2, 2, Some("銀")),
-            branches: vec![SolutionBranch {
+            branches: vec![SolutionBranch { sente_hand: None,
                 observation: Observation::Checkmate,
                 continuation: Box::new(SolutionNode::Checkmate { depth: 1, hand_count: 0 }),
             }],
@@ -381,7 +387,7 @@ mod tests {
         let final_node = SolutionNode::AttackMove {
             meta_hash: None,
             mv: make_move_data("▲２二金打", 2, 2, Some("金")),
-            branches: vec![SolutionBranch {
+            branches: vec![SolutionBranch { sente_hand: None,
                 observation: Observation::Checkmate,
                 continuation: Box::new(SolutionNode::Checkmate { depth: 3, hand_count: 0 }),
             }],
@@ -393,11 +399,11 @@ mod tests {
             meta_hash: None,
             mv: make_move_data("▲２二金打", 2, 2, Some("金")),
             branches: vec![
-                SolutionBranch {
+                SolutionBranch { sente_hand: None,
                     observation: Observation::Checkmate,
                     continuation: Box::new(SolutionNode::Checkmate { depth: 3, hand_count: 0 }),
                 },
-                SolutionBranch {
+                SolutionBranch { sente_hand: None,
                     observation: Observation::Illegal,
                     continuation: Box::new(SolutionNode::Checkmate { depth: 3, hand_count: 0 }),
                 },
@@ -409,12 +415,12 @@ mod tests {
         let non_final = SolutionNode::AttackMove {
             meta_hash: None,
             mv: make_move_data("▲２一飛打", 2, 1, Some("飛")),
-            branches: vec![SolutionBranch {
+            branches: vec![SolutionBranch { sente_hand: None,
                 observation: Observation::NoCapture,
                 continuation: Box::new(SolutionNode::AttackMove {
                     meta_hash: None,
                     mv: make_move_data("▲２二金打", 2, 2, Some("金")),
-                    branches: vec![SolutionBranch {
+                    branches: vec![SolutionBranch { sente_hand: None,
                         observation: Observation::Checkmate,
                         continuation: Box::new(SolutionNode::Checkmate { depth: 3, hand_count: 0 }),
                     }],
@@ -437,7 +443,7 @@ mod tests {
         let gold_drop = SolutionNode::AttackMove {
             meta_hash: None,
             mv: make_move_data("▲１一金打", 1, 1, Some("金")),
-            branches: vec![SolutionBranch {
+            branches: vec![SolutionBranch { sente_hand: None,
                 observation: Observation::Checkmate,
                 continuation: Box::new(SolutionNode::Checkmate { depth: 1, hand_count: 0 }),
             }],
@@ -446,7 +452,7 @@ mod tests {
         let solution2 = SolutionNode::AttackMove {
             meta_hash: None,
             mv: make_move_data("▲３三桂打", 3, 3, Some("桂")),
-            branches: vec![SolutionBranch {
+            branches: vec![SolutionBranch { sente_hand: None,
                 observation: Observation::Illegal,
                 continuation: Box::new(gold_drop.clone()),
             }],
@@ -465,7 +471,7 @@ mod tests {
         let tree = SolutionNode::AttackMove {
             meta_hash: None,
             mv: make_move_data("▲２二金打", 2, 2, Some("金")),
-            branches: vec![SolutionBranch {
+            branches: vec![SolutionBranch { sente_hand: None,
                 observation: Observation::Checkmate,
                 continuation: Box::new(SolutionNode::Checkmate { depth: 1, hand_count: 1 }),
             }],
@@ -484,25 +490,25 @@ mod tests {
         let tree = SolutionNode::AttackMove {
             meta_hash: None,
             mv: make_move_data("▲１五歩", 1, 5, Some("歩")),
-            branches: vec![SolutionBranch {
+            branches: vec![SolutionBranch { sente_hand: None,
                 observation: Observation::Captured { file: 1, rank: 5 },
                 continuation: Box::new(SolutionNode::AttackMove {
                     meta_hash: None,
                     mv: make_move_data("▲１三角成", 1, 3, None),
                     branches: vec![
-                        SolutionBranch {
+                        SolutionBranch { sente_hand: None,
                             observation: Observation::Checkmate,
                             continuation: Box::new(SolutionNode::Checkmate {
                                 depth: 3,
                                 hand_count: 1,
                             }),
                         },
-                        SolutionBranch {
+                        SolutionBranch { sente_hand: None,
                             observation: Observation::Illegal,
                             continuation: Box::new(SolutionNode::AttackMove {
                                 meta_hash: None,
                                 mv: make_move_data("▲１六香打", 1, 6, Some("香")),
-                                branches: vec![SolutionBranch {
+                                branches: vec![SolutionBranch { sente_hand: None,
                                     observation: Observation::Checkmate,
                                     continuation: Box::new(SolutionNode::Checkmate {
                                         depth: 3,
@@ -528,16 +534,16 @@ mod tests {
             meta_hash: None,
             mv: make_move_data("▲２一飛打", 2, 1, Some("飛")),
             branches: vec![
-                SolutionBranch {
+                SolutionBranch { sente_hand: None,
                     observation: Observation::Checkmate,
                     continuation: Box::new(SolutionNode::Checkmate { depth: 1, hand_count: 0 }),
                 },
-                SolutionBranch {
+                SolutionBranch { sente_hand: None,
                     observation: Observation::Captured { file: 2, rank: 1 },
                     continuation: Box::new(SolutionNode::AttackMove {
                         meta_hash: None,
                         mv: make_move_data("▲２二金打", 2, 2, Some("金")),
-                        branches: vec![SolutionBranch {
+                        branches: vec![SolutionBranch { sente_hand: None,
                             observation: Observation::Checkmate,
                             continuation: Box::new(SolutionNode::Checkmate {
                                 depth: 3,
@@ -560,7 +566,7 @@ mod tests {
         let solution1 = SolutionNode::AttackMove {
             meta_hash: None,
             mv: make_move_data("▲２一飛打", 2, 1, Some("飛")),
-            branches: vec![SolutionBranch {
+            branches: vec![SolutionBranch { sente_hand: None,
                 observation: Observation::Checkmate,
                 continuation: Box::new(SolutionNode::Checkmate { depth: 1, hand_count: 0 }),
             }],
@@ -572,16 +578,16 @@ mod tests {
             meta_hash: None,
             mv: make_move_data("▲１一飛打", 1, 1, Some("飛")),
             branches: vec![
-                SolutionBranch {
+                SolutionBranch { sente_hand: None,
                     observation: Observation::NoCapture,
                     continuation: Box::new(solution1.clone()),
                 },
-                SolutionBranch {
+                SolutionBranch { sente_hand: None,
                     observation: Observation::Captured { file: 1, rank: 1 },
                     continuation: Box::new(SolutionNode::AttackMove {
                         meta_hash: None,
                         mv: make_move_data("▲３三角打", 3, 3, Some("角")),
-                        branches: vec![SolutionBranch {
+                        branches: vec![SolutionBranch { sente_hand: None,
                             observation: Observation::Checkmate,
                             continuation: Box::new(SolutionNode::Checkmate { depth: 3, hand_count: 0 }),
                         }],

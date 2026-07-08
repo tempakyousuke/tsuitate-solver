@@ -1543,9 +1543,16 @@ impl TsuitateDfpnPlusSolver {
             let mut branches = Vec::new();
             for i in 0..expansion.obs_terminal.len() {
                 let obs = Self::proof_obs_to_observation(&expansion.obs_types[i]);
+                // Illegal 分岐は着手が無効で持ち駒が変わらないため持ち駒情報を付けない
+                let sente_hand = if obs == Observation::Illegal {
+                    None
+                } else {
+                    Some(expansion.obs_hands[i])
+                };
                 if expansion.obs_terminal[i] {
                     branches.push(SolutionBranch {
                         observation: obs,
+                        sente_hand,
                         continuation: Box::new(SolutionNode::Checkmate {
                             depth: depth + 1,
                             hand_count: expansion.obs_hands[i].iter().copied().sum(),
@@ -1556,6 +1563,7 @@ impl TsuitateDfpnPlusSolver {
                     let continuation = self.extract_or(&expansion.obs_metas[i], depth + d_inc)?;
                     branches.push(SolutionBranch {
                         observation: obs,
+                        sente_hand,
                         continuation: Box::new(continuation),
                     });
                 }
@@ -1573,6 +1581,7 @@ impl TsuitateDfpnPlusSolver {
             let continuation = self.extract_or(&illegal_meta, depth)?;
             branches.push(SolutionBranch {
                 observation: Observation::Illegal,
+                sente_hand: None,
                 continuation: Box::new(continuation),
             });
         }
@@ -1588,6 +1597,7 @@ impl TsuitateDfpnPlusSolver {
         if legal_meta.all_effectively_checkmate() {
             branches.push(SolutionBranch {
                 observation: Observation::Checkmate,
+                sente_hand: Some(legal_meta.min_sente_hand_counts()),
                 continuation: Box::new(SolutionNode::Checkmate {
                     depth: depth + 1,
                     hand_count: legal_meta.max_sente_hand_count(),
@@ -1603,6 +1613,7 @@ impl TsuitateDfpnPlusSolver {
                 Observation::Checkmate => {
                     branches.push(SolutionBranch {
                         observation: Observation::Checkmate,
+                        sente_hand: Some(branch_meta.min_sente_hand_counts()),
                         continuation: Box::new(SolutionNode::Checkmate {
                             depth: depth + 1,
                             hand_count: branch_meta.max_sente_hand_count(),
@@ -1613,6 +1624,7 @@ impl TsuitateDfpnPlusSolver {
                     let continuation = self.extract_or(&branch_meta, depth + 2)?;
                     branches.push(SolutionBranch {
                         observation: obs,
+                        sente_hand: Some(branch_meta.min_sente_hand_counts()),
                         continuation: Box::new(continuation),
                     });
                 }
