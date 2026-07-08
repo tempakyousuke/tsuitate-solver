@@ -300,7 +300,13 @@ fn parse_args() -> Result<Args, String> {
 /// --solve-meta モードのリクエスト
 #[derive(Debug, Deserialize)]
 struct SolveMetaRequestJson {
+    #[serde(default)]
     queries: Vec<MetaQueryJson>,
+    /// 深さ制限探索を伴わない軽量クエリ: 情報集合が実質詰み（無駄合いのみ）か。
+    /// 挑戦モード（challenge.ts）が「後手番・王手された直後」の局面集合について、
+    /// これ以上の応手展開が無意味かどうかを判定するのに使う
+    #[serde(default)]
+    effectively_checkmate_queries: Vec<EffectivelyCheckmateQueryJson>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -309,7 +315,14 @@ struct MetaQueryJson {
     positions: Vec<MetaPositionJson>,
 }
 
-/// 情報集合の1局面（先手番・持ち駒は両者とも明示）
+#[derive(Debug, Deserialize)]
+struct EffectivelyCheckmateQueryJson {
+    positions: Vec<MetaPositionJson>,
+}
+
+/// 情報集合の1局面（持ち駒は両者とも明示）。
+/// 手番は既定で先手（--solve-meta の従来クエリ）。
+/// effectively_checkmate_queries では後手番（王手された直後）を指定する
 #[derive(Debug, Deserialize)]
 struct MetaPositionJson {
     board: Vec<BoardPiece>,
@@ -317,6 +330,8 @@ struct MetaPositionJson {
     sente_hand: Vec<HandPieceJson>,
     #[serde(default)]
     gote_hand: Vec<HandPieceJson>,
+    #[serde(default)]
+    side_to_move: Option<String>,
 }
 
 /// 明示された持ち駒つきの局面 JSON → Position（自動算出はしない）
@@ -366,8 +381,24 @@ fn position_from_meta_json(p: &MetaPositionJson) -> Result<Position, String> {
     if pos.find_king(Color::Gote).is_none() {
         return Err("後手の玉が配置されていません".to_string());
     }
-    pos.side_to_move = Color::Sente;
+    pos.side_to_move = match &p.side_to_move {
+        Some(s) => parse_color(s)?,
+        None => Color::Sente,
+    };
     Ok(pos)
+}
+
+/// 情報集合が実質詰み（詰みまたは全応手が無駄合い）かどうかを判定する。
+/// `all_effectively_checkmate` は zobrist ハッシュを参照しないため
+/// init_zobrist_hash は不要だが、Position の他の不変条件と揃えるため呼んでおく
+fn compute_effectively_checkmate(query: &EffectivelyCheckmateQueryJson) -> Result<bool, String> {
+    let mut positions = Vec::with_capacity(query.positions.len());
+    for p in &query.positions {
+        let mut pos = position_from_meta_json(p)?;
+        pos.init_zobrist_hash();
+        positions.push(pos);
+    }
+    Ok(MetaPosition { positions }.all_effectively_checkmate())
 }
 
 /// 常駐モード: stdin から行区切りJSON（--solve-meta と同じリクエスト形式）を
@@ -429,10 +460,26 @@ fn run_solve_meta_server(node_limit: u64, scan_node_limit: u64) -> ExitCode {
                         }
                     }
                 }
+                let mut effectively_checkmate_results = Vec::new();
+                if error.is_none() {
+                    for query in &request.effectively_checkmate_queries {
+                        match compute_effectively_checkmate(query) {
+                            Ok(b) => effectively_checkmate_results.push(b),
+                            Err(e) => {
+                                error = Some(format!("invalid position: {}", e));
+                                break;
+                            }
+                        }
+                    }
+                }
                 solver.trim_transient_caches();
                 match error {
                     Some(e) => json!({ "ok": false, "error": e }),
-                    None => json!({ "ok": true, "results": results }),
+                    None => json!({
+                        "ok": true,
+                        "results": results,
+                        "effectivelyCheckmate": effectively_checkmate_results,
+                    }),
                 }
             }
         };
@@ -511,7 +558,26 @@ fn run_solve_meta(
         .into_iter()
         .map(|m| m.into_inner().unwrap().expect("query not solved"))
         .collect();
-    println!("{}", json!({ "ok": true, "results": results }));
+
+    let mut effectively_checkmate_results = Vec::new();
+    for query in &request.effectively_checkmate_queries {
+        match compute_effectively_checkmate(query) {
+            Ok(b) => effectively_checkmate_results.push(b),
+            Err(e) => {
+                eprintln!("Invalid position: {}", e);
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    println!(
+        "{}",
+        json!({
+            "ok": true,
+            "results": results,
+            "effectivelyCheckmate": effectively_checkmate_results,
+        })
+    );
     ExitCode::SUCCESS
 }
 
