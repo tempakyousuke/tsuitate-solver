@@ -6,6 +6,7 @@
 //! 使い方:
 //!   tsuitate-solver-cli <question.json> [--find-second] [--shortest]
 //!                       [--node-limit N] [--timeout-secs N] [--memory-limit-mb N]
+//!                       [--estimate-rating] [--rating-node-limit N]
 //!   tsuitate-solver-cli --solve-meta <request.json> [--node-limit N]
 //!                       [--scan-node-limit N] [--parallel N]
 //!   tsuitate-solver-cli --solve-meta-server [--node-limit N] [--scan-node-limit N]
@@ -33,6 +34,13 @@
 //! 選択の永続化で担保すること。stdin が閉じたら終了。
 //! 出力: {"ok":true,"results":[{"result":"proven|disproven|unknown",
 //!        "provenDepth":N|null,"nodes":N}, ...]}
+//!
+//! --estimate-rating は解けた問題に難易度レートの推定値を付ける（サイトの
+//! 「詰めチャレ」の初期レート用）。初期局面の攻め方の合法手を1手ずつ調べて
+//! 「指せる手／王手が保証される手／制限手数内に詰む手」を数えるため、
+//! 本解を求めるより時間がかかる（オフラインの問題生成パイプライン向け）。
+//! 出力の rating に値と特徴量が入る。式は solver::rating を参照。
+//! --rating-node-limit は初手ごとの判定に使うノード予算（既定 200,000）。
 //!
 //! 終了コード: 0 = 探索実行（found の真偽は JSON を参照）, 2 = 入力不正
 
@@ -73,6 +81,9 @@ use tsuitate_solver_lib::solver::defense::{
     solve_meta_query, solve_meta_query_with, MetaQueryResult,
 };
 use tsuitate_solver_lib::solver::metaposition::MetaPosition;
+use tsuitate_solver_lib::solver::rating::{
+    estimate_rating, tree_branch_stats, RatingEstimate, RatingFeatures, FORMULA_VERSION,
+};
 use tsuitate_solver_lib::solver::tsuitate_dfpn::TsuitateDfpnSolver;
 
 /// 問題 JSON（疎表現）
@@ -221,6 +232,10 @@ struct Args {
     scan_node_limit: u64,
     /// --solve-meta: クエリの並列実行数。既定 1（直列）
     parallel: usize,
+    /// 難易度レートの推定を行うか
+    estimate_rating: bool,
+    /// レート推定の初手ごとのノード予算
+    rating_node_limit: u64,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -235,6 +250,8 @@ fn parse_args() -> Result<Args, String> {
     let mut memory_limit_mb: u64 = 0;
     let mut scan_node_limit: u64 = 0;
     let mut parallel: usize = 1;
+    let mut estimate_rating = false;
+    let mut rating_node_limit: u64 = 200_000;
 
     let mut iter = std::env::args().skip(1);
     while let Some(arg) = iter.next() {
@@ -243,6 +260,12 @@ fn parse_args() -> Result<Args, String> {
             "--shortest" => shortest = true,
             "--solve-meta" => solve_meta = true,
             "--solve-meta-server" => solve_meta_server = true,
+            "--estimate-rating" => estimate_rating = true,
+            "--rating-node-limit" => {
+                let v = iter.next().ok_or("--rating-node-limit requires a value")?;
+                rating_node_limit =
+                    v.parse().map_err(|_| format!("Invalid --rating-node-limit: {}", v))?;
+            }
             "--node-limit" => {
                 let v = iter.next().ok_or("--node-limit requires a value")?;
                 node_limit = v.parse().map_err(|_| format!("Invalid --node-limit: {}", v))?;
@@ -280,7 +303,7 @@ fn parse_args() -> Result<Args, String> {
     }
 
     if input.is_none() && !solve_meta_server {
-        return Err("Usage: tsuitate-solver-cli <question.json> [--find-second] [--shortest] [--node-limit N] [--timeout-secs N] [--memory-limit-mb N] | --solve-meta <request.json> [--node-limit N] [--scan-node-limit N] [--parallel N] | --solve-meta-server [--node-limit N] [--scan-node-limit N]".to_string());
+        return Err("Usage: tsuitate-solver-cli <question.json> [--find-second] [--shortest] [--node-limit N] [--timeout-secs N] [--memory-limit-mb N] [--estimate-rating] [--rating-node-limit N] | --solve-meta <request.json> [--node-limit N] [--scan-node-limit N] [--parallel N] | --solve-meta-server [--node-limit N] [--scan-node-limit N]".to_string());
     }
     Ok(Args {
         input,
@@ -294,6 +317,8 @@ fn parse_args() -> Result<Args, String> {
         memory_limit_mb,
         scan_node_limit,
         parallel,
+        estimate_rating,
+        rating_node_limit,
     })
 }
 
@@ -581,6 +606,90 @@ fn run_solve_meta(
     ExitCode::SUCCESS
 }
 
+/// レート推定の初手統計を数える。
+///
+/// 返り値: (指せる手, そのうち王手が保証される手, そのうち depth 手以内に詰む手)
+///
+/// ついたて詰将棋の初期局面は盤面が1つに確定している（初形は全公開）ので
+/// 「指せる手」＝合法手。王手が保証されない手はサイトの挑戦モードでは
+/// その場で詰め失敗になるため、正解手は必ず王手の中にある。
+///
+/// ソルバーは1つを使い回して転置表を温存する（初手が違っても同じ部分木を
+/// 何度も踏むため）。手の列挙順は固定なので結果は決定的。
+///
+/// **cancel はタイムアウト・メモリ上限と共有する**。本解を求めるより重いので、
+/// 共有しないと `--timeout-secs` がこの区間には効かず、1問で何分も居座り得る
+/// （呼び出し側の mine_tsume に外側のタイムアウトはない）。発火したら `None` を
+/// 返して**レートを付けない**: 途中まで数えた特徴量で式を回すと実際より易しい
+/// レートが付くうえ、`expand_defense_moves` はキャンセル後に部分結果を返し得る
+/// ので `all_proven` 自体が信用できない。
+fn analyze_root_moves(
+    pos: &Position,
+    depth: u32,
+    node_limit: u64,
+    scan_node_limit: u64,
+    cancel: Arc<AtomicBool>,
+) -> Option<(u32, u32, u32)> {
+    let root = MetaPosition::new(pos.clone());
+    let mut solver = TsuitateDfpnSolver::new(u64::MAX, cancel.clone());
+
+    let mut tries = 0u32;
+    let mut checks = 0u32;
+    let mut solutions = 0u32;
+
+    for mv in pos.generate_legal_moves() {
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        let after = root.apply_attack_move(mv);
+        if after.is_empty() {
+            continue; // その盤面では指せない = 反則
+        }
+        tries += 1;
+        if !after.positions.iter().all(|p| p.is_in_check(p.side_to_move)) {
+            continue; // 王手が保証されない = 挑戦モードでは即失敗
+        }
+        checks += 1;
+        if after.all_effectively_checkmate() {
+            solutions += 1;
+            continue;
+        }
+        if depth < 3 {
+            continue; // 1手詰の問題でこの手は詰んでいない
+        }
+        // 玉方の応手による観測分岐すべてで、残り depth-2 手以内の詰みが必要
+        let groups = after.expand_defense_moves(mv);
+        if groups.is_empty() {
+            continue;
+        }
+        let all_proven = groups.iter().all(|(obs, group)| {
+            // Checkmate 分岐はその時点で詰み（追加の手数は要らない）
+            if matches!(obs, tsuitate_solver_lib::solver::solution::Observation::Checkmate) {
+                return true;
+            }
+            if group.is_empty() {
+                return true;
+            }
+            let outcome = solve_meta_query_with(
+                &mut solver,
+                group.positions.clone(),
+                depth - 2,
+                node_limit,
+                scan_node_limit,
+            );
+            outcome.result == MetaQueryResult::Proven
+        });
+        if all_proven {
+            solutions += 1;
+        }
+    }
+
+    if cancel.load(Ordering::Relaxed) {
+        return None;
+    }
+    Some((tries, checks, solutions))
+}
+
 fn main() -> ExitCode {
     let args = match parse_args() {
         Ok(a) => a,
@@ -686,6 +795,7 @@ fn main() -> ExitCode {
         });
     }
 
+    let root_pos = pos.clone();
     let meta = MetaPosition::new(pos);
     let mut solver = TsuitateDfpnSolver::new(args.node_limit, cancel.clone());
     let result = if args.find_second {
@@ -709,6 +819,40 @@ fn main() -> ExitCode {
         .as_ref()
         .map_or(false, |t| t.has_piece_surplus());
 
+    // レート推定（解けた問題のみ）。初手を1手ずつ調べ直すので本解より重い
+    let rating: Option<RatingEstimate> = match (&result.tree, args.estimate_rating) {
+        (Some(tree), true) => {
+            let solved_depth = depth.unwrap_or(1);
+            // 打ち切られたら rating は付けない（採掘側はレートのない問題を捨てる）
+            analyze_root_moves(
+                &root_pos,
+                solved_depth,
+                args.rating_node_limit,
+                if args.scan_node_limit == 0 { u64::MAX } else { args.scan_node_limit },
+                cancel.clone(),
+            )
+            .map(|(root_tries, root_checks, root_solutions)| {
+                let (solution_branches, max_branch) = tree_branch_stats(tree);
+                let features = RatingFeatures {
+                    depth: solved_depth,
+                    root_tries,
+                    root_checks,
+                    root_solutions,
+                    solution_branches,
+                    max_branch,
+                    nodes: solver.nodes_searched,
+                    has_second: result.second_tree.is_some(),
+                };
+                RatingEstimate {
+                    value: estimate_rating(&features),
+                    formula: FORMULA_VERSION,
+                    features,
+                }
+            })
+        }
+        _ => None,
+    };
+
     // 以降はハードキル禁止（結果確定済み。出力の競合・破損を防ぐ）
     output_started.store(true, Ordering::Relaxed);
     let output = json!({
@@ -725,6 +869,7 @@ fn main() -> ExitCode {
         "message": result.message,
         "tree": result.tree,
         "secondTree": result.second_tree,
+        "rating": rating,
     });
     println!("{}", output);
 

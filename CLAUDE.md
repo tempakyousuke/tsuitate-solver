@@ -92,9 +92,20 @@ GUIおよびベンチマークで使用する df-pn (Depth-First Proof Number Se
 
 `src-tauri/src/bin/cli.rs`。Webサイト（tsuitate リポジトリ）の投稿検証・挑戦モードから spawn されるヘッドレスバイナリ。ビルド: `cargo build --release --bin tsuitate-solver-cli`
 
-- 通常モード: `<question.json> [--find-second] [--shortest] [--node-limit N] [--timeout-secs N] [--memory-limit-mb N]`
+- 通常モード: `<question.json> [--find-second] [--shortest] [--node-limit N] [--timeout-secs N] [--memory-limit-mb N] [--estimate-rating] [--rating-node-limit N]`
 - 挑戦モード: `--solve-meta <request.json> [--node-limit N]`（決定性のためタイムアウト・メモリ上限なし）
 - **--memory-limit-mb**: ピークRSSの上限。監視スレッドがソフト上限でキャンセルフラグを立て（出力に `memoryLimited: true`）、1.5倍のハード上限でフォールバックJSONを出して正常終了する（OOM killer 対策）。余詰め探索（find_second）は情報集合の再展開でGB級のメモリを食うことがあり、走査系（find_table_alternative / find_inner_alt_recursive）には MAX_META_POSITIONS 超のメタで打ち切って「判定不能」扱いにするガードがある。`expand_defense_moves` は協調キャンセル（`metaposition.rs` の `set_expansion_cancel`）を確認し、**キャンセル発火後の戻り値は部分結果の可能性があるため呼び出し側は必ず破棄する**こと（空の分岐を「詰み」と誤認すると偽の証明になる）
+
+### 難易度レート推定（--estimate-rating）
+
+`src-tauri/src/solver/rating.rs`。サイト（tsuitate）の**詰めチャレ**（1問ずつレート連動で出題するモード）が問題に付ける**初期レート**を求める。問題レートは実戦の Elo で自己補正されるので、ここで出すのは事前分布。
+
+- 特徴量はすべて解答過程から決まる決定的な量（乱数も実測時間も使わない）: `depth` / `rootTries`（初期局面の合法手数）/ `rootChecks`（うち王手が保証される手）/ `rootSolutions`（うち制限手数内に詰む手）/ `solutionBranches` / `maxBranch` / `nodes` / `hasSecond`
+- **初手ごとの判定**（`analyze_root_moves`）は、各合法手について「王手が保証されるか」→「玉方の全観測分岐で残り `depth-2` 手以内の詰みが証明できるか」を調べる。本解を1つ求めるより重いので、**オフラインの問題生成パイプライン専用**（サイトの投稿検証では使わない）
+- 判定に使うソルバーは1つを使い回して転置表を温存する（初手が違っても同じ部分木を踏むため）。手の列挙順は固定なので結果は決定的
+- **`--timeout-secs` / `--memory-limit-mb` のキャンセルフラグを共有する**。本解より重いので共有しないとタイムアウトがこの区間に効かない（呼び出し側の mine_tsume に外側のタイムアウトはない）。発火したら `rating` を付けずに出力する（途中まで数えた特徴量は実際より易しいレートになるうえ、`expand_defense_moves` の部分結果は信用できない）。採掘側はレートのない問題を捨てる
+- 難易度の分母は `rootTries` ではなく **`rootChecks`**。合法手数はどの問題でも100前後でほぼ定数になり識別力がないが、王手が保証される手の数は解き手が実際に読む候補の幅そのもの
+- **v1 の係数は実測データのない暫定値**。詰めチャレの実戦結果（問題レートの収束先）と突き合わせて校正する前提で、特徴量を出力にそのまま載せてある（後から重みだけ引き直せる）。式を変えたら `FORMULA_VERSION` を上げること
 
 ### TsuitateSolver（旧ソルバー）
 
