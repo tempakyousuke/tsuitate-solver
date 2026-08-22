@@ -544,27 +544,37 @@ fn run_solve_meta(
 ///
 /// 返り値: (指せる手, そのうち王手が保証される手, そのうち depth 手以内に詰む手)
 ///
-/// ついたて詰将棋の初期局面は盤面が1つに確定している（玉方の駒は玉以外すべて
-/// 持ち駒）ので「指せる手」＝合法手。王手が保証されない手はサイトの挑戦モードでは
+/// ついたて詰将棋の初期局面は盤面が1つに確定している（初形は全公開）ので
+/// 「指せる手」＝合法手。王手が保証されない手はサイトの挑戦モードでは
 /// その場で詰め失敗になるため、正解手は必ず王手の中にある。
 ///
 /// ソルバーは1つを使い回して転置表を温存する（初手が違っても同じ部分木を
 /// 何度も踏むため）。手の列挙順は固定なので結果は決定的。
+///
+/// **cancel はタイムアウト・メモリ上限と共有する**。本解を求めるより重いので、
+/// 共有しないと `--timeout-secs` がこの区間には効かず、1問で何分も居座り得る
+/// （呼び出し側の mine_tsume に外側のタイムアウトはない）。発火したら `None` を
+/// 返して**レートを付けない**: 途中まで数えた特徴量で式を回すと実際より易しい
+/// レートが付くうえ、`expand_defense_moves` はキャンセル後に部分結果を返し得る
+/// ので `all_proven` 自体が信用できない。
 fn analyze_root_moves(
     pos: &Position,
     depth: u32,
     node_limit: u64,
     scan_node_limit: u64,
-) -> (u32, u32, u32) {
+    cancel: Arc<AtomicBool>,
+) -> Option<(u32, u32, u32)> {
     let root = MetaPosition::new(pos.clone());
-    let cancel = Arc::new(AtomicBool::new(false));
-    let mut solver = TsuitateDfpnSolver::new(u64::MAX, cancel);
+    let mut solver = TsuitateDfpnSolver::new(u64::MAX, cancel.clone());
 
     let mut tries = 0u32;
     let mut checks = 0u32;
     let mut solutions = 0u32;
 
     for mv in pos.generate_legal_moves() {
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
         let after = root.apply_attack_move(mv);
         if after.is_empty() {
             continue; // その盤面では指せない = 反則
@@ -608,7 +618,10 @@ fn analyze_root_moves(
         }
     }
 
-    (tries, checks, solutions)
+    if cancel.load(Ordering::Relaxed) {
+        return None;
+    }
+    Some((tries, checks, solutions))
 }
 
 fn main() -> ExitCode {
@@ -744,27 +757,31 @@ fn main() -> ExitCode {
     let rating: Option<RatingEstimate> = match (&result.tree, args.estimate_rating) {
         (Some(tree), true) => {
             let solved_depth = depth.unwrap_or(1);
-            let (root_tries, root_checks, root_solutions) = analyze_root_moves(
+            // 打ち切られたら rating は付けない（採掘側はレートのない問題を捨てる）
+            analyze_root_moves(
                 &root_pos,
                 solved_depth,
                 args.rating_node_limit,
                 if args.scan_node_limit == 0 { u64::MAX } else { args.scan_node_limit },
-            );
-            let (solution_branches, max_branch) = tree_branch_stats(tree);
-            let features = RatingFeatures {
-                depth: solved_depth,
-                root_tries,
-                root_checks,
-                root_solutions,
-                solution_branches,
-                max_branch,
-                nodes: solver.nodes_searched,
-                has_second: result.second_tree.is_some(),
-            };
-            Some(RatingEstimate {
-                value: estimate_rating(&features),
-                formula: FORMULA_VERSION,
-                features,
+                cancel.clone(),
+            )
+            .map(|(root_tries, root_checks, root_solutions)| {
+                let (solution_branches, max_branch) = tree_branch_stats(tree);
+                let features = RatingFeatures {
+                    depth: solved_depth,
+                    root_tries,
+                    root_checks,
+                    root_solutions,
+                    solution_branches,
+                    max_branch,
+                    nodes: solver.nodes_searched,
+                    has_second: result.second_tree.is_some(),
+                };
+                RatingEstimate {
+                    value: estimate_rating(&features),
+                    formula: FORMULA_VERSION,
+                    features,
+                }
             })
         }
         _ => None,
