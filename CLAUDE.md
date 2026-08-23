@@ -128,7 +128,8 @@ GUIおよびベンチマークで使用する df-pn (Depth-First Proof Number Se
 
 - `is_square_attacked()` (movegen.rs): 非対称駒（金・銀・桂・歩・香）は、ターゲットマスから攻撃者を探す際に**相手側**のオフセットを使う必要がある
 - `make_move`/`unmake_move`: 玉は持ち駒に加えない（玉の捕獲はソルバーの探索上発生しうるが、持ち駒に加えると不正な状態になる）
-- 解の手順木の `MoveData` から `Move` を復元して情報集合に適用するときは、必ず `md_to_move`（盤上手の駒種を meta から解決する）を使う。`moved_piece_kind` はコメント上「表示用」だが `Move` の Eq/Hash に参加しているため、駒種を落とした手は `Position::is_legal_move` で全局面が不合法と判定され、観測分岐の走査が**静かに**止まる（余詰めの見逃しを「完全作」として確定報告する）。`move_data_to_move` は from/to/成/打ちしか見ない除外手の照合専用
+- 解の手順木の `MoveData` から `Move` を復元して情報集合に適用するときは、必ず `md_to_move`（盤上手の駒種を meta から解決する）を使う。`moved_piece_kind` はコメント上「表示用」だが `Move` の Eq/Hash に参加しているため、駒種を落とした手は `Position::try_make_legal` で全局面が不合法と判定され、観測分岐の走査が**静かに**止まる（余詰めの見逃しを「完全作」として確定報告する）。復元できないときは代用せず `second_search_aborted` を立てて「判定不能」にすること。除外手の照合（from/to/成/打ちしか見ない）には駒種を持たない `ExclusionKey` を使う — **指せない型**にして取り違えを型で防いでいるので、ここから `Move` を作らないこと
+- 情報集合に1手を適用する合法性判定は `Position::try_make_legal`（判定と着手を兼ねてクローン1回）。`is_legal_move` はその薄いラッパで、`tests/shogi_tests.rs` の `is_legal_move_matches_generate_legal_moves` が全マス×全駒種で `generate_legal_moves` との一致を検査している。判定ロジックを `apply_attack_move_split` 側に写して二重管理にしないこと（総当たりテストが本番経路を守らなくなる）
 
 ## ビルド・テスト
 

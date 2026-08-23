@@ -202,14 +202,59 @@ fn muda_kanji_to_kind(s: &str) -> Option<PieceKind> {
     })
 }
 
+/// 余詰めチェックで「この手は使わない」を表す照合キー。
+///
+/// 除外は「同じ地点への同じ種類の着手」を弾くためのもので、動かす駒種は要らない。
+/// `MoveData` からは駒種を復元できないが、`Move` を作って持ち回すと
+/// 「指す手」として使い回せてしまう。`moved_piece_kind` は表示用と書いてある
+/// くせに `Move` の Eq/Hash に参加しているため、駒種を落とした `Move` を情報集合に
+/// 適用すると全局面が不合法になり、観測分岐の走査が**静かに**止まる。
+/// 指せない専用の型にして、その取り違えを型で防ぐ。
+/// 情報集合に適用する手が要るときは `md_to_move`（駒種を meta から解決する）を使う。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ExclusionKey {
+    from: Option<Square>,
+    to: Square,
+    promotion: bool,
+    drop_piece: Option<PieceKind>,
+}
+
+impl ExclusionKey {
+    fn from_move_data(md: &MoveData) -> Self {
+        Self {
+            from: match (md.from_file, md.from_rank) {
+                (Some(f), Some(r)) => Some(Square::new(f, r)),
+                _ => None,
+            },
+            to: Square::new(md.to_file, md.to_rank),
+            promotion: md.promotion,
+            drop_piece: md.drop_piece.as_deref().and_then(muda_kanji_to_kind),
+        }
+    }
+
+    /// 盤上手なら成/不成を反転したキー（除外は成・不成をまとめて弾く）
+    fn promotion_counterpart(&self) -> Option<Self> {
+        self.from?;
+        Some(Self { promotion: !self.promotion, ..*self })
+    }
+
+    fn matches(&self, mv: &Move) -> bool {
+        self.from == mv.from
+            && self.to == mv.to
+            && self.promotion == mv.promotion
+            && self.drop_piece == mv.drop_piece
+    }
+
+    /// 成/不成の違いを無視して同じ着手か（主解の手を走査から外す用）
+    fn same_target(&self, mv: &Move) -> bool {
+        self.from == mv.from && self.to == mv.to && self.drop_piece == mv.drop_piece
+    }
+}
+
 /// MoveData を Move に復元（盤上手は meta から動かす駒種を得る）。
 ///
-/// **盤上の駒の移動は必ずこちらを使うこと**。`moved_piece_kind` は表示用と
-/// 書いてあるが `Move` の Eq/Hash に参加しているため、駒種を落として復元した手は
-/// `Position::is_legal_move`（生成した手との比較で判定する）で全局面が不合法に
-/// なり、情報集合の分割が静かに壊れる。駒種を持たない復元は
-/// `TsuitateDfpnSolver::move_data_to_move` にあるが、from/to/成/打ちだけを
-/// 見る用途（除外手の照合）に限る。
+/// **情報集合に適用する手は必ずこちらで作ること**。駒種を持たない復元は
+/// `ExclusionKey`（除外手の照合専用で、指せない型）にしてある。
 pub(crate) fn md_to_move(md: &MoveData, meta: &MetaPosition) -> Option<Move> {
     if let Some(dp) = &md.drop_piece {
         Some(Move::drop(Square::new(md.to_file, md.to_rank), muda_kanji_to_kind(dp)?))
@@ -814,7 +859,7 @@ pub struct TsuitateDfpnSolver {
     /// キャンセルフラグ
     cancelled: Arc<AtomicBool>,
     /// ルートで除外する手（余詰めチェック用）
-    excluded_root_moves: Vec<Move>,
+    excluded_root_moves: Vec<ExclusionKey>,
     /// ルートのメタポジションハッシュ（除外判定用）
     root_hash: Option<u64>,
     /// 深さ上限（None = 制限なし）
@@ -1134,12 +1179,7 @@ impl TsuitateDfpnSolver {
 
     /// ルートで除外されている手かどうか（余詰めチェック用）
     fn is_excluded_root_move(&self, mv: &Move) -> bool {
-        self.excluded_root_moves.iter().any(|exc| {
-            exc.from == mv.from
-                && exc.to == mv.to
-                && exc.promotion == mv.promotion
-                && exc.drop_piece == mv.drop_piece
-        })
+        self.excluded_root_moves.iter().any(|exc| exc.matches(mv))
     }
 
     /// OR ノード（攻め方）: 候補手から1つでも詰みに導ければ成功
@@ -1306,14 +1346,7 @@ impl TsuitateDfpnSolver {
 
         // ルートノードでは除外手をフィルタ
         if self.root_hash == Some(hash) && !self.excluded_root_moves.is_empty() {
-            candidates.retain(|mv| {
-                !self.excluded_root_moves.iter().any(|exc| {
-                    exc.from == mv.from
-                        && exc.to == mv.to
-                        && exc.promotion == mv.promotion
-                        && exc.drop_piece == mv.drop_piece
-                })
-            });
+            candidates.retain(|mv| !self.is_excluded_root_move(mv));
         }
 
         if candidates.is_empty() {
@@ -2334,36 +2367,6 @@ impl TsuitateDfpnSolver {
         (best_tree, best_depth, total_nodes)
     }
 
-    /// MoveData から Move に変換する（`moved_piece_kind` は復元しない）。
-    ///
-    /// 除外手の照合（`is_excluded_root_move`）は from/to/成/打ちしか見ないので
-    /// これで足りるが、**情報集合に適用する手をこれで作ってはいけない**。
-    /// 適用する手は `md_to_move`（駒種を meta から解決する）を使うこと。
-    fn move_data_to_move(mv: &MoveData) -> Move {
-        let to = Square::new(mv.to_file, mv.to_rank);
-        let from = match (mv.from_file, mv.from_rank) {
-            (Some(f), Some(r)) => Some(Square::new(f, r)),
-            _ => None,
-        };
-        let drop_piece = mv.drop_piece.as_ref().and_then(|s| match s.as_str() {
-            "飛" => Some(PieceKind::Rook),
-            "角" => Some(PieceKind::Bishop),
-            "金" => Some(PieceKind::Gold),
-            "銀" => Some(PieceKind::Silver),
-            "桂" => Some(PieceKind::Knight),
-            "香" => Some(PieceKind::Lance),
-            "歩" => Some(PieceKind::Pawn),
-            _ => None,
-        });
-        Move {
-            from,
-            to,
-            promotion: mv.promotion,
-            drop_piece,
-            moved_piece_kind: None,
-        }
-    }
-
     /// キズ（許容余詰め）の判定
     ///
     /// 主解の手と別解の手が両方ともプローブ手（Illegal分岐を持つ）である場合、
@@ -2385,8 +2388,8 @@ impl TsuitateDfpnSolver {
         meta: &MetaPosition,
         first_tree: &SolutionNode,
     ) -> (Option<SolutionNode>, Vec<SolutionNode>, u64, String) {
-        let first_mv = match first_tree {
-            SolutionNode::AttackMove { mv, .. } => Self::move_data_to_move(mv),
+        let first_key = match first_tree {
+            SolutionNode::AttackMove { mv, .. } => ExclusionKey::from_move_data(mv),
             SolutionNode::Checkmate { .. } => {
                 return (None, vec![], self.nodes_searched, String::new());
             }
@@ -2426,12 +2429,8 @@ impl TsuitateDfpnSolver {
         // ルートの or エントリのみ除外条件に依存するため、探索の前後で削除する。
         // （事前削除は必須: 残したまま探索が打ち切られると、solve() が
         //   初回探索の証明＝除外手を使った証明を読んで偽の Proven を返す）
-        let mut excluded = vec![first_mv];
-        if first_mv.from.is_some() {
-            let mut counterpart = first_mv;
-            counterpart.promotion = !counterpart.promotion;
-            excluded.push(counterpart);
-        }
+        let mut excluded = vec![first_key];
+        excluded.extend(first_key.promotion_counterpart());
 
         self.or_table.remove(&root_hash);
         self.nodes_searched = 0;
@@ -2449,7 +2448,7 @@ impl TsuitateDfpnSolver {
         if std::env::var("SECOND_DEBUG").is_ok() {
             eprintln!(
                 "[second] phase1 exclude={:?} result={:?} nodes={} time={:.3}s",
-                first_mv, result, self.nodes_searched,
+                first_key, result, self.nodes_searched,
                 phase1_start.elapsed().as_secs_f64(),
             );
         }
@@ -2534,9 +2533,11 @@ impl TsuitateDfpnSolver {
             SolutionNode::Checkmate { .. } => return None,
             SolutionNode::AttackMove { mv, branches, .. } => (mv, branches),
         };
-        let chosen = Self::move_data_to_move(mv_data);
+        let chosen = ExclusionKey::from_move_data(mv_data);
 
         // このノードで転置表上の別の証明手を探す（最終手は余詰の対象外）
+        // 注: 子へ降りるには「指せる」主解手が要る（下の chosen_mv）。照合だけなら
+        // 駒種の要らない chosen で足りる
         if !node.is_final_move() && !meta.is_empty() {
             let hash = meta_position_hash(meta);
             let budget_now = self.current_budget(depth);
@@ -2547,10 +2548,7 @@ impl TsuitateDfpnSolver {
 
             for mv in &all_moves {
                 // 主解の手（成/不成違いを含む）は対象外
-                if mv.from == chosen.from
-                    && mv.to == chosen.to
-                    && mv.drop_piece == chosen.drop_piece
-                {
+                if chosen.same_target(mv) {
                     continue;
                 }
                 let ak = Self::and_key(hash, mv);
@@ -2595,10 +2593,16 @@ impl TsuitateDfpnSolver {
         }
 
         // 最長応手分岐のみ子へ再帰（find_inner_alt_recursive と同じ走査）
-        let (legal_meta, illegal_meta) = meta.apply_attack_move_split_fast(chosen);
+        // 情報集合に適用する手は駒種まで復元する（ExclusionKey は照合専用で指せない）。
+        // 復元できないのは手順木と情報集合の食い違いなので、代用せず判定不能にする
+        let Some(chosen_mv) = md_to_move(mv_data, meta) else {
+            self.second_search_aborted = true;
+            return None;
+        };
+        let (legal_meta, illegal_meta) = meta.apply_attack_move_split_fast(chosen_mv);
         let obs_metas: Vec<(Observation, MetaPosition)> =
             if !legal_meta.is_empty() && !legal_meta.all_effectively_checkmate() {
-                let raw = legal_meta.expand_defense_moves(chosen);
+                let raw = legal_meta.expand_defense_moves(chosen_mv);
                 Self::merge_observation_branches(raw)
             } else {
                 vec![]
@@ -2695,7 +2699,13 @@ impl TsuitateDfpnSolver {
             SolutionNode::AttackMove { mv, branches, .. } => (mv, branches),
         };
 
-        let mv = md_to_move(mv_data, meta).unwrap_or_else(|| Self::move_data_to_move(mv_data));
+        // 復元できないのは手順木と情報集合が食い違っているとき（本来起きない）。
+        // 駒種を落とした手で代用すると全局面が不合法になり、観測分岐を1つも
+        // 走査しないまま「余詰めなし」を確定報告してしまうので、判定不能にする
+        let Some(mv) = md_to_move(mv_data, meta) else {
+            self.second_search_aborted = true;
+            return None;
+        };
 
         // この攻め手を適用して観測分岐を復元
         let (legal_meta, illegal_meta) = meta.apply_attack_move_split_fast(mv);
@@ -2753,7 +2763,7 @@ impl TsuitateDfpnSolver {
             // この子ORノードで別の手を試す（最終手は余詰の対象外）
             if let SolutionNode::AttackMove { mv: child_mv, .. } = branch.continuation.as_ref() {
                 if !branch.continuation.is_final_move() {
-                    let child_move = Self::move_data_to_move(child_mv);
+                    let child_move = ExclusionKey::from_move_data(child_mv);
                     if let Some(alt_subtree) =
                         self.try_solve_excluding(&child_meta, child_move, first_hashes, total_nodes)
                     {
@@ -2827,7 +2837,7 @@ impl TsuitateDfpnSolver {
     fn try_solve_excluding(
         &mut self,
         meta: &MetaPosition,
-        excluded_move: Move,
+        excluded_move: ExclusionKey,
         first_hashes: &HashSet<u64>,
         total_nodes: &mut u64,
     ) -> Option<SolutionNode> {
@@ -2836,11 +2846,7 @@ impl TsuitateDfpnSolver {
         }
 
         let mut excluded = vec![excluded_move];
-        if excluded_move.from.is_some() {
-            let mut counterpart = excluded_move;
-            counterpart.promotion = !counterpart.promotion;
-            excluded.push(counterpart);
-        }
+        excluded.extend(excluded_move.promotion_counterpart());
 
         // 転置表・キャッシュは保持（find_second_solution Phase 1 と同じ理由）
         // ルートの or エントリは除外条件に依存するため探索の前後で削除する
@@ -3437,26 +3443,27 @@ mod move_restore_tests {
         assert!(illegal.is_empty());
     }
 
-    /// 駒種を落とす復元（`move_data_to_move`）を情報集合に適用すると
-    /// 全局面が不正扱いになることを固定する。除外手の照合専用であって、
-    /// 手を「指す」用途に使ってはいけないことの根拠。
+    /// 除外キーは駒種を持たないが、成/不成まで含めて元の手に一致すること。
+    /// （`ExclusionKey` は指せない型なので、情報集合に適用する取り違えは
+    /// 型レベルで起きない。ここで見るのは照合が効くことだけ）
     #[test]
-    fn move_data_to_move_is_not_applicable_to_board_moves() {
-        let meta = single_meta();
-        let mv = Move::normal(
-            Square::new(5, 3),
-            Square::new(5, 2),
-            false,
-            PieceKind::Gold,
-        );
-        let md = MoveData::from_move(mv, Color::Sente);
+    fn exclusion_key_matches_original_move() {
+        for promotion in [false, true] {
+            let mv = Move::normal(Square::new(5, 3), Square::new(5, 2), promotion, PieceKind::Gold);
+            let key = ExclusionKey::from_move_data(&MoveData::from_move(mv, Color::Sente));
 
-        let dropped_kind = TsuitateDfpnSolver::move_data_to_move(&md);
-        assert_ne!(dropped_kind, mv);
-        let (legal, illegal) = meta.apply_attack_move_split(dropped_kind);
-        assert!(
-            legal.is_empty() && !illegal.is_empty(),
-            "駒種なしの手は全局面で不合法になる（適用には md_to_move を使うこと）"
-        );
+            assert!(key.matches(&mv), "元の手に一致する");
+            assert!(key.same_target(&mv));
+
+            let counterpart = key.promotion_counterpart().expect("盤上手には成/不成の相方がある");
+            assert!(!counterpart.matches(&mv), "成/不成が違えば matches は外れる");
+            assert!(counterpart.same_target(&mv), "same_target は成/不成を無視する");
+        }
+
+        // 打ちには成/不成の相方がない
+        let drop = Move::drop(Square::new(5, 2), PieceKind::Gold);
+        let key = ExclusionKey::from_move_data(&MoveData::from_move(drop, Color::Sente));
+        assert!(key.matches(&drop));
+        assert!(key.promotion_counterpart().is_none());
     }
 }

@@ -414,24 +414,37 @@ impl Position {
         movegen::is_square_attacked(self, sq, by_color)
     }
 
+    /// 手番側の指し手 mv が合法なら、指した後の局面を返す（不合法なら None）。
+    ///
+    /// 合法性の判定と着手を1回のクローンで済ませる。情報集合に手を適用する
+    /// `MetaPosition::apply_attack_move_split` はこれを最内周で回すため、
+    /// 「判定してから指す」で2回クローンするのを避ける必要がある。
+    ///
+    /// **盤上の駒の移動を渡すときは `moved_piece_kind` を必ず埋めること**
+    /// （`Move` の Eq は駒種を含むため、落とすと擬似合法判定が必ず外れる）。
+    pub fn try_make_legal(&self, mv: &Move) -> Option<Position> {
+        let color = self.side_to_move;
+        if !movegen::is_pseudo_legal_move(self, mv, color) {
+            return None;
+        }
+        let mut next = self.clone();
+        next.make_move(*mv);
+        // 自玉が取られる手は不正。自玉がなければ is_in_check は常に false なので、
+        // 「攻め方に玉がなければ擬似合法＝合法」（詰将棋の攻め方）もこれで足りる
+        if next.is_in_check(color) {
+            return None;
+        }
+        Some(next)
+    }
+
     /// 手番側の指し手 mv が合法か（生成せずに1手だけ検証する）。
     ///
     /// `generate_legal_moves().contains(&mv)` と同値だが、全手生成を伴わない。
     /// 攻め方は持ち駒の打ち先が数十マスに及ぶため、情報集合の各局面で
     /// 「この手が指せるか」だけを知りたい用途では桁違いに軽い。
+    /// 着手後の局面も要るなら `try_make_legal` を使う（クローンが1回で済む）。
     pub fn is_legal_move(&self, mv: &Move) -> bool {
-        let color = self.side_to_move;
-        if !movegen::is_pseudo_legal_move(self, mv, color) {
-            return false;
-        }
-        // 自玉がなければ擬似合法＝合法（詰将棋の攻め方に該当）
-        if self.find_king(color).is_none() {
-            return true;
-        }
-        let mut test = self.clone();
-        test.make_move(*mv);
-        // test はここで捨てるので unmake は不要
-        !test.is_in_check(color)
+        self.try_make_legal(mv).is_some()
     }
 
     /// 合法手を生成

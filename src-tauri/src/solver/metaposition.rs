@@ -205,10 +205,10 @@ impl MetaPosition {
     /// 返り値: (合法な盤面(手を指した後), 不正な盤面(手を指す前の状態))
     /// 衝立詰将棋では、不正な手(反則)も情報を持つため分割して返す
     ///
-    /// 合法性は1手だけ検証する（`movegen::is_pseudo_legal_move` ＋自殺手の除去）。
-    /// 情報集合の各局面で全合法手を生成して照合すると、攻め方の持ち駒の打ち先
-    /// （1駒種あたり最大80マス）の列挙が支配的なコストになる。
-    /// クローンは1局面につき1回だけ（合法なら着手後、不正なら着手前をそのまま使う）。
+    /// 合法性は `Position::try_make_legal` で1手だけ検証する。情報集合の各局面で
+    /// 全合法手を生成して照合すると、攻め方の持ち駒の打ち先（1駒種あたり最大80マス）
+    /// の列挙が支配的なコストになる。`try_make_legal` は判定と着手を兼ねるので
+    /// クローンは1局面につき1回（合法なら着手後、不正なら着手前をそのまま使う）。
     /// 同じ盤面は zobrist ハッシュで重複排除する（情報集合は集合なので、
     /// 重複を残すとハッシュとメタサイズが無意味に膨らむ）。
     ///
@@ -221,22 +221,12 @@ impl MetaPosition {
         let mut illegal_seen = SeenHashes::new();
 
         for pos in &self.positions {
-            let color = pos.side_to_move;
-            if !crate::shogi::movegen::is_pseudo_legal_move(pos, &mv, color) {
+            let Some(new_pos) = pos.try_make_legal(&mv) else {
                 if illegal_seen.insert(pos.zobrist_hash) {
                     illegal_positions.push(pos.clone());
                 }
                 continue;
-            }
-            let mut new_pos = pos.clone();
-            new_pos.make_move(mv);
-            // 自玉が取られる手は不正（攻め方に玉がなければ is_in_check は常に false）
-            if new_pos.is_in_check(color) {
-                if illegal_seen.insert(pos.zobrist_hash) {
-                    illegal_positions.push(pos.clone());
-                }
-                continue;
-            }
+            };
             if legal_seen.insert(new_pos.zobrist_hash) {
                 legal_positions.push(new_pos);
             }

@@ -1804,10 +1804,10 @@ impl TsuitateDfpnPlusSolver {
         };
 
         // 盤上手は駒種を meta から解決する。駒種を落とした手は
-        // Position::is_legal_move で全局面が不合法になり、
-        // 観測分岐の走査が静かに止まる（tsuitate_dfpn.rs の md_to_move 参照）
-        let mv = crate::solver::tsuitate_dfpn::md_to_move(mv_data, meta)
-            .unwrap_or_else(|| Self::move_data_to_move(mv_data));
+        // Position::try_make_legal で全局面が不合法になり、
+        // 観測分岐の走査が静かに止まる（tsuitate_dfpn.rs の md_to_move 参照）。
+        // 復元できないのは手順木と情報集合の食い違いなので、代用せず打ち切る
+        let mv = crate::solver::tsuitate_dfpn::md_to_move(mv_data, meta)?;
 
         let (legal_meta, illegal_meta) = meta.apply_attack_move_split_fast(mv);
         let obs_metas: Vec<(Observation, MetaPosition)> =
