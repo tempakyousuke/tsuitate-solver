@@ -25,7 +25,7 @@
 
 **解の条件**: 攻め方の手順は、MetaPosition 内の**全ての盤面**に対して、**どの観測結果が返ってきても**詰みに導けなければならない。つまり解の手順木は観測結果ごとに分岐する。
 
-**反則の利用**: 一部の盤面でのみ合法な手（プローブ手）を指すと、Illegal/NoCapture/Captured の観測で MetaPosition を分割でき、情報収集に使える。
+**反則の利用**: 一部の盤面でのみ合法な手（プローブ手）を指すと、Illegal/NoCapture/Captured の観測で MetaPosition を分割でき、情報収集に使える。ただし攻め方には毎手王手の義務があるので、実際に使えるプローブ手は「指せた盤面では王手になっている手」に限られる。
 
 ### 通常の詰将棋との手数の違い
 
@@ -85,6 +85,10 @@ GUIおよびベンチマークで使用する df-pn (Depth-First Proof Number Se
 - AND ノードの分岐数が最大4であるため、通常の詰将棋の AND ノード（王手回避手＝数十手）に比べて大幅に効率的
 - 転置表: OR テーブル（MetaPosition ハッシュ）と AND テーブル（meta_hash + move）の2つ
 - ノード上限で探索を制御（深さ制限なし）
+- **候補手は「全盤面の王手手の和集合」だけ**（`generate_attack_candidates`）。王手にならない手は、指せた盤面が1つでもあれば mid_and の「合法だった盤面の全てで王手」チェックで必ず反証されるため、候補に入れても AND ノードを無駄にするだけで証明に寄与しない。情報収集用のプローブ手も、王手になるものは各盤面の王手手の和集合に含まれている
+- 手生成の段階で王手候補に絞る: 打ちは `drop_check_mask`（その駒種が玉に利きうるマス）だけを列挙する。空きマス全部を列挙すると1駒種あたり最大80手になり、ここが探索全体で最も重かった。盤上の駒の移動は駒数が少ないので全生成し、幾何学的事前フィルタ（`could_give_check`）で絞る。いずれも偽陰性なしの絞り込みで、最後に実際に指して王手かを確認する
+- 情報集合の各盤面で「この手が指せるか」は `Position::is_legal_move` で1手だけ検証する（全合法手を生成して照合しない）。ルールの二重管理を避けるため、生成側と同じ `drop_targets` / `generate_piece_moves` を使う。`tests/shogi_tests.rs` の `is_legal_move_matches_generate_legal_moves` が全マス×全駒種で `generate_legal_moves` との一致を検査している
+- AND ノード展開キャッシュ（`and_expansion_cache`）には件数上限がある。1件が情報集合まるごとを抱えるため、上限なしだとGB級に膨らみ、ヒットで得た分よりメモリ帯域で失う分が上回る
 - 余詰めチェック対応: **常に主解を最短化してから**初手・内部手を除外して再探索（余詰めは「最短解に対する別手順」として判定。非最短の主解木を検査すると判定が探索順依存になるため。--shortest 指定の有無によらない）
 - 証明木の抽出: 転置表を辿って SolutionNode ツリーを構築
 
@@ -93,7 +97,9 @@ GUIおよびベンチマークで使用する df-pn (Depth-First Proof Number Se
 `src-tauri/src/bin/cli.rs`。Webサイト（tsuitate リポジトリ）の投稿検証・挑戦モードから spawn されるヘッドレスバイナリ。ビルド: `cargo build --release --bin tsuitate-solver-cli`
 
 - 通常モード: `<question.json> [--find-second] [--shortest] [--node-limit N] [--timeout-secs N] [--memory-limit-mb N] [--estimate-rating] [--rating-node-limit N]`
-- 挑戦モード: `--solve-meta <request.json> [--node-limit N]`（決定性のためタイムアウト・メモリ上限なし）
+- 挑戦モード: `--solve-meta <request.json> [--node-limit N] [--scan-node-limit N] [--parallel N]`（決定性のためタイムアウト・メモリ上限なし）
+- 挑戦モード常駐版: `--solve-meta-server [--node-limit N] [--scan-node-limit N]`。stdin から行区切りJSONを受け続け、転置表を手をまたいで温存する。挑戦モードは1手ごとに「前の手の証明の部分木」を問い直すため、2手目以降がほぼ即答になる
+- **--scan-node-limit**: Proven 時の「最小証明深さスキャン」専用の追加ノード予算。スキャンは玉方のタイブレーク（どの観測分岐が一番粘れるか）用の精密化で、真偽判定には影響しない。**未指定なら自動**（本解の証明に要したノード数と同程度まで）。スキャンの最後の1回は必ず「これ以上短くはできない」ことの反証になり、本解の証明より遥かに重くなりやすく、放っておくと1手の応答時間の5〜8割を占める。打ち切ってもタイブレークが粗くなるだけで、返す `provenDepth` は常に証明済みの上界のまま。明示的に `0` を渡すと従来どおり無制限（最短手数を厳密に求める）
 - **--memory-limit-mb**: ピークRSSの上限。監視スレッドがソフト上限でキャンセルフラグを立て（出力に `memoryLimited: true`）、1.5倍のハード上限でフォールバックJSONを出して正常終了する（OOM killer 対策）。余詰め探索（find_second）は情報集合の再展開でGB級のメモリを食うことがあり、走査系（find_table_alternative / find_inner_alt_recursive）には MAX_META_POSITIONS 超のメタで打ち切って「判定不能」扱いにするガードがある。`expand_defense_moves` は協調キャンセル（`metaposition.rs` の `set_expansion_cancel`）を確認し、**キャンセル発火後の戻り値は部分結果の可能性があるため呼び出し側は必ず破棄する**こと（空の分岐を「詰み」と誤認すると偽の証明になる）
 
 ### 難易度レート推定（--estimate-rating）
@@ -181,6 +187,23 @@ cd src-tauri && cargo test --release --test dfpn_benchmark_tests dfpn_bench_all_
 - 制限時間: 120秒/問
 - 最短経路探索: 初回探索で得た解の深さに対し、深さ制限付き二分探索で最短解を求める（GUIでは「最短経路を調べる」オプションで有効化）
 - 余詰めチェック: 主解の初手を除外して再探索し、別解がないか確認する
+
+### 挑戦モードの応答時間（challenge_bench）
+
+`src-tauri/tests/challenge_bench.rs` — サイトの挑戦モードが1手ごとに返す応答の時間を測る。攻め方（＝挑戦者）の指し手は解の手順木から採り（計測対象外）、玉方の各観測分岐について `solve_meta_query_with` を投げて最も粘れる分岐を選ぶ、という `--solve-meta-server` と同じ流れをシミュレートする。ソルバーは1問を通して使い回すので、常駐モードと同じく2手目以降は温まった転置表が効く。
+
+```bash
+# 重い問題だけを流す（環境変数で問題番号を指定）
+cd src-tauri && CHALLENGE_QUESTIONS=8,101,111,114,117,128,134 \
+  cargo test --release --no-default-features --test challenge_bench challenge_bench_pick -- --ignored --nocapture
+
+# 問題1〜40
+cd src-tauri && cargo test --release --no-default-features --test challenge_bench challenge_bench_all -- --ignored --nocapture
+```
+
+- `CHALLENGE_NODE_LIMIT`（既定 2,000,000）、`CHALLENGE_SCAN_NODE_LIMIT`（既定 0 = 自動）で CLI と同じ予算を再現できる
+- `CHALLENGE_VERBOSE=1` で1手ごとの内訳（応手展開・候補手生成・リプレイの時間）を出す
+- 応答時間は初手（＝転置表が空の状態）に集中する。多くの問題は数ms〜数百msだが、深い問題では秒オーダーになる
 
 ### 旧ソルバー（比較用）
 

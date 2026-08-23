@@ -414,6 +414,26 @@ impl Position {
         movegen::is_square_attacked(self, sq, by_color)
     }
 
+    /// 手番側の指し手 mv が合法か（生成せずに1手だけ検証する）。
+    ///
+    /// `generate_legal_moves().contains(&mv)` と同値だが、全手生成を伴わない。
+    /// 攻め方は持ち駒の打ち先が数十マスに及ぶため、情報集合の各局面で
+    /// 「この手が指せるか」だけを知りたい用途では桁違いに軽い。
+    pub fn is_legal_move(&self, mv: &Move) -> bool {
+        let color = self.side_to_move;
+        if !movegen::is_pseudo_legal_move(self, mv, color) {
+            return false;
+        }
+        // 自玉がなければ擬似合法＝合法（詰将棋の攻め方に該当）
+        if self.find_king(color).is_none() {
+            return true;
+        }
+        let mut test = self.clone();
+        test.make_move(*mv);
+        // test はここで捨てるので unmake は不要
+        !test.is_in_check(color)
+    }
+
     /// 合法手を生成
     pub fn generate_legal_moves(&self) -> Vec<Move> {
         let color = self.side_to_move;

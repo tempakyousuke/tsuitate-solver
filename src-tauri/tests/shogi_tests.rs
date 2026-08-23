@@ -469,3 +469,128 @@ fn test_dual_king_legal_moves() {
     println!("後手合法手数: {}, 時間: {:?}", gote_moves.len(), gote_time);
     assert!(gote_time.as_millis() < 100, "後手合法手生成が100ms超え: {:?}", gote_time);
 }
+
+/// is_legal_move が generate_legal_moves と完全に一致することを網羅的に確認する。
+///
+/// 生成側（drop_targets / generate_piece_moves）を再利用しているので原理的には
+/// 一致するはずだが、打ちの形（from/promotion/moved_piece_kind）の扱いなど
+/// ずれやすい箇所があるため、盤面ごとに「盤上の全マス × 全駒種 × 成/不成」と
+/// 「全マス × 全持ち駒種の打ち」を総当たりして突き合わせる。
+#[test]
+fn is_legal_move_matches_generate_legal_moves() {
+    use std::collections::HashSet;
+
+    /// 検査対象の盤面をいくつか作る（両手番・持ち駒あり・王手あり）
+    fn sample_positions() -> Vec<Position> {
+        let mut out = Vec::new();
+
+        let mut base = Position::new();
+        base.set_piece(Square::new(5, 1), Piece::new(Color::Gote, PieceKind::King));
+        base.set_piece(Square::new(5, 9), Piece::new(Color::Sente, PieceKind::King));
+        base.set_piece(Square::new(2, 2), Piece::new(Color::Sente, PieceKind::Rook));
+        base.set_piece(Square::new(8, 8), Piece::new(Color::Sente, PieceKind::Bishop));
+        base.set_piece(Square::new(5, 3), Piece::new(Color::Sente, PieceKind::Pawn));
+        base.set_piece(Square::new(1, 1), Piece::new(Color::Sente, PieceKind::Lance));
+        base.set_piece(Square::new(3, 3), Piece::new(Color::Gote, PieceKind::Gold));
+        base.set_piece(Square::new(4, 2), Piece::new(Color::Gote, PieceKind::Silver));
+        base.set_piece(Square::new(7, 7), Piece::new(Color::Gote, PieceKind::Knight));
+        base.set_piece(Square::new(9, 5), Piece::new(Color::Sente, PieceKind::PromotedBishop));
+        for kind in [PieceKind::Rook, PieceKind::Gold, PieceKind::Silver,
+                     PieceKind::Knight, PieceKind::Lance, PieceKind::Pawn] {
+            base.sente_hand.add(kind);
+            base.gote_hand.add(kind);
+        }
+        base.init_zobrist_hash();
+
+        for stm in [Color::Sente, Color::Gote] {
+            let mut p = base.clone();
+            p.side_to_move = stm;
+            p.init_zobrist_hash();
+            out.push(p);
+        }
+
+        // 攻め方に玉がない（詰将棋の実際の形）
+        let mut no_king = base.clone();
+        no_king.remove_piece(Square::new(5, 9));
+        no_king.side_to_move = Color::Sente;
+        no_king.init_zobrist_hash();
+        out.push(no_king);
+
+        // 王手されている（王手回避のみ合法）
+        let mut in_check = base.clone();
+        in_check.set_piece(Square::new(5, 2), Piece::new(Color::Sente, PieceKind::Gold));
+        in_check.side_to_move = Color::Gote;
+        in_check.init_zobrist_hash();
+        out.push(in_check);
+
+        // 打ち歩詰め・二歩が絡む形（先手歩を持ち、玉の直前が空き）
+        let mut pawn_case = Position::new();
+        pawn_case.set_piece(Square::new(5, 1), Piece::new(Color::Gote, PieceKind::King));
+        pawn_case.set_piece(Square::new(4, 1), Piece::new(Color::Sente, PieceKind::Gold));
+        pawn_case.set_piece(Square::new(6, 1), Piece::new(Color::Sente, PieceKind::Gold));
+        pawn_case.set_piece(Square::new(4, 2), Piece::new(Color::Sente, PieceKind::Gold));
+        pawn_case.set_piece(Square::new(6, 2), Piece::new(Color::Sente, PieceKind::Gold));
+        pawn_case.set_piece(Square::new(3, 5), Piece::new(Color::Sente, PieceKind::Pawn));
+        pawn_case.sente_hand.add(PieceKind::Pawn);
+        pawn_case.sente_hand.add(PieceKind::Lance);
+        pawn_case.sente_hand.add(PieceKind::Knight);
+        pawn_case.side_to_move = Color::Sente;
+        pawn_case.init_zobrist_hash();
+        out.push(pawn_case);
+
+        out
+    }
+
+    const ALL_KINDS: [PieceKind; 14] = [
+        PieceKind::King, PieceKind::Rook, PieceKind::Bishop, PieceKind::Gold,
+        PieceKind::Silver, PieceKind::Knight, PieceKind::Lance, PieceKind::Pawn,
+        PieceKind::PromotedRook, PieceKind::PromotedBishop, PieceKind::PromotedSilver,
+        PieceKind::PromotedKnight, PieceKind::PromotedLance, PieceKind::PromotedPawn,
+    ];
+
+    let mut checked = 0usize;
+    for pos in sample_positions() {
+        let legal: HashSet<Move> = pos.generate_legal_moves().into_iter().collect();
+
+        // 盤上の駒の移動: 全 from × 全 to × 成/不成 × 動かす駒種（誤った駒種も含む）
+        for from_idx in 0..81 {
+            let from = Square::from_index(from_idx);
+            for to_idx in 0..81 {
+                let to = Square::from_index(to_idx);
+                for promotion in [false, true] {
+                    for kind in ALL_KINDS {
+                        let mv = Move::normal(from, to, promotion, kind);
+                        assert_eq!(
+                            pos.is_legal_move(&mv),
+                            legal.contains(&mv),
+                            "盤上の手で不一致: {:?}",
+                            mv
+                        );
+                        checked += 1;
+                    }
+                }
+            }
+        }
+
+        // 打ち: 全マス × 全駒種（持ち駒にない駒種も含む）
+        for to_idx in 0..81 {
+            let to = Square::from_index(to_idx);
+            for kind in ALL_KINDS {
+                let mv = Move::drop(to, kind);
+                assert_eq!(
+                    pos.is_legal_move(&mv),
+                    legal.contains(&mv),
+                    "打ちで不一致: {:?}",
+                    mv
+                );
+                checked += 1;
+            }
+        }
+
+        // 実際に生成された手が全て合法と判定されること（取りこぼしの検出）
+        for mv in &legal {
+            assert!(pos.is_legal_move(mv), "生成された合法手が不合法判定: {:?}", mv);
+        }
+    }
+    assert!(checked > 100_000, "検査数が少なすぎる: {}", checked);
+}

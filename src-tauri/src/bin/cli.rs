@@ -21,8 +21,13 @@
 //! 「先手が制限内に詰みを強制できるか」を判定する。決定性を保つため
 //! タイムアウトは使わない（--node-limit はクエリごとの上限。既定 2,000,000）。
 //! --scan-node-limit は Proven 時の最小証明深さスキャン（タイブレーク用の
-//! 精密化）専用の追加ノード予算（0 = 無制限）。予算に達したら「そこまでに
-//! 証明できた深さ」で打ち切る。ノード数ベースなので決定的。
+//! 精密化）専用の追加ノード予算。予算に達したら「そこまでに証明できた深さ」で
+//! 打ち切る。ノード数ベースなので決定的。
+//! 未指定なら**自動**（本解の証明に要したノード数と同程度まで）。スキャンの
+//! 最後の1回は必ず「これ以上短くはできない」ことの反証になり、本解の証明より
+//! 遥かに重くなりやすいため、放っておくと1手の応答時間の大半を占める。
+//! 打ち切ってもタイブレークが粗くなるだけで、返す深さは常に証明済みの上界。
+//! 明示的に 0 を渡すと従来どおり無制限（最短手数を厳密に求める）。
 //! --parallel はクエリの並列実行数（既定 1）。クエリは独立なので結果は
 //! 直列実行と同一。
 //!
@@ -228,7 +233,8 @@ struct Args {
     timeout_secs: u64,
     /// ヒープ確保量の上限（MB）。0 なら無制限
     memory_limit_mb: u64,
-    /// --solve-meta: 最小証明深さスキャン専用の追加ノード予算。0 なら無制限
+    /// --solve-meta: 最小証明深さスキャン専用の追加ノード予算。
+    /// 未指定なら自動（0 を渡して solve_bounded に判断させる）、明示の 0 なら無制限
     scan_node_limit: u64,
     /// --solve-meta: クエリの並列実行数。既定 1（直列）
     parallel: usize,
@@ -249,6 +255,7 @@ fn parse_args() -> Result<Args, String> {
     let mut timeout_secs: u64 = 120;
     let mut memory_limit_mb: u64 = 0;
     let mut scan_node_limit: u64 = 0;
+    let mut scan_node_limit_given = false;
     let mut parallel: usize = 1;
     let mut estimate_rating = false;
     let mut rating_node_limit: u64 = 200_000;
@@ -284,6 +291,7 @@ fn parse_args() -> Result<Args, String> {
                 let v = iter.next().ok_or("--scan-node-limit requires a value")?;
                 scan_node_limit =
                     v.parse().map_err(|_| format!("Invalid --scan-node-limit: {}", v))?;
+                scan_node_limit_given = true;
             }
             "--parallel" => {
                 let v = iter.next().ok_or("--parallel requires a value")?;
@@ -315,7 +323,15 @@ fn parse_args() -> Result<Args, String> {
         node_limit_given,
         timeout_secs,
         memory_limit_mb,
-        scan_node_limit,
+        scan_node_limit: if !scan_node_limit_given {
+            // 未指定は自動（solve_bounded が本解のコストから決める）
+            0
+        } else if scan_node_limit == 0 {
+            // 明示の 0 は従来どおり「無制限」
+            u64::MAX
+        } else {
+            scan_node_limit
+        },
         parallel,
         estimate_rating,
         rating_node_limit,
@@ -435,7 +451,6 @@ fn compute_effectively_checkmate(query: &EffectivelyCheckmateQueryJson) -> Resul
 fn run_solve_meta_server(node_limit: u64, scan_node_limit: u64) -> ExitCode {
     use std::io::{BufRead, Write};
 
-    let scan_node_limit = if scan_node_limit == 0 { u64::MAX } else { scan_node_limit };
     let cancel = Arc::new(AtomicBool::new(false));
     let mut solver = TsuitateDfpnSolver::new(u64::MAX, cancel);
 
@@ -529,9 +544,6 @@ fn run_solve_meta(
             return ExitCode::from(2);
         }
     };
-    // 0 は無制限
-    let scan_node_limit = if scan_node_limit == 0 { u64::MAX } else { scan_node_limit };
-
     // 入力の検証は先に直列で行う（不正入力は探索前に exit 2）
     let mut parsed_queries: Vec<(Vec<Position>, u32)> = Vec::new();
     for query in &request.queries {
@@ -828,7 +840,7 @@ fn main() -> ExitCode {
                 &root_pos,
                 solved_depth,
                 args.rating_node_limit,
-                if args.scan_node_limit == 0 { u64::MAX } else { args.scan_node_limit },
+                args.scan_node_limit,
                 cancel.clone(),
             )
             .map(|(root_tries, root_checks, root_solutions)| {

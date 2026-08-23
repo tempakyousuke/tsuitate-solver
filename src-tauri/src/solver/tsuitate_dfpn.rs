@@ -1,6 +1,5 @@
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
-use std::rc::Rc;
 
 use super::fasthash::{FxHashMap, FxHashSet, FxHasher};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -8,6 +7,7 @@ use std::sync::Arc;
 
 use super::metaposition::MetaPosition;
 use super::solution::*;
+use crate::shogi::bitboard::Bitboard;
 use crate::shogi::position::Position;
 use crate::shogi::types::*;
 
@@ -370,6 +370,20 @@ fn mfold(node: &SolutionNode, meta: &MetaPosition) -> SolutionNode {
     }
 }
 
+/// AND ノード展開キャッシュの上限件数。
+///
+/// 1件が情報集合まるごと（観測分岐ごとの MetaPosition）を抱えるため、上限なしだと
+/// GB 級に膨らみ、ヒットで得られる分よりメモリ帯域で失う分が上回る。df-pn は
+/// 同じ AND ノードを短い周期で再訪するので、小さな作業セットがあれば十分。
+/// 超えたら丸ごと捨てる（再計算可能なキャッシュなので探索結果には影響しない）。
+/// 実測（挑戦モードの重い問題）では 5,000〜50,000 のどこでも上限なしより
+/// 2〜3 倍速く、5,000 が最速だった。
+const MAX_AND_EXPANSION_CACHE: usize = 5_000;
+
+/// 自動スキャン予算の下限。小さな問題では本解のノード数が数十しかないので、
+/// 下限を置かないとタイブレークがほとんど効かなくなる
+const MIN_SCAN_NODES: u64 = 50_000;
+
 /// 衝立df-pnの探索結果
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TsuitateDfpnResult {
@@ -656,6 +670,43 @@ fn compute_discovery_squares(pos: &Position, king_sq: Square, attacker: Color) -
     result
 }
 
+/// 「color の kind をどのマスに打てば ksq に利くか」のマスク。
+///
+/// `can_attack_rough` と同じ判定（遮蔽物無視）を全マス分だけ先に畳んだもの。
+/// 打ちは駒を退かさないので開き王手にはならず、王手になる打ちは必ず
+/// このマスクの中にある（偽陰性なし）。初回アクセス時に一度だけ構築する。
+/// サイズは 2(色) × 7(持ち駒種) × 81(玉の位置) = 1134 個のビットボード。
+fn drop_check_mask(color: Color, kind: PieceKind, ksq: Square) -> Bitboard {
+    static MASKS: std::sync::OnceLock<Vec<Bitboard>> = std::sync::OnceLock::new();
+    let masks = MASKS.get_or_init(|| {
+        let mut v = vec![0 as Bitboard; 2 * 7 * 81];
+        for (ci, c) in [Color::Sente, Color::Gote].into_iter().enumerate() {
+            for (ki, k) in PieceKind::HAND_PIECES.into_iter().enumerate() {
+                for k_idx in 0..81 {
+                    let king_sq = Square::from_index(k_idx);
+                    let mut mask: Bitboard = 0;
+                    for s_idx in 0..81 {
+                        let sq = Square::from_index(s_idx);
+                        if can_attack_rough(k, sq, king_sq, c) {
+                            mask |= 1u128 << s_idx;
+                        }
+                    }
+                    v[(ci * 7 + ki) * 81 + k_idx] = mask;
+                }
+            }
+        }
+        v
+    });
+    let ci = match color {
+        Color::Sente => 0,
+        Color::Gote => 1,
+    };
+    let Some(ki) = PieceKind::HAND_PIECES.iter().position(|&k| k == kind) else {
+        return 0;
+    };
+    masks[(ci * 7 + ki) * 81 + ksq.index()]
+}
+
 /// 手 mv が king_sq に王手を与えうるかの粗判定（偽陰性なし）
 fn could_give_check(mv: &Move, king_sq: Square, discovery_sqs: &[Square], attacker: Color) -> bool {
     // A. 直接王手の可能性
@@ -707,9 +758,6 @@ fn could_give_check(mv: &Move, king_sq: Square, discovery_sqs: &[Square], attack
 
 /// OR ノードの候補手生成結果キャッシュ
 /// mid_or が同一 OR ノードを再訪問する際の generate_attack_candidates 再計算を回避
-/// 注: legal_move_sets はキャッシュしない。meta_position_hash は局面順序に依存しないが、
-/// legal_move_sets は positions の順序に依存するため、キャッシュすると順序不一致で
-/// apply_attack_move_split_with_sets が誤った legal/illegal 分割を行うバグの原因になる。
 struct CachedOrCandidates {
     candidates: Vec<Move>,
 }
@@ -768,13 +816,9 @@ pub struct TsuitateDfpnSolver {
     /// AND ノードの展開結果キャッシュ: and_key → 構造データ
     /// mid_and が同一 AND ノードを再訪問する際の expand_defense_moves 再計算を回避
     and_expansion_cache: FxHashMap<u64, CachedAndExpansion>,
-    /// OR ノードの候補手キャッシュ: meta_hash → 候補手 + 合法手セット
+    /// OR ノードの候補手キャッシュ: meta_hash → 候補手
     /// mid_or が同一 OR ノードを再訪問する際の generate_attack_candidates 再計算を回避
     or_candidate_cache: FxHashMap<u64, CachedOrCandidates>,
-    /// 局面レベルの合法手キャッシュ: zobrist_hash → 合法手リスト
-    /// 同一局面が異なるMetaPositionに出現する場合の重複計算を回避
-    /// Rc 共有により mid_or ごとの Vec クローンを回避する
-    legal_moves_cache: FxHashMap<u64, Rc<Vec<Move>>>,
     /// 局面レベルの王手手キャッシュ: zobrist_hash → 王手になる手のリスト
     /// 同一局面が異なるMetaPositionに出現する場合の重複計算を回避
     check_moves_cache: FxHashMap<u64, Vec<Move>>,
@@ -797,10 +841,10 @@ pub struct TsuitateDfpnSolver {
     pub gen_candidates_calls: u64,
     /// 診断: generate_attack_candidates で処理した局面の合計数
     pub gen_candidates_total_positions: u64,
-    /// 診断: legal_moves_cache ヒット数
-    pub legal_moves_cache_hits: u64,
-    /// 診断: legal_moves_cache ミス数
-    pub legal_moves_cache_misses: u64,
+    /// 診断: check_moves_cache ヒット数
+    pub check_moves_cache_hits: u64,
+    /// 診断: check_moves_cache ミス数
+    pub check_moves_cache_misses: u64,
     /// 診断: try_replay_proof の累計時間 (ナノ秒)
     pub replay_nanos: u64,
     /// 優越関係チェックの抑制フラグ（証明の実体化再探索中に使用）
@@ -846,7 +890,6 @@ impl TsuitateDfpnSolver {
             proof_cache: FxHashMap::default(),
             and_expansion_cache: FxHashMap::default(),
             or_candidate_cache: FxHashMap::default(),
-            legal_moves_cache: FxHashMap::default(),
             check_moves_cache: FxHashMap::default(),
             proof_replay_attempts: 0,
             proof_replay_full_success: 0,
@@ -860,8 +903,8 @@ impl TsuitateDfpnSolver {
             aec_nanos: 0,
             gen_candidates_calls: 0,
             gen_candidates_total_positions: 0,
-            legal_moves_cache_hits: 0,
-            legal_moves_cache_misses: 0,
+            check_moves_cache_hits: 0,
+            check_moves_cache_misses: 0,
             replay_nanos: 0,
             dominance_suppressed: false,
             second_search_aborted: false,
@@ -895,7 +938,6 @@ impl TsuitateDfpnSolver {
         self.proof_cache = FxHashMap::default();
         self.and_expansion_cache = FxHashMap::default();
         self.or_candidate_cache = FxHashMap::default();
-        self.legal_moves_cache = FxHashMap::default();
         self.check_moves_cache = FxHashMap::default();
     }
 
@@ -934,6 +976,12 @@ impl TsuitateDfpnSolver {
     /// タイブレーク（最長抵抗の選択）用の精密化であり真偽判定には影響しない
     /// ため、予算を使い切ったら「そこまでに証明できた深さ」を返して打ち切る
     /// （ノード数ベースなので決定的）。u64::MAX で無制限。
+    ///
+    /// **0 を渡すと自動**: 本解の証明に要したノード数（最低 `MIN_SCAN_NODES`）を
+    /// 予算にする。スキャンの最後の1回は必ず「これ以上短くはできない」ことの
+    /// 反証になり、証明より遥かに重くなりやすい。実測では挑戦モードの1手の
+    /// 応答時間の 5〜8 割をこの反証が占めていた。打ち切ってもタイブレークが
+    /// 粗くなるだけで、返す深さは常に「証明済みの上界」のままなので正しい。
     pub fn solve_bounded(
         &mut self,
         meta: &MetaPosition,
@@ -941,6 +989,7 @@ impl TsuitateDfpnSolver {
         scan_node_limit: u64,
     ) -> (TsuitateDfpnResult, Option<u32>) {
         let root_hash = meta_position_hash(meta);
+        let nodes_before = self.nodes_searched;
         let debug_timing = std::env::var("META_SOLVE_TIMING").is_ok();
         let t0 = std::time::Instant::now();
         self.depth_limit = Some(depth_limit);
@@ -953,6 +1002,13 @@ impl TsuitateDfpnSolver {
                 self.nodes_searched
             );
         }
+        let first_solve_nodes = self.nodes_searched.saturating_sub(nodes_before);
+        // 0 = 自動（本解の探索コストと同程度までスキャンに使う）
+        let scan_node_limit = if scan_node_limit == 0 {
+            first_solve_nodes.max(MIN_SCAN_NODES)
+        } else {
+            scan_node_limit
+        };
         let mut proven_limit: Option<u32> = None;
         if result == TsuitateDfpnResult::Proven {
             // スキャン中だけノード上限を「現在ノード + スキャン予算」に絞る。
@@ -1213,25 +1269,14 @@ impl TsuitateDfpnSolver {
         }
 
         // 候補手を生成（キャッシュ活用、remove/re-insert パターン）
-        // legal_move_sets は毎回 positions の順序に合わせて再生成する
-        // （meta_position_hash は順序非依存だが legal_move_sets は順序依存のため）
         let candidates_raw = if let Some(cached) = self.or_candidate_cache.remove(&hash) {
             cached.candidates
         } else {
             let gen_start = std::time::Instant::now();
-            let (candidates, _) = self.generate_attack_candidates(meta);
+            let candidates = self.generate_attack_candidates(meta);
             self.gen_candidates_nanos += gen_start.elapsed().as_nanos() as u64;
             candidates
         };
-        let legal_move_sets: Vec<Rc<Vec<Move>>> = meta.positions.iter().map(|pos| {
-            let h = pos.zobrist_hash;
-            if let Some(cached) = self.legal_moves_cache.get(&h) {
-                return Rc::clone(cached);
-            }
-            let moves = Rc::new(pos.generate_legal_moves());
-            self.legal_moves_cache.insert(h, Rc::clone(&moves));
-            moves
-        }).collect();
         if self.should_stop() {
             self.or_candidate_cache.insert(hash, CachedOrCandidates { candidates: candidates_raw });
             return;
@@ -1406,7 +1451,6 @@ impl TsuitateDfpnSolver {
                 meta,
                 hash,
                 best_mv,
-                &legal_move_sets,
                 child_pn_limit,
                 child_dn_limit,
                 path,
@@ -1437,7 +1481,6 @@ impl TsuitateDfpnSolver {
         meta: &MetaPosition,
         meta_hash: u64,
         mv: Move,
-        legal_move_sets: &[Rc<Vec<Move>>],
         pn_limit: u32,
         dn_limit: u32,
         path: &mut Vec<u64>,
@@ -1453,8 +1496,7 @@ impl TsuitateDfpnSolver {
             cached
         } else {
             // 手を適用して合法/不正に分割
-            let (legal_meta, illegal_meta) =
-                meta.apply_attack_move_split_with_sets(mv, legal_move_sets);
+            let (legal_meta, illegal_meta) = meta.apply_attack_move_split(mv);
 
             if legal_meta.is_empty() && illegal_meta.is_empty() {
                 // 構造的な反証（深さ非依存）→ どの予算でも再利用可
@@ -1699,6 +1741,9 @@ impl TsuitateDfpnSolver {
         }
 
         // Phase 4: キャッシュに再挿入
+        if self.and_expansion_cache.len() >= MAX_AND_EXPANSION_CACHE {
+            self.and_expansion_cache.clear();
+        }
         self.and_expansion_cache.insert(and_key, expansion);
     }
 
@@ -1843,61 +1888,49 @@ impl TsuitateDfpnSolver {
         true
     }
 
-    /// 攻め方の候補手を生成
-    /// 全盤面から王手の手を収集し、プローブ手を追加
+    /// 攻め方の候補手を生成する（＝全盤面の「王手になる手」の和集合）。
     ///
-    /// Phase 2 では幾何学的事前フィルタで王手候補を絞り込む:
-    /// - 直接王手: 駒種の移動先が玉に利きうるか（遮蔽物無視）
-    /// - 開き王手: 移動元が discovery_squares に含まれるか
-    fn generate_attack_candidates(
-        &mut self,
-        meta: &MetaPosition,
-    ) -> (Vec<Move>, Vec<Rc<Vec<Move>>>) {
+    /// 王手にならない手は候補にしない。衝立詰将棋では攻め方に毎手王手の義務が
+    /// あり、mid_and が「指せた盤面の全てで王手になっていること」を要求して
+    /// そうでない手をその場で反証するため、王手にならない手を候補に入れても
+    /// AND ノードを1つ無駄にするだけで証明には決して寄与しない。
+    /// 「ある盤面では王手・別の盤面では反則」という情報収集用のプローブ手は、
+    /// 各盤面の王手手の和集合を取っている時点でこの候補集合に含まれている。
+    ///
+    /// 手生成の段階で王手候補に絞る:
+    /// - 打ち: その駒種が玉に利きうるマス（`drop_check_mask`）だけに打つ。
+    ///   空きマス全部を列挙すると1駒種あたり最大80手になり、ここが探索全体の
+    ///   最大のコストになっていた
+    /// - 盤上の駒の移動: 駒数が少ないので全生成し、幾何学的事前フィルタ
+    ///   （直接王手＝駒種の利き / 開き王手＝移動元が discovery_squares）で絞る
+    ///
+    /// 絞り込みは偽陰性なし（王手になる手を落とさない）で、最後に実際に手を
+    /// 指して玉が攻撃されているかを確認するため、結果は厳密な王手手の集合。
+    fn generate_attack_candidates(&mut self, meta: &MetaPosition) -> Vec<Move> {
         if meta.positions.is_empty() {
-            return (Vec::new(), Vec::new());
+            return Vec::new();
         }
 
         let n = meta.positions.len();
         self.gen_candidates_calls += 1;
         self.gen_candidates_total_positions += n as u64;
 
-        // 各盤面の合法手セットを事前計算（局面レベルのキャッシュを活用、Rc共有）
-        let legal_move_sets: Vec<Rc<Vec<Move>>> = meta
-            .positions
-            .iter()
-            .map(|pos| {
-                if self.is_cancelled() {
-                    return Rc::new(Vec::new());
-                }
-                let hash = pos.zobrist_hash;
-                if let Some(cached) = self.legal_moves_cache.get(&hash) {
-                    self.legal_moves_cache_hits += 1;
-                    return Rc::clone(cached);
-                }
-                self.legal_moves_cache_misses += 1;
-                let moves = Rc::new(pos.generate_legal_moves());
-                self.legal_moves_cache.insert(hash, Rc::clone(&moves));
-                moves
-            })
-            .collect();
-
-        if self.is_cancelled() {
-            return (Vec::new(), legal_move_sets);
-        }
-
         let mut seen = FxHashSet::default();
         let mut check_moves = Vec::new();
+        let mut raw: Vec<Move> = Vec::new();
 
         // 全盤面から王手の手を収集（union）
-        // 局面レベルのキャッシュ + 幾何学的事前フィルタで候補を絞り込む
-        for (i, pos) in meta.positions.iter().enumerate() {
+        for pos in meta.positions.iter() {
+            if self.is_cancelled() {
+                return Vec::new();
+            }
             let attacker = pos.side_to_move;
-            let gote_king_sq = pos.find_king(attacker.opponent());
-            let Some(ksq) = gote_king_sq else { continue };
+            let Some(ksq) = pos.find_king(attacker.opponent()) else { continue };
 
             // 局面レベルの王手手キャッシュを確認
             let pos_hash = pos.zobrist_hash;
             if let Some(cached_checks) = self.check_moves_cache.get(&pos_hash) {
+                self.check_moves_cache_hits += 1;
                 for mv in cached_checks {
                     if seen.insert(*mv) {
                         check_moves.push(*mv);
@@ -1905,12 +1938,25 @@ impl TsuitateDfpnSolver {
                 }
                 continue;
             }
+            self.check_moves_cache_misses += 1;
 
             // 開き王手の候補マスを事前計算
             let discovery_sqs = compute_discovery_squares(pos, ksq, attacker);
+            // 自玉があるときだけ自殺手の除去が要る（詰将棋の攻め方には玉がない）
+            let has_own_king = pos.find_king(attacker).is_some();
+
+            raw.clear();
+            crate::shogi::movegen::generate_board_moves(pos, attacker, &mut raw);
+            crate::shogi::movegen::generate_drop_moves_masked(
+                pos,
+                attacker,
+                |kind| drop_check_mask(attacker, kind, ksq),
+                &mut raw,
+            );
+
             let mut test_pos = pos.clone();
             let mut pos_checks = Vec::new();
-            for mv in legal_move_sets[i].iter() {
+            for mv in raw.iter() {
                 // 玉を取る手は王手ではない
                 if mv.to == ksq {
                     continue;
@@ -1919,9 +1965,10 @@ impl TsuitateDfpnSolver {
                 if !could_give_check(mv, ksq, &discovery_sqs, attacker) {
                     continue;
                 }
-                // 正確な王手判定
+                // 正確な王手判定（＋自殺手の除去）
                 let undo = test_pos.make_move(*mv);
-                let is_check = test_pos.is_attacked(ksq, attacker);
+                let is_check =
+                    test_pos.is_attacked(ksq, attacker) && !(has_own_king && test_pos.is_in_check(attacker));
                 if is_check {
                     pos_checks.push(*mv);
                 }
@@ -2028,37 +2075,7 @@ impl TsuitateDfpnSolver {
             }
         });
 
-        // メタポジションが1つならプローブ不要
-        if n <= 1 {
-            return (check_moves, legal_move_sets);
-        }
-
-        // プローブ手: 一部の盤面でのみ合法な手
-        let mut move_counts: FxHashMap<Move, usize> = FxHashMap::default();
-        for legal_set in &legal_move_sets {
-            for mv in legal_set.iter() {
-                *move_counts.entry(*mv).or_insert(0) += 1;
-            }
-        }
-
-        let mut probe_moves = Vec::new();
-        for (mv, count) in &move_counts {
-            if seen.contains(mv) {
-                continue;
-            }
-            if *count > 0 && *count < n {
-                seen.insert(*mv);
-                probe_moves.push(*mv);
-            }
-        }
-
-        // HashMap の反復順に依存しないよう決定的にソートする
-        // （未ソートだと探索順が実行ごとに変わり、同一問題でも実行時間が
-        //   大きく変動する。王手候補と同じ優先順位を適用する）
-        probe_moves.sort_by_key(|mv| sort_key(mv));
-
-        check_moves.extend(probe_moves);
-        (check_moves, legal_move_sets)
+        check_moves
     }
 
     // ========================================================================
@@ -2220,7 +2237,7 @@ impl TsuitateDfpnSolver {
     ///   反復間・深さ制限の有無をまたいでも安全に保持できる。
     ///   下方向スキャンでは前回プローブの反証エントリがそのまま再利用される。
     /// - 深さ非依存のキャッシュ（and_expansion_cache, or_candidate_cache,
-    ///   move_hints, proof_cache, legal_moves_cache, check_moves_cache）も
+    ///   move_hints, proof_cache, check_moves_cache）も
     ///   全反復で保持。proof_cache のリプレイは try_replay_proof が
     ///   depth_limit を検証するため深さ制限下でも安全。
     fn shorten_solution(
