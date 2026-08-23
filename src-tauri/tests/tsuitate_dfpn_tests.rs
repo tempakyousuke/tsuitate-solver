@@ -503,3 +503,43 @@ fn tsuitate_dfpn_yodume_question_02() {
         panic!("内部ORノードの余詰め（▲２二銀打）が検出されるべき");
     }
 }
+
+/// 内部ORノードの余詰め検出が「盤上の駒の移動」でも働くこと（回帰テスト）。
+///
+/// find_inner_alt_recursive は解の手順木の MoveData から Move を復元して
+/// apply_attack_move_split_fast に渡す。復元時に moved_piece_kind を落とすと、
+/// Position::is_legal_move の盤上手の判定（generate_piece_moves の結果との
+/// Move 比較）が全局面で外れ、legal_meta が空・illegal_meta が親メタそのものに
+/// なる。その結果 Captured/NoCapture 分岐が走査されず、余詰めを静かに見逃して
+/// 「完全作」を確定報告する（判定不能にすらならない）。
+///
+/// 打ちの手は復元しても一致するため、既存の yodume_questions/2.json
+/// （▲２二銀打 vs ▲２二金打）では検出できない。ここでは内部の別手順に
+/// 到達するまでの攻め手が盤上手である問題を使う。
+/// どちらも軽い（合計 2 万ノード未満）ので #[ignore] は付けない。
+#[test]
+fn tsuitate_dfpn_inner_second_solution_after_board_move() {
+    for (question, expected_depth) in [(68u32, 7u32), (92, 23)] {
+        let path = sample_questions_dir().join(format!("{}.json", question));
+        let pos = load_question(&path);
+        let meta = MetaPosition::new(pos);
+
+        let cancel = cancel_after(120);
+        let mut solver = TsuitateDfpnSolver::new(10_000_000, cancel);
+        let solution = solver.solve_to_solution_with_second(&meta, false);
+
+        assert!(solution.found, "問題{}の解が見つかるはず", question);
+        let second = solution.second_tree.unwrap_or_else(|| {
+            panic!(
+                "問題{}の余詰めが検出されるべき（内部ORノードの走査が盤上手で止まっている）: {}",
+                question, solution.message
+            )
+        });
+        assert_eq!(
+            second.max_moves(),
+            expected_depth,
+            "問題{}の余詰めの手数",
+            question
+        );
+    }
+}
