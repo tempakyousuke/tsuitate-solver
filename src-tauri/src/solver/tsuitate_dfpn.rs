@@ -2678,7 +2678,7 @@ impl TsuitateDfpnSolver {
             SolutionNode::AttackMove { mv, branches, .. } => (mv, branches),
         };
 
-        let mv = Self::move_data_to_move(mv_data);
+        let mv = md_to_move(mv_data, meta).unwrap_or_else(|| Self::move_data_to_move(mv_data));
 
         // この攻め手を適用して観測分岐を復元
         let (legal_meta, illegal_meta) = meta.apply_attack_move_split_fast(mv);
