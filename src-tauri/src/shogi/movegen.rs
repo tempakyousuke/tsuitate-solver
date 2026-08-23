@@ -17,22 +17,23 @@ const fn color_index(color: Color) -> usize {
 /// 擬似合法手を生成（自玉の安全は確認しない、ビットボード版）
 pub fn generate_pseudo_legal_moves(pos: &Position, color: Color) -> Vec<Move> {
     let mut moves = Vec::new();
+    generate_board_moves(pos, color, &mut moves);
+    generate_drop_moves(pos, color, &mut moves);
+    moves
+}
 
-    // 盤上の駒の移動（占有ビットボードのビット走査）
+/// 盤上の駒の移動だけを生成する（打ちを含まない擬似合法手）
+pub fn generate_board_moves(pos: &Position, color: Color, moves: &mut Vec<Move>) {
+    // 占有ビットボードのビット走査
     let mut bb = pos.occupancy(color);
     while bb != 0 {
         let idx = bb.trailing_zeros() as usize;
         bb &= bb - 1;
         let sq = Square::from_index(idx);
         if let Some(piece) = pos.piece_at(sq) {
-            generate_piece_moves(pos, sq, piece, &mut moves);
+            generate_piece_moves(pos, sq, piece, moves);
         }
     }
-
-    // 持ち駒を打つ
-    generate_drop_moves(pos, color, &mut moves);
-
-    moves
 }
 
 /// 駒の移動手を生成（ビットボード版）
@@ -164,81 +165,178 @@ fn must_promote(kind: PieceKind, to: Square, color: Color) -> bool {
 
 /// 持ち駒を打つ手を生成（ビットボード版）
 fn generate_drop_moves(pos: &Position, color: Color, moves: &mut Vec<Move>) {
+    generate_drop_moves_masked(pos, color, |_| ALL_MASK, moves);
+}
+
+/// 打つ手を生成（打てるマスを kind ごとのマスクで絞り込む）。
+///
+/// `allowed(kind)` が返すビットボードとの積だけを列挙する。王手候補手だけが
+/// 欲しい攻め方の手生成では、駒種ごとに「玉に利きうるマス」へ絞ることで、
+/// 空きマス全部（1駒種あたり最大80マス）の列挙を避けられる。
+/// 二歩・行き所のない駒・打ち歩詰めの除外は `drop_targets` が担うため、
+/// マスクの与え方によらず生成される手は常に擬似合法。
+pub fn generate_drop_moves_masked(
+    pos: &Position,
+    color: Color,
+    allowed: impl Fn(PieceKind) -> Bitboard,
+    moves: &mut Vec<Move>,
+) {
     let hand = pos.hand(color);
-    let empties = ALL_MASK & !pos.occupancy_all();
-
-    // 二歩マスク: 自分の歩がある筋の全マス（歩を持っている時のみ計算）
-    let pawn_file_mask: Bitboard = if hand.has(PieceKind::Pawn) {
-        let mut mask: Bitboard = 0;
-        let mut bb = pos.occupancy(color);
-        while bb != 0 {
-            let idx = bb.trailing_zeros() as usize;
-            bb &= bb - 1;
-            if let Some(p) = pos.piece_at(Square::from_index(idx)) {
-                if p.kind == PieceKind::Pawn {
-                    mask |= FILE_MASK[idx / 9];
-                }
-            }
-        }
-        mask
-    } else {
-        0
-    };
-
     for &kind in &PieceKind::HAND_PIECES {
         if !hand.has(kind) {
             continue;
         }
-
-        // 行き所のない段を除外
-        let zone: Bitboard = match kind {
-            PieceKind::Pawn | PieceKind::Lance => {
-                if color == Color::Sente {
-                    !RANK_MASK[0]
-                } else {
-                    !RANK_MASK[8]
-                }
-            }
-            PieceKind::Knight => {
-                if color == Color::Sente {
-                    !(RANK_MASK[0] | RANK_MASK[1])
-                } else {
-                    !(RANK_MASK[7] | RANK_MASK[8])
-                }
-            }
-            _ => ALL_MASK,
-        };
-
-        let mut targets = empties & zone;
-
-        if kind == PieceKind::Pawn {
-            // 二歩の筋を除外
-            targets &= !pawn_file_mask;
-
-            // 打ち歩詰めチェック: 歩打ちで王手になるのは敵玉の直前マスのみ
-            // なので、そのマスだけ精査すればよい
-            if let Some(ksq) = pos.find_king(color.opponent()) {
-                let front_rank = if color == Color::Sente {
-                    ksq.rank as i8 + 1
-                } else {
-                    ksq.rank as i8 - 1
-                };
-                if (1..=9).contains(&front_rank) {
-                    let front_sq = Square::new(ksq.file, front_rank as u8);
-                    let front_bit = 1u128 << front_sq.index();
-                    if targets & front_bit != 0 && is_pawn_drop_mate(pos, front_sq, color) {
-                        targets &= !front_bit;
-                    }
-                }
-            }
+        let mask = allowed(kind);
+        if mask == 0 {
+            continue;
         }
-
+        let mut targets = drop_targets(pos, color, kind) & mask;
         while targets != 0 {
             let idx = targets.trailing_zeros() as usize;
             targets &= targets - 1;
             moves.push(Move::drop(Square::from_index(idx), kind));
         }
     }
+}
+
+/// color が kind を打てるマスの集合。
+/// 空きマス・行き所のない段・二歩・打ち歩詰めを全て除外済み。
+/// 単独の手の合法性判定（`Position::is_legal_move`）と手生成の双方から使い、
+/// 打ちのルールを1か所に集約する。
+pub fn drop_targets(pos: &Position, color: Color, kind: PieceKind) -> Bitboard {
+    drop_targets_impl(pos, color, kind, None)
+}
+
+/// `drop_targets` の1マス問い合わせ版。
+///
+/// `only` を与えると、そのマスに関係しない重い判定（打ち歩詰めの詰み探索、
+/// 盤面全体の二歩マスク作成）を省く。返るビットボードは `only` のビットの
+/// 正しさだけを保証する（他のビットは信用してはいけない）。
+fn drop_targets_one(pos: &Position, color: Color, kind: PieceKind, only: Square) -> Bitboard {
+    drop_targets_impl(pos, color, kind, Some(only))
+}
+
+fn drop_targets_impl(
+    pos: &Position,
+    color: Color,
+    kind: PieceKind,
+    only: Option<Square>,
+) -> Bitboard {
+    let hand = pos.hand(color);
+    if !hand.has(kind) {
+        return 0;
+    }
+    let empties = ALL_MASK & !pos.occupancy_all();
+
+    // 行き所のない段を除外
+    let zone: Bitboard = match kind {
+        PieceKind::Pawn | PieceKind::Lance => {
+            if color == Color::Sente {
+                !RANK_MASK[0]
+            } else {
+                !RANK_MASK[8]
+            }
+        }
+        PieceKind::Knight => {
+            if color == Color::Sente {
+                !(RANK_MASK[0] | RANK_MASK[1])
+            } else {
+                !(RANK_MASK[7] | RANK_MASK[8])
+            }
+        }
+        _ => ALL_MASK,
+    };
+
+    let mut targets = empties & zone;
+    if let Some(sq) = only {
+        // 問い合わせ対象のマス以外は見ないので、ここで絞ってから重い判定に入る
+        targets &= 1u128 << sq.index();
+        if targets == 0 {
+            return 0;
+        }
+    }
+    if kind != PieceKind::Pawn {
+        return targets;
+    }
+
+    // 二歩の筋を除外（1マス問い合わせならその筋だけ調べる）
+    let mut pawn_file_mask: Bitboard = 0;
+    let mut bb = pos.occupancy(color);
+    if let Some(sq) = only {
+        bb &= FILE_MASK[(sq.file - 1) as usize];
+    }
+    while bb != 0 {
+        let idx = bb.trailing_zeros() as usize;
+        bb &= bb - 1;
+        if let Some(p) = pos.piece_at(Square::from_index(idx)) {
+            if p.kind == PieceKind::Pawn {
+                pawn_file_mask |= FILE_MASK[idx / 9];
+            }
+        }
+    }
+    targets &= !pawn_file_mask;
+
+    // 打ち歩詰めチェック: 歩打ちで王手になるのは敵玉の直前マスのみ
+    // なので、そのマスだけ精査すればよい
+    if let Some(ksq) = pos.find_king(color.opponent()) {
+        let front_rank = if color == Color::Sente {
+            ksq.rank as i8 + 1
+        } else {
+            ksq.rank as i8 - 1
+        };
+        if (1..=9).contains(&front_rank) {
+            let front_sq = Square::new(ksq.file, front_rank as u8);
+            let front_bit = 1u128 << front_sq.index();
+            // targets は only で既に絞ってあるので、無関係なマスの
+            // 問い合わせでは詰み探索（is_pawn_drop_mate）が走らない
+            if targets & front_bit != 0 && is_pawn_drop_mate(pos, front_sq, color) {
+                targets &= !front_bit;
+            }
+        }
+    }
+
+    targets
+}
+
+/// 単独の手が擬似合法か（自玉の安全は見ない）。
+///
+/// 手を1つだけ検証したいときに、全擬似合法手を生成して照合するのを避ける。
+/// 打ちは `drop_targets`、盤上の駒の移動は `generate_piece_moves` という
+/// 生成側と同じ関数を使って判定するので、ルールが二重管理にならない。
+pub fn is_pseudo_legal_move(pos: &Position, mv: &Move, color: Color) -> bool {
+    if let Some(kind) = mv.drop_piece {
+        // Move::drop が作る形と一致しない手は生成されえない
+        if mv.from.is_some() || mv.promotion || mv.moved_piece_kind.is_some() {
+            return false;
+        }
+        // 持ち駒になりえない駒種（玉・成駒）の打ちは存在しない
+        if !PieceKind::HAND_PIECES.contains(&kind) {
+            return false;
+        }
+        return drop_targets_one(pos, color, kind, mv.to) & (1u128 << mv.to.index()) != 0;
+    }
+
+    let Some(from) = mv.from else {
+        return false;
+    };
+    let Some(piece) = pos.piece_at(from) else {
+        return false;
+    };
+    if piece.color != color {
+        return false;
+    }
+    MOVE_SCRATCH.with(|cell| {
+        let mut buf = cell.borrow_mut();
+        buf.clear();
+        generate_piece_moves(pos, from, piece, &mut buf);
+        buf.contains(mv)
+    })
+}
+
+thread_local! {
+    /// is_pseudo_legal_move の作業用バッファ（1駒分の手なので数十手）
+    static MOVE_SCRATCH: std::cell::RefCell<Vec<Move>> =
+        std::cell::RefCell::new(Vec::with_capacity(32));
 }
 
 // 打ち歩詰め判定の再帰ガード

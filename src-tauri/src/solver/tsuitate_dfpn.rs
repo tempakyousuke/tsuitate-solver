@@ -1,6 +1,5 @@
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
-use std::rc::Rc;
 
 use super::fasthash::{FxHashMap, FxHashSet, FxHasher};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -8,6 +7,7 @@ use std::sync::Arc;
 
 use super::metaposition::MetaPosition;
 use super::solution::*;
+use crate::shogi::bitboard::Bitboard;
 use crate::shogi::position::Position;
 use crate::shogi::types::*;
 
@@ -202,8 +202,60 @@ fn muda_kanji_to_kind(s: &str) -> Option<PieceKind> {
     })
 }
 
-/// MoveData を Move に復元（盤上手は meta から動かす駒種を得る）
-fn md_to_move(md: &MoveData, meta: &MetaPosition) -> Option<Move> {
+/// 余詰めチェックで「この手は使わない」を表す照合キー。
+///
+/// 除外は「同じ地点への同じ種類の着手」を弾くためのもので、動かす駒種は要らない。
+/// `MoveData` からは駒種を復元できないが、`Move` を作って持ち回すと
+/// 「指す手」として使い回せてしまう。`moved_piece_kind` は表示用と書いてある
+/// くせに `Move` の Eq/Hash に参加しているため、駒種を落とした `Move` を情報集合に
+/// 適用すると全局面が不合法になり、観測分岐の走査が**静かに**止まる。
+/// 指せない専用の型にして、その取り違えを型で防ぐ。
+/// 情報集合に適用する手が要るときは `md_to_move`（駒種を meta から解決する）を使う。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ExclusionKey {
+    from: Option<Square>,
+    to: Square,
+    promotion: bool,
+    drop_piece: Option<PieceKind>,
+}
+
+impl ExclusionKey {
+    fn from_move_data(md: &MoveData) -> Self {
+        Self {
+            from: match (md.from_file, md.from_rank) {
+                (Some(f), Some(r)) => Some(Square::new(f, r)),
+                _ => None,
+            },
+            to: Square::new(md.to_file, md.to_rank),
+            promotion: md.promotion,
+            drop_piece: md.drop_piece.as_deref().and_then(muda_kanji_to_kind),
+        }
+    }
+
+    /// 盤上手なら成/不成を反転したキー（除外は成・不成をまとめて弾く）
+    fn promotion_counterpart(&self) -> Option<Self> {
+        self.from?;
+        Some(Self { promotion: !self.promotion, ..*self })
+    }
+
+    fn matches(&self, mv: &Move) -> bool {
+        self.from == mv.from
+            && self.to == mv.to
+            && self.promotion == mv.promotion
+            && self.drop_piece == mv.drop_piece
+    }
+
+    /// 成/不成の違いを無視して同じ着手か（主解の手を走査から外す用）
+    fn same_target(&self, mv: &Move) -> bool {
+        self.from == mv.from && self.to == mv.to && self.drop_piece == mv.drop_piece
+    }
+}
+
+/// MoveData を Move に復元（盤上手は meta から動かす駒種を得る）。
+///
+/// **情報集合に適用する手は必ずこちらで作ること**。駒種を持たない復元は
+/// `ExclusionKey`（除外手の照合専用で、指せない型）にしてある。
+pub(crate) fn md_to_move(md: &MoveData, meta: &MetaPosition) -> Option<Move> {
     if let Some(dp) = &md.drop_piece {
         Some(Move::drop(Square::new(md.to_file, md.to_rank), muda_kanji_to_kind(dp)?))
     } else {
@@ -369,6 +421,31 @@ fn mfold(node: &SolutionNode, meta: &MetaPosition) -> SolutionNode {
         }
     }
 }
+
+/// AND ノード展開キャッシュ1世代あたりの上限件数。
+///
+/// 1件が情報集合まるごと（観測分岐ごとの MetaPosition）を抱えるため、上限なしだと
+/// GB 級に膨らみ、ヒットで得られる分よりメモリ帯域で失う分が上回る。df-pn は
+/// 同じ AND ノードを短い周期で再訪するので、小さな作業セットがあれば十分。
+/// 実測（挑戦モードの重い問題）では上限なしより 2〜3 倍速い。
+///
+/// 上限に達したら現世代を旧世代に落として新しい世代を始める（2世代方式）。
+/// 一度に全部捨てると、作業セットが上限をわずかに超える問題でヒット率が
+/// 崖のように落ちるため。旧世代のヒットは新世代に昇格するので、
+/// 実際に使われているエントリは世代交代を生き延びる。
+/// 再計算可能なキャッシュなので、どちらにせよ探索結果には影響しない。
+const MAX_AND_EXPANSION_CACHE: usize = 5_000;
+
+/// `solve_bounded` に 0（auto）を渡したときの最小証明深さスキャンのノード予算。
+///
+/// スキャンは玉方のタイブレーク（どの観測分岐が一番粘れるか）用の精密化で、
+/// 詰む・詰まないの判定には影響しない。予算を使い切っても返す深さは
+/// 「証明済みの上界」のままなので、打ち切りで壊れるのは精度だけ。
+///
+/// 本解の証明ノード数に比例させる案も試したが、応答時間はこの固定値と
+/// ほぼ同じで（実測: 重い18問で 28.96s 対 28.96s、1手最大は固定値の方が速い）、
+/// 予算が転置表の温まり具合で変わるぶん結果が読みにくくなるので固定にした。
+pub const SCAN_NODES_AUTO: u64 = 50_000;
 
 /// 衝立df-pnの探索結果
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -656,6 +733,43 @@ fn compute_discovery_squares(pos: &Position, king_sq: Square, attacker: Color) -
     result
 }
 
+/// 「color の kind をどのマスに打てば ksq に利くか」のマスク。
+///
+/// `can_attack_rough` と同じ判定（遮蔽物無視）を全マス分だけ先に畳んだもの。
+/// 打ちは駒を退かさないので開き王手にはならず、王手になる打ちは必ず
+/// このマスクの中にある（偽陰性なし）。初回アクセス時に一度だけ構築する。
+/// サイズは 2(色) × 7(持ち駒種) × 81(玉の位置) = 1134 個のビットボード。
+fn drop_check_mask(color: Color, kind: PieceKind, ksq: Square) -> Bitboard {
+    static MASKS: std::sync::OnceLock<Vec<Bitboard>> = std::sync::OnceLock::new();
+    let masks = MASKS.get_or_init(|| {
+        let mut v = vec![0 as Bitboard; 2 * 7 * 81];
+        for (ci, c) in [Color::Sente, Color::Gote].into_iter().enumerate() {
+            for (ki, k) in PieceKind::HAND_PIECES.into_iter().enumerate() {
+                for k_idx in 0..81 {
+                    let king_sq = Square::from_index(k_idx);
+                    let mut mask: Bitboard = 0;
+                    for s_idx in 0..81 {
+                        let sq = Square::from_index(s_idx);
+                        if can_attack_rough(k, sq, king_sq, c) {
+                            mask |= 1u128 << s_idx;
+                        }
+                    }
+                    v[(ci * 7 + ki) * 81 + k_idx] = mask;
+                }
+            }
+        }
+        v
+    });
+    let ci = match color {
+        Color::Sente => 0,
+        Color::Gote => 1,
+    };
+    let Some(ki) = PieceKind::HAND_PIECES.iter().position(|&k| k == kind) else {
+        return 0;
+    };
+    masks[(ci * 7 + ki) * 81 + ksq.index()]
+}
+
 /// 手 mv が king_sq に王手を与えうるかの粗判定（偽陰性なし）
 fn could_give_check(mv: &Move, king_sq: Square, discovery_sqs: &[Square], attacker: Color) -> bool {
     // A. 直接王手の可能性
@@ -707,9 +821,6 @@ fn could_give_check(mv: &Move, king_sq: Square, discovery_sqs: &[Square], attack
 
 /// OR ノードの候補手生成結果キャッシュ
 /// mid_or が同一 OR ノードを再訪問する際の generate_attack_candidates 再計算を回避
-/// 注: legal_move_sets はキャッシュしない。meta_position_hash は局面順序に依存しないが、
-/// legal_move_sets は positions の順序に依存するため、キャッシュすると順序不一致で
-/// apply_attack_move_split_with_sets が誤った legal/illegal 分割を行うバグの原因になる。
 struct CachedOrCandidates {
     candidates: Vec<Move>,
 }
@@ -748,7 +859,7 @@ pub struct TsuitateDfpnSolver {
     /// キャンセルフラグ
     cancelled: Arc<AtomicBool>,
     /// ルートで除外する手（余詰めチェック用）
-    excluded_root_moves: Vec<Move>,
+    excluded_root_moves: Vec<ExclusionKey>,
     /// ルートのメタポジションハッシュ（除外判定用）
     root_hash: Option<u64>,
     /// 深さ上限（None = 制限なし）
@@ -765,16 +876,15 @@ pub struct TsuitateDfpnSolver {
     /// 盤面のみのハッシュ → (証明深さ, 証明木) リスト（リプレイキャッシュ、複数手順対応）
     /// 証明深さは深さ制限付きプローブでのリプレイ可否の事前判定に使う
     proof_cache: FxHashMap<u64, Vec<(u32, ProofNode)>>,
-    /// AND ノードの展開結果キャッシュ: and_key → 構造データ
+    /// AND ノードの展開結果キャッシュ（現世代）: and_key → 構造データ
     /// mid_and が同一 AND ノードを再訪問する際の expand_defense_moves 再計算を回避
     and_expansion_cache: FxHashMap<u64, CachedAndExpansion>,
-    /// OR ノードの候補手キャッシュ: meta_hash → 候補手 + 合法手セット
+    /// AND ノードの展開結果キャッシュ（旧世代）。現世代が
+    /// MAX_AND_EXPANSION_CACHE に達したときの退避先。ヒットしたら現世代に昇格する
+    and_expansion_cache_old: FxHashMap<u64, CachedAndExpansion>,
+    /// OR ノードの候補手キャッシュ: meta_hash → 候補手
     /// mid_or が同一 OR ノードを再訪問する際の generate_attack_candidates 再計算を回避
     or_candidate_cache: FxHashMap<u64, CachedOrCandidates>,
-    /// 局面レベルの合法手キャッシュ: zobrist_hash → 合法手リスト
-    /// 同一局面が異なるMetaPositionに出現する場合の重複計算を回避
-    /// Rc 共有により mid_or ごとの Vec クローンを回避する
-    legal_moves_cache: FxHashMap<u64, Rc<Vec<Move>>>,
     /// 局面レベルの王手手キャッシュ: zobrist_hash → 王手になる手のリスト
     /// 同一局面が異なるMetaPositionに出現する場合の重複計算を回避
     check_moves_cache: FxHashMap<u64, Vec<Move>>,
@@ -797,10 +907,10 @@ pub struct TsuitateDfpnSolver {
     pub gen_candidates_calls: u64,
     /// 診断: generate_attack_candidates で処理した局面の合計数
     pub gen_candidates_total_positions: u64,
-    /// 診断: legal_moves_cache ヒット数
-    pub legal_moves_cache_hits: u64,
-    /// 診断: legal_moves_cache ミス数
-    pub legal_moves_cache_misses: u64,
+    /// 診断: check_moves_cache ヒット数
+    pub check_moves_cache_hits: u64,
+    /// 診断: check_moves_cache ミス数
+    pub check_moves_cache_misses: u64,
     /// 診断: try_replay_proof の累計時間 (ナノ秒)
     pub replay_nanos: u64,
     /// 優越関係チェックの抑制フラグ（証明の実体化再探索中に使用）
@@ -845,8 +955,8 @@ impl TsuitateDfpnSolver {
             move_hints: FxHashMap::default(),
             proof_cache: FxHashMap::default(),
             and_expansion_cache: FxHashMap::default(),
+            and_expansion_cache_old: FxHashMap::default(),
             or_candidate_cache: FxHashMap::default(),
-            legal_moves_cache: FxHashMap::default(),
             check_moves_cache: FxHashMap::default(),
             proof_replay_attempts: 0,
             proof_replay_full_success: 0,
@@ -860,8 +970,8 @@ impl TsuitateDfpnSolver {
             aec_nanos: 0,
             gen_candidates_calls: 0,
             gen_candidates_total_positions: 0,
-            legal_moves_cache_hits: 0,
-            legal_moves_cache_misses: 0,
+            check_moves_cache_hits: 0,
+            check_moves_cache_misses: 0,
             replay_nanos: 0,
             dominance_suppressed: false,
             second_search_aborted: false,
@@ -894,8 +1004,8 @@ impl TsuitateDfpnSolver {
     pub fn trim_transient_caches(&mut self) {
         self.proof_cache = FxHashMap::default();
         self.and_expansion_cache = FxHashMap::default();
+        self.and_expansion_cache_old = FxHashMap::default();
         self.or_candidate_cache = FxHashMap::default();
-        self.legal_moves_cache = FxHashMap::default();
         self.check_moves_cache = FxHashMap::default();
     }
 
@@ -934,6 +1044,16 @@ impl TsuitateDfpnSolver {
     /// タイブレーク（最長抵抗の選択）用の精密化であり真偽判定には影響しない
     /// ため、予算を使い切ったら「そこまでに証明できた深さ」を返して打ち切る
     /// （ノード数ベースなので決定的）。u64::MAX で無制限。
+    ///
+    /// **0 を渡すと自動**（`SCAN_NODES_AUTO` ノード）。スキャンの最後の1回は
+    /// 必ず「これ以上短くはできない」ことの反証になり、証明より遥かに重く
+    /// なりやすい。実測では挑戦モードの1手の応答時間の 5〜8 割をこの反証が
+    /// 占めていた。打ち切ってもタイブレークが粗くなるだけで、返す深さは
+    /// 常に「証明済みの上界」のままなので正しい。
+    ///
+    /// なお予算内でスキャンがどこまで進めるかは転置表の温まり具合に依存する
+    /// （常駐モードでは単発実行より深く詰められることがある）。予算自体を
+    /// 固定値にしてあるのは、そこに探索コスト依存の変動を重ねないため。
     pub fn solve_bounded(
         &mut self,
         meta: &MetaPosition,
@@ -953,6 +1073,8 @@ impl TsuitateDfpnSolver {
                 self.nodes_searched
             );
         }
+        // 0 = 自動（固定予算 SCAN_NODES_AUTO）
+        let scan_node_limit = if scan_node_limit == 0 { SCAN_NODES_AUTO } else { scan_node_limit };
         let mut proven_limit: Option<u32> = None;
         if result == TsuitateDfpnResult::Proven {
             // スキャン中だけノード上限を「現在ノード + スキャン予算」に絞る。
@@ -1057,12 +1179,7 @@ impl TsuitateDfpnSolver {
 
     /// ルートで除外されている手かどうか（余詰めチェック用）
     fn is_excluded_root_move(&self, mv: &Move) -> bool {
-        self.excluded_root_moves.iter().any(|exc| {
-            exc.from == mv.from
-                && exc.to == mv.to
-                && exc.promotion == mv.promotion
-                && exc.drop_piece == mv.drop_piece
-        })
+        self.excluded_root_moves.iter().any(|exc| exc.matches(mv))
     }
 
     /// OR ノード（攻め方）: 候補手から1つでも詰みに導ければ成功
@@ -1213,25 +1330,14 @@ impl TsuitateDfpnSolver {
         }
 
         // 候補手を生成（キャッシュ活用、remove/re-insert パターン）
-        // legal_move_sets は毎回 positions の順序に合わせて再生成する
-        // （meta_position_hash は順序非依存だが legal_move_sets は順序依存のため）
         let candidates_raw = if let Some(cached) = self.or_candidate_cache.remove(&hash) {
             cached.candidates
         } else {
             let gen_start = std::time::Instant::now();
-            let (candidates, _) = self.generate_attack_candidates(meta);
+            let candidates = self.generate_attack_candidates(meta);
             self.gen_candidates_nanos += gen_start.elapsed().as_nanos() as u64;
             candidates
         };
-        let legal_move_sets: Vec<Rc<Vec<Move>>> = meta.positions.iter().map(|pos| {
-            let h = pos.zobrist_hash;
-            if let Some(cached) = self.legal_moves_cache.get(&h) {
-                return Rc::clone(cached);
-            }
-            let moves = Rc::new(pos.generate_legal_moves());
-            self.legal_moves_cache.insert(h, Rc::clone(&moves));
-            moves
-        }).collect();
         if self.should_stop() {
             self.or_candidate_cache.insert(hash, CachedOrCandidates { candidates: candidates_raw });
             return;
@@ -1240,14 +1346,7 @@ impl TsuitateDfpnSolver {
 
         // ルートノードでは除外手をフィルタ
         if self.root_hash == Some(hash) && !self.excluded_root_moves.is_empty() {
-            candidates.retain(|mv| {
-                !self.excluded_root_moves.iter().any(|exc| {
-                    exc.from == mv.from
-                        && exc.to == mv.to
-                        && exc.promotion == mv.promotion
-                        && exc.drop_piece == mv.drop_piece
-                })
-            });
+            candidates.retain(|mv| !self.is_excluded_root_move(mv));
         }
 
         if candidates.is_empty() {
@@ -1406,7 +1505,6 @@ impl TsuitateDfpnSolver {
                 meta,
                 hash,
                 best_mv,
-                &legal_move_sets,
                 child_pn_limit,
                 child_dn_limit,
                 path,
@@ -1437,7 +1535,6 @@ impl TsuitateDfpnSolver {
         meta: &MetaPosition,
         meta_hash: u64,
         mv: Move,
-        legal_move_sets: &[Rc<Vec<Move>>],
         pn_limit: u32,
         dn_limit: u32,
         path: &mut Vec<u64>,
@@ -1449,12 +1546,15 @@ impl TsuitateDfpnSolver {
 
         // Phase 1: キャッシュから展開結果を取得、なければ計算
         // remove で所有権を取り、ループ後に再挿入（borrow checker 回避）
-        let expansion = if let Some(cached) = self.and_expansion_cache.remove(&and_key) {
+        let cached_expansion = self
+            .and_expansion_cache
+            .remove(&and_key)
+            .or_else(|| self.and_expansion_cache_old.remove(&and_key));
+        let expansion = if let Some(cached) = cached_expansion {
             cached
         } else {
             // 手を適用して合法/不正に分割
-            let (legal_meta, illegal_meta) =
-                meta.apply_attack_move_split_with_sets(mv, legal_move_sets);
+            let (legal_meta, illegal_meta) = meta.apply_attack_move_split(mv);
 
             if legal_meta.is_empty() && illegal_meta.is_empty() {
                 // 構造的な反証（深さ非依存）→ どの予算でも再利用可
@@ -1698,7 +1798,10 @@ impl TsuitateDfpnSolver {
             obs_dn[best_idx] = cdn;
         }
 
-        // Phase 4: キャッシュに再挿入
+        // Phase 4: キャッシュに再挿入（上限に達したら世代交代）
+        if self.and_expansion_cache.len() >= MAX_AND_EXPANSION_CACHE {
+            self.and_expansion_cache_old = std::mem::take(&mut self.and_expansion_cache);
+        }
         self.and_expansion_cache.insert(and_key, expansion);
     }
 
@@ -1843,61 +1946,49 @@ impl TsuitateDfpnSolver {
         true
     }
 
-    /// 攻め方の候補手を生成
-    /// 全盤面から王手の手を収集し、プローブ手を追加
+    /// 攻め方の候補手を生成する（＝全盤面の「王手になる手」の和集合）。
     ///
-    /// Phase 2 では幾何学的事前フィルタで王手候補を絞り込む:
-    /// - 直接王手: 駒種の移動先が玉に利きうるか（遮蔽物無視）
-    /// - 開き王手: 移動元が discovery_squares に含まれるか
-    fn generate_attack_candidates(
-        &mut self,
-        meta: &MetaPosition,
-    ) -> (Vec<Move>, Vec<Rc<Vec<Move>>>) {
+    /// 王手にならない手は候補にしない。衝立詰将棋では攻め方に毎手王手の義務が
+    /// あり、mid_and が「指せた盤面の全てで王手になっていること」を要求して
+    /// そうでない手をその場で反証するため、王手にならない手を候補に入れても
+    /// AND ノードを1つ無駄にするだけで証明には決して寄与しない。
+    /// 「ある盤面では王手・別の盤面では反則」という情報収集用のプローブ手は、
+    /// 各盤面の王手手の和集合を取っている時点でこの候補集合に含まれている。
+    ///
+    /// 手生成の段階で王手候補に絞る:
+    /// - 打ち: その駒種が玉に利きうるマス（`drop_check_mask`）だけに打つ。
+    ///   空きマス全部を列挙すると1駒種あたり最大80手になり、ここが探索全体の
+    ///   最大のコストになっていた
+    /// - 盤上の駒の移動: 駒数が少ないので全生成し、幾何学的事前フィルタ
+    ///   （直接王手＝駒種の利き / 開き王手＝移動元が discovery_squares）で絞る
+    ///
+    /// 絞り込みは偽陰性なし（王手になる手を落とさない）で、最後に実際に手を
+    /// 指して玉が攻撃されているかを確認するため、結果は厳密な王手手の集合。
+    fn generate_attack_candidates(&mut self, meta: &MetaPosition) -> Vec<Move> {
         if meta.positions.is_empty() {
-            return (Vec::new(), Vec::new());
+            return Vec::new();
         }
 
         let n = meta.positions.len();
         self.gen_candidates_calls += 1;
         self.gen_candidates_total_positions += n as u64;
 
-        // 各盤面の合法手セットを事前計算（局面レベルのキャッシュを活用、Rc共有）
-        let legal_move_sets: Vec<Rc<Vec<Move>>> = meta
-            .positions
-            .iter()
-            .map(|pos| {
-                if self.is_cancelled() {
-                    return Rc::new(Vec::new());
-                }
-                let hash = pos.zobrist_hash;
-                if let Some(cached) = self.legal_moves_cache.get(&hash) {
-                    self.legal_moves_cache_hits += 1;
-                    return Rc::clone(cached);
-                }
-                self.legal_moves_cache_misses += 1;
-                let moves = Rc::new(pos.generate_legal_moves());
-                self.legal_moves_cache.insert(hash, Rc::clone(&moves));
-                moves
-            })
-            .collect();
-
-        if self.is_cancelled() {
-            return (Vec::new(), legal_move_sets);
-        }
-
         let mut seen = FxHashSet::default();
         let mut check_moves = Vec::new();
+        let mut raw: Vec<Move> = Vec::new();
 
         // 全盤面から王手の手を収集（union）
-        // 局面レベルのキャッシュ + 幾何学的事前フィルタで候補を絞り込む
-        for (i, pos) in meta.positions.iter().enumerate() {
+        for pos in meta.positions.iter() {
+            if self.is_cancelled() {
+                return Vec::new();
+            }
             let attacker = pos.side_to_move;
-            let gote_king_sq = pos.find_king(attacker.opponent());
-            let Some(ksq) = gote_king_sq else { continue };
+            let Some(ksq) = pos.find_king(attacker.opponent()) else { continue };
 
             // 局面レベルの王手手キャッシュを確認
             let pos_hash = pos.zobrist_hash;
             if let Some(cached_checks) = self.check_moves_cache.get(&pos_hash) {
+                self.check_moves_cache_hits += 1;
                 for mv in cached_checks {
                     if seen.insert(*mv) {
                         check_moves.push(*mv);
@@ -1905,12 +1996,25 @@ impl TsuitateDfpnSolver {
                 }
                 continue;
             }
+            self.check_moves_cache_misses += 1;
 
             // 開き王手の候補マスを事前計算
             let discovery_sqs = compute_discovery_squares(pos, ksq, attacker);
+            // 自玉があるときだけ自殺手の除去が要る（詰将棋の攻め方には玉がない）
+            let has_own_king = pos.find_king(attacker).is_some();
+
+            raw.clear();
+            crate::shogi::movegen::generate_board_moves(pos, attacker, &mut raw);
+            crate::shogi::movegen::generate_drop_moves_masked(
+                pos,
+                attacker,
+                |kind| drop_check_mask(attacker, kind, ksq),
+                &mut raw,
+            );
+
             let mut test_pos = pos.clone();
             let mut pos_checks = Vec::new();
-            for mv in legal_move_sets[i].iter() {
+            for mv in raw.iter() {
                 // 玉を取る手は王手ではない
                 if mv.to == ksq {
                     continue;
@@ -1919,9 +2023,10 @@ impl TsuitateDfpnSolver {
                 if !could_give_check(mv, ksq, &discovery_sqs, attacker) {
                     continue;
                 }
-                // 正確な王手判定
+                // 正確な王手判定（＋自殺手の除去）
                 let undo = test_pos.make_move(*mv);
-                let is_check = test_pos.is_attacked(ksq, attacker);
+                let is_check =
+                    test_pos.is_attacked(ksq, attacker) && !(has_own_king && test_pos.is_in_check(attacker));
                 if is_check {
                     pos_checks.push(*mv);
                 }
@@ -2028,37 +2133,7 @@ impl TsuitateDfpnSolver {
             }
         });
 
-        // メタポジションが1つならプローブ不要
-        if n <= 1 {
-            return (check_moves, legal_move_sets);
-        }
-
-        // プローブ手: 一部の盤面でのみ合法な手
-        let mut move_counts: FxHashMap<Move, usize> = FxHashMap::default();
-        for legal_set in &legal_move_sets {
-            for mv in legal_set.iter() {
-                *move_counts.entry(*mv).or_insert(0) += 1;
-            }
-        }
-
-        let mut probe_moves = Vec::new();
-        for (mv, count) in &move_counts {
-            if seen.contains(mv) {
-                continue;
-            }
-            if *count > 0 && *count < n {
-                seen.insert(*mv);
-                probe_moves.push(*mv);
-            }
-        }
-
-        // HashMap の反復順に依存しないよう決定的にソートする
-        // （未ソートだと探索順が実行ごとに変わり、同一問題でも実行時間が
-        //   大きく変動する。王手候補と同じ優先順位を適用する）
-        probe_moves.sort_by_key(|mv| sort_key(mv));
-
-        check_moves.extend(probe_moves);
-        (check_moves, legal_move_sets)
+        check_moves
     }
 
     // ========================================================================
@@ -2220,7 +2295,7 @@ impl TsuitateDfpnSolver {
     ///   反復間・深さ制限の有無をまたいでも安全に保持できる。
     ///   下方向スキャンでは前回プローブの反証エントリがそのまま再利用される。
     /// - 深さ非依存のキャッシュ（and_expansion_cache, or_candidate_cache,
-    ///   move_hints, proof_cache, legal_moves_cache, check_moves_cache）も
+    ///   move_hints, proof_cache, check_moves_cache）も
     ///   全反復で保持。proof_cache のリプレイは try_replay_proof が
     ///   depth_limit を検証するため深さ制限下でも安全。
     fn shorten_solution(
@@ -2292,33 +2367,6 @@ impl TsuitateDfpnSolver {
         (best_tree, best_depth, total_nodes)
     }
 
-    /// 1つ目の解の初手を除外して2つ目の解を探す
-    /// MoveData から Move に変換する
-    fn move_data_to_move(mv: &MoveData) -> Move {
-        let to = Square::new(mv.to_file, mv.to_rank);
-        let from = match (mv.from_file, mv.from_rank) {
-            (Some(f), Some(r)) => Some(Square::new(f, r)),
-            _ => None,
-        };
-        let drop_piece = mv.drop_piece.as_ref().and_then(|s| match s.as_str() {
-            "飛" => Some(PieceKind::Rook),
-            "角" => Some(PieceKind::Bishop),
-            "金" => Some(PieceKind::Gold),
-            "銀" => Some(PieceKind::Silver),
-            "桂" => Some(PieceKind::Knight),
-            "香" => Some(PieceKind::Lance),
-            "歩" => Some(PieceKind::Pawn),
-            _ => None,
-        });
-        Move {
-            from,
-            to,
-            promotion: mv.promotion,
-            drop_piece,
-            moved_piece_kind: None,
-        }
-    }
-
     /// キズ（許容余詰め）の判定
     ///
     /// 主解の手と別解の手が両方ともプローブ手（Illegal分岐を持つ）である場合、
@@ -2340,8 +2388,8 @@ impl TsuitateDfpnSolver {
         meta: &MetaPosition,
         first_tree: &SolutionNode,
     ) -> (Option<SolutionNode>, Vec<SolutionNode>, u64, String) {
-        let first_mv = match first_tree {
-            SolutionNode::AttackMove { mv, .. } => Self::move_data_to_move(mv),
+        let first_key = match first_tree {
+            SolutionNode::AttackMove { mv, .. } => ExclusionKey::from_move_data(mv),
             SolutionNode::Checkmate { .. } => {
                 return (None, vec![], self.nodes_searched, String::new());
             }
@@ -2381,12 +2429,8 @@ impl TsuitateDfpnSolver {
         // ルートの or エントリのみ除外条件に依存するため、探索の前後で削除する。
         // （事前削除は必須: 残したまま探索が打ち切られると、solve() が
         //   初回探索の証明＝除外手を使った証明を読んで偽の Proven を返す）
-        let mut excluded = vec![first_mv];
-        if first_mv.from.is_some() {
-            let mut counterpart = first_mv;
-            counterpart.promotion = !counterpart.promotion;
-            excluded.push(counterpart);
-        }
+        let mut excluded = vec![first_key];
+        excluded.extend(first_key.promotion_counterpart());
 
         self.or_table.remove(&root_hash);
         self.nodes_searched = 0;
@@ -2404,7 +2448,7 @@ impl TsuitateDfpnSolver {
         if std::env::var("SECOND_DEBUG").is_ok() {
             eprintln!(
                 "[second] phase1 exclude={:?} result={:?} nodes={} time={:.3}s",
-                first_mv, result, self.nodes_searched,
+                first_key, result, self.nodes_searched,
                 phase1_start.elapsed().as_secs_f64(),
             );
         }
@@ -2489,34 +2533,22 @@ impl TsuitateDfpnSolver {
             SolutionNode::Checkmate { .. } => return None,
             SolutionNode::AttackMove { mv, branches, .. } => (mv, branches),
         };
-        let chosen = Self::move_data_to_move(mv_data);
+        let chosen = ExclusionKey::from_move_data(mv_data);
 
         // このノードで転置表上の別の証明手を探す（最終手は余詰の対象外）
+        // 注: 子へ降りるには「指せる」主解手が要る（下の chosen_mv）。照合だけなら
+        // 駒種の要らない chosen で足りる
         if !node.is_final_move() && !meta.is_empty() {
             let hash = meta_position_hash(meta);
             let budget_now = self.current_budget(depth);
 
-            let legal_move_sets: Vec<Vec<Move>> = meta
-                .positions
-                .iter()
-                .map(|pos| pos.generate_legal_moves())
-                .collect();
-            let mut seen = FxHashSet::default();
-            let mut all_moves = Vec::new();
-            for set in &legal_move_sets {
-                for mv in set {
-                    if seen.insert(*mv) {
-                        all_moves.push(*mv);
-                    }
-                }
-            }
+            // 転置表に AND エントリが立ちうるのは探索が候補にした手だけなので、
+            // 全合法手を作る必要はない（打ちの列挙が支配的で、走査系で一番重かった）
+            let all_moves = self.generate_attack_candidates(meta);
 
             for mv in &all_moves {
                 // 主解の手（成/不成違いを含む）は対象外
-                if mv.from == chosen.from
-                    && mv.to == chosen.to
-                    && mv.drop_piece == chosen.drop_piece
-                {
+                if chosen.same_target(mv) {
                     continue;
                 }
                 let ak = Self::and_key(hash, mv);
@@ -2528,7 +2560,7 @@ impl TsuitateDfpnSolver {
                 if !and_proven {
                     continue;
                 }
-                let extracted = self.extract_and(meta, *mv, &legal_move_sets, depth);
+                let extracted = self.extract_and(meta, *mv, depth);
                 if std::env::var("SECOND_DEBUG").is_ok() {
                     eprintln!(
                         "[second] phase0 candidate depth={} chosen={} alt={:?} extract_ok={}",
@@ -2561,10 +2593,16 @@ impl TsuitateDfpnSolver {
         }
 
         // 最長応手分岐のみ子へ再帰（find_inner_alt_recursive と同じ走査）
-        let (legal_meta, illegal_meta) = meta.apply_attack_move_split_fast(chosen);
+        // 情報集合に適用する手は駒種まで復元する（ExclusionKey は照合専用で指せない）。
+        // 復元できないのは手順木と情報集合の食い違いなので、代用せず判定不能にする
+        let Some(chosen_mv) = md_to_move(mv_data, meta) else {
+            self.second_search_aborted = true;
+            return None;
+        };
+        let (legal_meta, illegal_meta) = meta.apply_attack_move_split_fast(chosen_mv);
         let obs_metas: Vec<(Observation, MetaPosition)> =
             if !legal_meta.is_empty() && !legal_meta.all_effectively_checkmate() {
-                let raw = legal_meta.expand_defense_moves(chosen);
+                let raw = legal_meta.expand_defense_moves(chosen_mv);
                 Self::merge_observation_branches(raw)
             } else {
                 vec![]
@@ -2661,7 +2699,13 @@ impl TsuitateDfpnSolver {
             SolutionNode::AttackMove { mv, branches, .. } => (mv, branches),
         };
 
-        let mv = Self::move_data_to_move(mv_data);
+        // 復元できないのは手順木と情報集合が食い違っているとき（本来起きない）。
+        // 駒種を落とした手で代用すると全局面が不合法になり、観測分岐を1つも
+        // 走査しないまま「余詰めなし」を確定報告してしまうので、判定不能にする
+        let Some(mv) = md_to_move(mv_data, meta) else {
+            self.second_search_aborted = true;
+            return None;
+        };
 
         // この攻め手を適用して観測分岐を復元
         let (legal_meta, illegal_meta) = meta.apply_attack_move_split_fast(mv);
@@ -2719,7 +2763,7 @@ impl TsuitateDfpnSolver {
             // この子ORノードで別の手を試す（最終手は余詰の対象外）
             if let SolutionNode::AttackMove { mv: child_mv, .. } = branch.continuation.as_ref() {
                 if !branch.continuation.is_final_move() {
-                    let child_move = Self::move_data_to_move(child_mv);
+                    let child_move = ExclusionKey::from_move_data(child_mv);
                     if let Some(alt_subtree) =
                         self.try_solve_excluding(&child_meta, child_move, first_hashes, total_nodes)
                     {
@@ -2793,7 +2837,7 @@ impl TsuitateDfpnSolver {
     fn try_solve_excluding(
         &mut self,
         meta: &MetaPosition,
-        excluded_move: Move,
+        excluded_move: ExclusionKey,
         first_hashes: &HashSet<u64>,
         total_nodes: &mut u64,
     ) -> Option<SolutionNode> {
@@ -2802,11 +2846,7 @@ impl TsuitateDfpnSolver {
         }
 
         let mut excluded = vec![excluded_move];
-        if excluded_move.from.is_some() {
-            let mut counterpart = excluded_move;
-            counterpart.promotion = !counterpart.promotion;
-            excluded.push(counterpart);
-        }
+        excluded.extend(excluded_move.promotion_counterpart());
 
         // 転置表・キャッシュは保持（find_second_solution Phase 1 と同じ理由）
         // ルートの or エントリは除外条件に依存するため探索の前後で削除する
@@ -2907,22 +2947,9 @@ impl TsuitateDfpnSolver {
             return None; // 証明されていない（または現在の深さ予算では未証明）
         }
 
-        // 全盤面の合法手を収集
-        let legal_move_sets: Vec<Vec<Move>> = meta
-            .positions
-            .iter()
-            .map(|pos| pos.generate_legal_moves())
-            .collect();
-
-        let mut seen = FxHashSet::default();
-        let mut all_moves = Vec::new();
-        for set in &legal_move_sets {
-            for mv in set {
-                if seen.insert(*mv) {
-                    all_moves.push(*mv);
-                }
-            }
-        }
+        // 攻め方の候補手（＝全盤面の王手手の和集合）。転置表に AND エントリが
+        // 立ちうるのはこの集合の手だけなので、全合法手を作る必要はない
+        let mut all_moves = self.generate_attack_candidates(meta);
 
         // 候補手をソート（解の見た目を良くするため）
         let king_sq = meta.positions[0].find_king(Color::Gote);
@@ -2944,7 +2971,7 @@ impl TsuitateDfpnSolver {
             self.root_hash == Some(hash) && !self.excluded_root_moves.is_empty();
 
         self.extract_or_move(
-            meta, hash, depth, budget_now, &legal_move_sets, &all_moves, at_root_with_exclusions,
+            meta, hash, depth, budget_now, &all_moves, at_root_with_exclusions,
         )
     }
 
@@ -2956,7 +2983,6 @@ impl TsuitateDfpnSolver {
         hash: u64,
         depth: u32,
         budget_now: u32,
-        legal_move_sets: &[Vec<Move>],
         all_moves: &[Move],
         at_root_with_exclusions: bool,
     ) -> Option<SolutionNode> {
@@ -2972,7 +2998,7 @@ impl TsuitateDfpnSolver {
                 .and_then(|e| e.proven_bound())
                 .map_or(false, |k| k <= budget_now);
             if and_proven {
-                if let Some(branches) = self.extract_and(meta, *mv, legal_move_sets, depth) {
+                if let Some(branches) = self.extract_and(meta, *mv, depth) {
                     return Some(SolutionNode::AttackMove {
                         mv: MoveData::from_move(*mv, Color::Sente),
                         branches,
@@ -2988,7 +3014,7 @@ impl TsuitateDfpnSolver {
             if at_root_with_exclusions && self.is_excluded_root_move(mv) {
                 continue;
             }
-            if let Some(branches) = self.extract_and(meta, *mv, legal_move_sets, depth) {
+            if let Some(branches) = self.extract_and(meta, *mv, depth) {
                 return Some(SolutionNode::AttackMove {
                     mv: MoveData::from_move(*mv, Color::Sente),
                     branches,
@@ -3026,11 +3052,10 @@ impl TsuitateDfpnSolver {
         &mut self,
         meta: &MetaPosition,
         mv: Move,
-        legal_move_sets: &[Vec<Move>],
         depth: u32,
     ) -> Option<Vec<SolutionBranch>> {
         let (legal_meta, illegal_meta) =
-            meta.apply_attack_move_split_with_sets(mv, legal_move_sets);
+            meta.apply_attack_move_split(mv);
 
         let mut branches = Vec::new();
 
@@ -3105,7 +3130,7 @@ impl TsuitateDfpnSolver {
     // ========================================================================
 
     /// コンパクト証明木を抽出（リプレイキャッシュ用）
-    fn extract_compact_or(&self, meta: &MetaPosition) -> Option<ProofNode> {
+    fn extract_compact_or(&mut self, meta: &MetaPosition) -> Option<ProofNode> {
         if meta.is_empty() { return None; }
         if meta.all_effectively_checkmate() { return Some(ProofNode::Checkmate); }
 
@@ -3113,17 +3138,8 @@ impl TsuitateDfpnSolver {
         let entry = self.or_table.get(&hash)?;
         if entry.proven_bound().is_none() { return None; }
 
-        // 全合法手を収集（extract_or と同じ）
-        let legal_move_sets: Vec<Vec<Move>> = meta.positions.iter()
-            .map(|pos| pos.generate_legal_moves())
-            .collect();
-        let mut seen = FxHashSet::default();
-        let mut all_moves = Vec::new();
-        for set in &legal_move_sets {
-            for mv in set {
-                if seen.insert(*mv) { all_moves.push(*mv); }
-            }
-        }
+        // 候補手を収集（extract_or と同じ）
+        let all_moves = self.generate_attack_candidates(meta);
 
         // ルートでは除外手をスキップ（extract_or と同じ理由）
         let at_root_with_exclusions =
@@ -3137,7 +3153,7 @@ impl TsuitateDfpnSolver {
             let ak = Self::and_key(hash, mv);
             if let Some(e) = self.and_table.get(&ak) {
                 if e.proven_bound().is_some() {
-                    if let Some(branches) = self.extract_compact_and(meta, *mv, &legal_move_sets) {
+                    if let Some(branches) = self.extract_compact_and(meta, *mv) {
                         return Some(ProofNode::Attack { mv: *mv, branches });
                     }
                 }
@@ -3149,7 +3165,7 @@ impl TsuitateDfpnSolver {
             if at_root_with_exclusions && self.is_excluded_root_move(mv) {
                 continue;
             }
-            if let Some(branches) = self.extract_compact_and(meta, *mv, &legal_move_sets) {
+            if let Some(branches) = self.extract_compact_and(meta, *mv) {
                 return Some(ProofNode::Attack { mv: *mv, branches });
             }
         }
@@ -3157,12 +3173,11 @@ impl TsuitateDfpnSolver {
     }
 
     fn extract_compact_and(
-        &self,
+        &mut self,
         meta: &MetaPosition,
         mv: Move,
-        legal_move_sets: &[Vec<Move>],
     ) -> Option<Vec<(ProofObs, ProofNode)>> {
-        let (legal_meta, illegal_meta) = meta.apply_attack_move_split_with_sets(mv, legal_move_sets);
+        let (legal_meta, illegal_meta) = meta.apply_attack_move_split(mv);
         let mut branches = Vec::new();
 
         if !illegal_meta.is_empty() {
@@ -3385,5 +3400,70 @@ impl TsuitateDfpnSolver {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod move_restore_tests {
+    use super::*;
+
+    /// 後手玉5一、先手金5三、先手番の情報集合
+    fn single_meta() -> MetaPosition {
+        let mut pos = Position::new();
+        pos.set_piece(Square::new(5, 1), Piece::new(Color::Gote, PieceKind::King));
+        pos.set_piece(Square::new(5, 3), Piece::new(Color::Sente, PieceKind::Gold));
+        pos.side_to_move = Color::Sente;
+        pos.init_zobrist_hash();
+        MetaPosition::new(pos)
+    }
+
+    /// 解の手順木の MoveData から復元した「盤上の駒の移動」が、
+    /// 元の手と同じように情報集合を分割できること。
+    ///
+    /// `Move` の Eq/Hash は `moved_piece_kind` を含むため、駒種を落として
+    /// 復元した手は `Position::is_legal_move`（生成した手との比較で判定）で
+    /// 全局面が不合法になる。走査系（余詰めチェックの内部ノード探索）は
+    /// これに気づかず「分岐なし」として静かに進むので、単体で固定しておく。
+    #[test]
+    fn md_to_move_round_trips_board_moves() {
+        let meta = single_meta();
+        let mv = Move::normal(
+            Square::new(5, 3),
+            Square::new(5, 2),
+            false,
+            PieceKind::Gold,
+        );
+        let md = MoveData::from_move(mv, Color::Sente);
+
+        let restored = md_to_move(&md, &meta).expect("盤上手を復元できるはず");
+        assert_eq!(restored, mv, "md_to_move は駒種まで復元する");
+
+        let (legal, illegal) = meta.apply_attack_move_split(restored);
+        assert_eq!(legal.positions.len(), 1, "復元した手は指せるはず");
+        assert!(illegal.is_empty());
+    }
+
+    /// 除外キーは駒種を持たないが、成/不成まで含めて元の手に一致すること。
+    /// （`ExclusionKey` は指せない型なので、情報集合に適用する取り違えは
+    /// 型レベルで起きない。ここで見るのは照合が効くことだけ）
+    #[test]
+    fn exclusion_key_matches_original_move() {
+        for promotion in [false, true] {
+            let mv = Move::normal(Square::new(5, 3), Square::new(5, 2), promotion, PieceKind::Gold);
+            let key = ExclusionKey::from_move_data(&MoveData::from_move(mv, Color::Sente));
+
+            assert!(key.matches(&mv), "元の手に一致する");
+            assert!(key.same_target(&mv));
+
+            let counterpart = key.promotion_counterpart().expect("盤上手には成/不成の相方がある");
+            assert!(!counterpart.matches(&mv), "成/不成が違えば matches は外れる");
+            assert!(counterpart.same_target(&mv), "same_target は成/不成を無視する");
+        }
+
+        // 打ちには成/不成の相方がない
+        let drop = Move::drop(Square::new(5, 2), PieceKind::Gold);
+        let key = ExclusionKey::from_move_data(&MoveData::from_move(drop, Color::Sente));
+        assert!(key.matches(&drop));
+        assert!(key.promotion_counterpart().is_none());
     }
 }

@@ -33,7 +33,8 @@ pub struct MetaQueryOutcome {
 }
 
 /// 情報集合（全局面が先手番）に対する深さ制限付きの詰み判定。
-/// scan_node_limit は最小証明深さスキャン専用の追加ノード予算（u64::MAX で無制限）
+/// scan_node_limit は最小証明深さスキャン専用の追加ノード予算
+/// （0 = 自動、u64::MAX = 無制限。詳細は TsuitateDfpnSolver::solve_bounded）
 pub fn solve_meta_query(
     positions: Vec<Position>,
     depth_limit: u32,

@@ -25,6 +25,50 @@ pub fn expansion_cancelled() -> bool {
         .map_or(false, |f| f.load(Ordering::Relaxed))
 }
 
+/// zobrist ハッシュの重複排除用の集合。
+///
+/// 情報集合や観測グループは大半が数個〜十数個の局面しか持たないため、
+/// 小さいうちは Vec の線形走査で済ませる（ハッシュ計算もアロケートもしない）。
+/// 大きくなったら HashSet に切り替えて O(n^2) を避ける。
+/// expand_defense_moves / apply_attack_move_split_* は探索の最内周で
+/// 毎回この集合を作るので、初期アロケートの有無がそのまま効く。
+enum SeenHashes {
+    Small(Vec<u64>),
+    Large(FxHashSet<u64>),
+}
+
+/// Vec から HashSet へ切り替える件数。
+const SEEN_SMALL_LIMIT: usize = 32;
+
+impl SeenHashes {
+    fn new() -> Self {
+        SeenHashes::Small(Vec::new())
+    }
+
+    /// 未登録なら登録して true
+    #[inline]
+    fn insert(&mut self, hash: u64) -> bool {
+        match self {
+            SeenHashes::Small(v) => {
+                if v.contains(&hash) {
+                    return false;
+                }
+                if v.len() + 1 > SEEN_SMALL_LIMIT {
+                    let mut set: FxHashSet<u64> =
+                        FxHashSet::with_capacity_and_hasher(v.len() * 2, Default::default());
+                    set.extend(v.iter().copied());
+                    set.insert(hash);
+                    *self = SeenHashes::Large(set);
+                } else {
+                    v.push(hash);
+                }
+                true
+            }
+            SeenHashes::Large(set) => set.insert(hash),
+        }
+    }
+}
+
 pub fn position_hash(pos: &Position) -> u64 {
     pos.zobrist_hash
 }
@@ -160,103 +204,31 @@ impl MetaPosition {
     /// 攻め方の手を指す（合法/不正に分割）
     /// 返り値: (合法な盤面(手を指した後), 不正な盤面(手を指す前の状態))
     /// 衝立詰将棋では、不正な手(反則)も情報を持つため分割して返す
+    ///
+    /// 合法性は `Position::try_make_legal` で1手だけ検証する。情報集合の各局面で
+    /// 全合法手を生成して照合すると、攻め方の持ち駒の打ち先（1駒種あたり最大80マス）
+    /// の列挙が支配的なコストになる。`try_make_legal` は判定と着手を兼ねるので
+    /// クローンは1局面につき1回（合法なら着手後、不正なら着手前をそのまま使う）。
+    /// 同じ盤面は zobrist ハッシュで重複排除する（情報集合は集合なので、
+    /// 重複を残すとハッシュとメタサイズが無意味に膨らむ）。
+    ///
+    /// **盤上の駒の移動を渡すときは `moved_piece_kind` を必ず埋めること**
+    /// （`Move` の Eq は駒種を含むため、落とすと全局面が不合法になる）。
     pub fn apply_attack_move_split(&self, mv: Move) -> (MetaPosition, MetaPosition) {
         let mut legal_positions = Vec::new();
         let mut illegal_positions = Vec::new();
+        let mut legal_seen = SeenHashes::new();
+        let mut illegal_seen = SeenHashes::new();
 
         for pos in &self.positions {
-            let legal_moves = pos.generate_legal_moves();
-            if legal_moves.contains(&mv) {
-                let mut new_pos = pos.clone();
-                new_pos.make_move(mv);
-                legal_positions.push(new_pos);
-            } else {
-                illegal_positions.push(pos.clone());
-            }
-        }
-
-        (
-            MetaPosition { positions: legal_positions },
-            MetaPosition { positions: illegal_positions },
-        )
-    }
-
-    /// 攻め方の手を指す（合法/不正に分割、事前計算された合法手セットを使用）
-    /// generate_attack_candidates で既に計算された合法手セットを再利用し、
-    /// 重複する generate_legal_moves 呼び出しを回避する
-    /// S は Vec<Move> と Rc<Vec<Move>> の両方を受け付ける（Borrow 経由）
-    pub fn apply_attack_move_split_with_sets<S: std::borrow::Borrow<Vec<Move>>>(
-        &self,
-        mv: Move,
-        legal_move_sets: &[S],
-    ) -> (MetaPosition, MetaPosition) {
-        let mut legal_positions = Vec::new();
-        let mut illegal_positions = Vec::new();
-
-        let mut legal_seen: FxHashSet<u64> = FxHashSet::default();
-        let mut illegal_seen: FxHashSet<u64> = FxHashSet::default();
-
-        for (i, pos) in self.positions.iter().enumerate() {
-            if legal_move_sets[i].borrow().contains(&mv) {
-                let mut new_pos = pos.clone();
-                new_pos.make_move(mv);
-                if legal_seen.insert(new_pos.zobrist_hash) {
-                    legal_positions.push(new_pos);
-                }
-            } else {
-                if illegal_seen.insert(pos.zobrist_hash) {
-                    illegal_positions.push(pos.clone());
-                }
-            }
-        }
-
-        (
-            MetaPosition { positions: legal_positions },
-            MetaPosition { positions: illegal_positions },
-        )
-    }
-
-    /// 攻め方の手を指す（合法/不正に分割、特定の手の合法性のみをチェック）
-    /// 証明木リプレイ用: generate_legal_moves の代わりに特定手の合法性のみ確認
-    pub fn apply_attack_move_split_fast(&self, mv: Move) -> (MetaPosition, MetaPosition) {
-        let mut legal_positions = Vec::new();
-        let mut illegal_positions = Vec::new();
-        let mut legal_seen: FxHashSet<u64> = FxHashSet::default();
-        let mut illegal_seen: FxHashSet<u64> = FxHashSet::default();
-
-        for pos in &self.positions {
-            let color = pos.side_to_move;
-
-            // 手の適用可能性を事前チェック（make_move のパニック防止）
-            let can_apply = if let Some(drop_kind) = mv.drop_piece {
-                pos.hand(color).count(drop_kind) > 0 && pos.piece_at(mv.to).is_none()
-            } else if let Some(from) = mv.from {
-                pos.piece_at(from).map_or(false, |p| p.color == color)
-            } else {
-                false
-            };
-
-            if !can_apply {
+            let Some(new_pos) = pos.try_make_legal(&mv) else {
                 if illegal_seen.insert(pos.zobrist_hash) {
                     illegal_positions.push(pos.clone());
                 }
                 continue;
-            }
-
-            // 合法性チェック: 手を指して自玉が王手されていないか
-            let mut test_pos = pos.clone();
-            let undo = test_pos.make_move(mv);
-            let is_legal = !test_pos.is_in_check(color);
-
-            if is_legal {
-                if legal_seen.insert(test_pos.zobrist_hash) {
-                    legal_positions.push(test_pos);
-                }
-            } else {
-                test_pos.unmake_move(&undo);
-                if illegal_seen.insert(pos.zobrist_hash) {
-                    illegal_positions.push(pos.clone());
-                }
+            };
+            if legal_seen.insert(new_pos.zobrist_hash) {
+                legal_positions.push(new_pos);
             }
         }
 
@@ -264,6 +236,11 @@ impl MetaPosition {
             MetaPosition { positions: legal_positions },
             MetaPosition { positions: illegal_positions },
         )
+    }
+
+    /// 攻め方の手を指す（証明木リプレイ用の別名）
+    pub fn apply_attack_move_split_fast(&self, mv: Move) -> (MetaPosition, MetaPosition) {
+        self.apply_attack_move_split(mv)
     }
 
     /// 玉方の全応手を展開し、観測結果で分類する
@@ -282,9 +259,9 @@ impl MetaPosition {
         let mut checkmate_positions = Vec::new();
         // グループキー: (地点, 攻め方持ち駒ハッシュ) → (重複排除用ハッシュ集合, 局面リスト)
         // 攻め方の持ち駒が異なる盤面は同じ観測でも区別する
-        let mut capture_groups: FxHashMap<(Square, u64), (FxHashSet<u64>, Vec<Position>)> = FxHashMap::default();
+        let mut capture_groups: FxHashMap<(Square, u64), (SeenHashes, Vec<Position>)> = FxHashMap::default();
         // NoCapture グループ: 攻め方持ち駒ハッシュ → (重複排除用ハッシュ集合, 局面リスト)
-        let mut no_capture_groups: FxHashMap<u64, (FxHashSet<u64>, Vec<Position>)> = FxHashMap::default();
+        let mut no_capture_groups: FxHashMap<u64, (SeenHashes, Vec<Position>)> = FxHashMap::default();
 
         for (pos_idx, pos) in self.positions.iter().enumerate() {
             // 巨大な情報集合の展開が数GB規模になり得るため、協調キャンセルを確認
@@ -318,14 +295,14 @@ impl MetaPosition {
                     if captured {
                         let (seen, positions) = capture_groups
                             .entry((def_mv.to, hand_hash))
-                            .or_insert_with(|| (FxHashSet::default(), Vec::new()));
+                            .or_insert_with(|| (SeenHashes::new(), Vec::new()));
                         if seen.insert(scratch.zobrist_hash) {
                             positions.push(scratch.clone());
                         }
                     } else {
                         let (seen, positions) = no_capture_groups
                             .entry(hand_hash)
-                            .or_insert_with(|| (FxHashSet::default(), Vec::new()));
+                            .or_insert_with(|| (SeenHashes::new(), Vec::new()));
                         if seen.insert(scratch.zobrist_hash) {
                             positions.push(scratch.clone());
                         }
@@ -367,14 +344,14 @@ impl MetaPosition {
                 if captured {
                     let (seen, positions) = capture_groups
                         .entry((def_mv.to, hand_hash))
-                        .or_insert_with(|| (FxHashSet::default(), Vec::new()));
+                        .or_insert_with(|| (SeenHashes::new(), Vec::new()));
                     if seen.insert(scratch.zobrist_hash) {
                         positions.push(scratch.clone());
                     }
                 } else {
                     let (seen, positions) = no_capture_groups
                         .entry(hand_hash)
-                        .or_insert_with(|| (FxHashSet::default(), Vec::new()));
+                        .or_insert_with(|| (SeenHashes::new(), Vec::new()));
                     if seen.insert(scratch.zobrist_hash) {
                         positions.push(scratch.clone());
                     }

@@ -283,12 +283,12 @@ fn dfpn_fail_question_04_diag() {
         } else { 0.0 },
     );
     println!(
-        "legal_moves_cache: hits={}, misses={}, hit_rate={:.1}%",
-        solver.legal_moves_cache_hits,
-        solver.legal_moves_cache_misses,
-        if solver.legal_moves_cache_hits + solver.legal_moves_cache_misses > 0 {
-            100.0 * solver.legal_moves_cache_hits as f64
-                / (solver.legal_moves_cache_hits + solver.legal_moves_cache_misses) as f64
+        "check_moves_cache: hits={}, misses={}, hit_rate={:.1}%",
+        solver.check_moves_cache_hits,
+        solver.check_moves_cache_misses,
+        if solver.check_moves_cache_hits + solver.check_moves_cache_misses > 0 {
+            100.0 * solver.check_moves_cache_hits as f64
+                / (solver.check_moves_cache_hits + solver.check_moves_cache_misses) as f64
         } else { 0.0 },
     );
     println!("msg: {}", result.message);
