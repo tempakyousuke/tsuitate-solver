@@ -204,6 +204,24 @@ pub fn generate_drop_moves_masked(
 /// 単独の手の合法性判定（`Position::is_legal_move`）と手生成の双方から使い、
 /// 打ちのルールを1か所に集約する。
 pub fn drop_targets(pos: &Position, color: Color, kind: PieceKind) -> Bitboard {
+    drop_targets_impl(pos, color, kind, None)
+}
+
+/// `drop_targets` の1マス問い合わせ版。
+///
+/// `only` を与えると、そのマスに関係しない重い判定（打ち歩詰めの詰み探索、
+/// 盤面全体の二歩マスク作成）を省く。返るビットボードは `only` のビットの
+/// 正しさだけを保証する（他のビットは信用してはいけない）。
+fn drop_targets_one(pos: &Position, color: Color, kind: PieceKind, only: Square) -> Bitboard {
+    drop_targets_impl(pos, color, kind, Some(only))
+}
+
+fn drop_targets_impl(
+    pos: &Position,
+    color: Color,
+    kind: PieceKind,
+    only: Option<Square>,
+) -> Bitboard {
     let hand = pos.hand(color);
     if !hand.has(kind) {
         return 0;
@@ -230,13 +248,23 @@ pub fn drop_targets(pos: &Position, color: Color, kind: PieceKind) -> Bitboard {
     };
 
     let mut targets = empties & zone;
+    if let Some(sq) = only {
+        // 問い合わせ対象のマス以外は見ないので、ここで絞ってから重い判定に入る
+        targets &= 1u128 << sq.index();
+        if targets == 0 {
+            return 0;
+        }
+    }
     if kind != PieceKind::Pawn {
         return targets;
     }
 
-    // 二歩の筋を除外
+    // 二歩の筋を除外（1マス問い合わせならその筋だけ調べる）
     let mut pawn_file_mask: Bitboard = 0;
     let mut bb = pos.occupancy(color);
+    if let Some(sq) = only {
+        bb &= FILE_MASK[(sq.file - 1) as usize];
+    }
     while bb != 0 {
         let idx = bb.trailing_zeros() as usize;
         bb &= bb - 1;
@@ -259,6 +287,8 @@ pub fn drop_targets(pos: &Position, color: Color, kind: PieceKind) -> Bitboard {
         if (1..=9).contains(&front_rank) {
             let front_sq = Square::new(ksq.file, front_rank as u8);
             let front_bit = 1u128 << front_sq.index();
+            // targets は only で既に絞ってあるので、無関係なマスの
+            // 問い合わせでは詰み探索（is_pawn_drop_mate）が走らない
             if targets & front_bit != 0 && is_pawn_drop_mate(pos, front_sq, color) {
                 targets &= !front_bit;
             }
@@ -283,7 +313,7 @@ pub fn is_pseudo_legal_move(pos: &Position, mv: &Move, color: Color) -> bool {
         if !PieceKind::HAND_PIECES.contains(&kind) {
             return false;
         }
-        return drop_targets(pos, color, kind) & (1u128 << mv.to.index()) != 0;
+        return drop_targets_one(pos, color, kind, mv.to) & (1u128 << mv.to.index()) != 0;
     }
 
     let Some(from) = mv.from else {

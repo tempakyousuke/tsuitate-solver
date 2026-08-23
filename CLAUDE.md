@@ -99,7 +99,8 @@ GUIおよびベンチマークで使用する df-pn (Depth-First Proof Number Se
 - 通常モード: `<question.json> [--find-second] [--shortest] [--node-limit N] [--timeout-secs N] [--memory-limit-mb N] [--estimate-rating] [--rating-node-limit N]`
 - 挑戦モード: `--solve-meta <request.json> [--node-limit N] [--scan-node-limit N] [--parallel N]`（決定性のためタイムアウト・メモリ上限なし）
 - 挑戦モード常駐版: `--solve-meta-server [--node-limit N] [--scan-node-limit N]`。stdin から行区切りJSONを受け続け、転置表を手をまたいで温存する。挑戦モードは1手ごとに「前の手の証明の部分木」を問い直すため、2手目以降がほぼ即答になる
-- **--scan-node-limit**: Proven 時の「最小証明深さスキャン」専用の追加ノード予算。スキャンは玉方のタイブレーク（どの観測分岐が一番粘れるか）用の精密化で、真偽判定には影響しない。**未指定なら自動**（本解の証明に要したノード数と同程度まで）。スキャンの最後の1回は必ず「これ以上短くはできない」ことの反証になり、本解の証明より遥かに重くなりやすく、放っておくと1手の応答時間の5〜8割を占める。打ち切ってもタイブレークが粗くなるだけで、返す `provenDepth` は常に証明済みの上界のまま。明示的に `0` を渡すと従来どおり無制限（最短手数を厳密に求める）
+- **--scan-node-limit `N|auto|unlimited`**: Proven 時の「最小証明深さスキャン」専用の追加ノード予算。スキャンは玉方のタイブレーク（どの観測分岐が一番粘れるか）用の精密化で、真偽判定には影響しない。既定は `auto`（= `SCAN_NODES_AUTO` = 50,000ノード）。スキャンの最後の1回は必ず「これ以上短くはできない」ことの反証になり、本解の証明より遥かに重くなりやすく、放っておくと1手の応答時間の5〜8割を占める。打ち切ってもタイブレークが粗くなるだけで、返す `provenDepth` は常に証明済みの上界のまま。**`0` は `auto` の別名**（「既定のつもりで 0」で無制限になる事故を避けるため。以前の版では 0 が無制限だった）。厳密な最短手数が要るときだけ `unlimited` を渡す
+- `provenDepth` は「予算内で証明できた深さの上界」なので、転置表が温まっているほど小さくなり得る（常駐モードと単発実行で違う値が返り得る）。サイト側で保存・再検証に使うなら、値そのものではなく「その手数以内に詰む」という上界として扱うこと
 - **--memory-limit-mb**: ピークRSSの上限。監視スレッドがソフト上限でキャンセルフラグを立て（出力に `memoryLimited: true`）、1.5倍のハード上限でフォールバックJSONを出して正常終了する（OOM killer 対策）。余詰め探索（find_second）は情報集合の再展開でGB級のメモリを食うことがあり、走査系（find_table_alternative / find_inner_alt_recursive）には MAX_META_POSITIONS 超のメタで打ち切って「判定不能」扱いにするガードがある。`expand_defense_moves` は協調キャンセル（`metaposition.rs` の `set_expansion_cancel`）を確認し、**キャンセル発火後の戻り値は部分結果の可能性があるため呼び出し側は必ず破棄する**こと（空の分岐を「詰み」と誤認すると偽の証明になる）
 
 ### 難易度レート推定（--estimate-rating）
@@ -127,7 +128,7 @@ GUIおよびベンチマークで使用する df-pn (Depth-First Proof Number Se
 
 - `is_square_attacked()` (movegen.rs): 非対称駒（金・銀・桂・歩・香）は、ターゲットマスから攻撃者を探す際に**相手側**のオフセットを使う必要がある
 - `make_move`/`unmake_move`: 玉は持ち駒に加えない（玉の捕獲はソルバーの探索上発生しうるが、持ち駒に加えると不正な状態になる）
-- `generate_attack_candidates` のソートは、単一局面の早期リターンより**前**に行う必要がある（そうしないとルートの手順が HashSet の反復順に依存し非決定的になる）
+- 解の手順木の `MoveData` から `Move` を復元して情報集合に適用するときは、必ず `md_to_move`（盤上手の駒種を meta から解決する）を使う。`moved_piece_kind` はコメント上「表示用」だが `Move` の Eq/Hash に参加しているため、駒種を落とした手は `Position::is_legal_move` で全局面が不合法と判定され、観測分岐の走査が**静かに**止まる（余詰めの見逃しを「完全作」として確定報告する）。`move_data_to_move` は from/to/成/打ちしか見ない除外手の照合専用
 
 ## ビルド・テスト
 

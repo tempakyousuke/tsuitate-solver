@@ -184,14 +184,19 @@ fn simulate(path: &std::path::Path, node_limit: u64, scan_node_limit: u64) -> Ve
         let Some(mv) = resolve_move(&meta, md) else {
             break;
         };
-        let (legal, _illegal) = meta.apply_attack_move_split(mv);
+        let (legal, illegal) = meta.apply_attack_move_split(mv);
         if legal.is_empty() {
             break;
         }
 
         // ---- ここからサイト側の応答（計測対象） ----
         let t0 = Instant::now();
-        let groups = legal.expand_defense_moves(mv);
+        let mut groups = legal.expand_defense_moves(mv);
+        // 反則枝（プローブ手が一部の盤面でだけ指せた場合）もサイトは同じように
+        // 問い合わせる。玉方の手は進まないので深さ予算は据え置き
+        if !illegal.is_empty() {
+            groups.push((Observation::Illegal, illegal.clone()));
+        }
         let mut queries = 0usize;
         let mut positions = 0usize;
         let start_nodes = server.nodes_searched;
@@ -210,10 +215,16 @@ fn simulate(path: &std::path::Path, node_limit: u64, scan_node_limit: u64) -> Ve
             }
             queries += 1;
             positions += group.positions.len();
+            // 反則なら玉方は指していないので残り手数は減らない
+            let depth_limit = if matches!(obs, Observation::Illegal) {
+                remaining
+            } else {
+                remaining.saturating_sub(2)
+            };
             let outcome = solve_meta_query_with(
                 &mut server,
                 group.positions.clone(),
-                remaining.saturating_sub(2),
+                depth_limit,
                 node_limit,
                 scan_node_limit,
             );
@@ -255,7 +266,9 @@ fn simulate(path: &std::path::Path, node_limit: u64, scan_node_limit: u64) -> Ve
         };
         let chosen_obs = groups[best_idx].0.clone();
         meta = groups[best_idx].1.clone();
-        remaining = remaining.saturating_sub(2);
+        if !matches!(chosen_obs, Observation::Illegal) {
+            remaining = remaining.saturating_sub(2);
+        }
 
         let Some(branch) = branches.iter().find(|b| b.observation == chosen_obs) else {
             break; // 解の木に無い分岐（サイトなら不正解判定）

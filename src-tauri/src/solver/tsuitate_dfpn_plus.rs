@@ -724,7 +724,7 @@ impl TsuitateDfpnPlusSolver {
         &mut self,
         meta: &MetaPosition,
         mv: Move,
-        legal_move_sets: &[Vec<Move>],
+        _legal_move_sets: &[Vec<Move>],
         pn_limit: u32,
         dn_limit: u32,
         path: &mut Vec<u64>,
@@ -741,7 +741,7 @@ impl TsuitateDfpnPlusSolver {
         } else {
             // Apply move and split into legal/illegal
             let (legal_meta, illegal_meta) =
-                meta.apply_attack_move_split_with_sets(mv, legal_move_sets);
+                meta.apply_attack_move_split(mv);
 
             if legal_meta.is_empty() && illegal_meta.is_empty() {
                 self.and_table.insert(AndEntry {
@@ -1532,7 +1532,7 @@ impl TsuitateDfpnPlusSolver {
         &self,
         meta: &MetaPosition,
         mv: Move,
-        legal_move_sets: &[Vec<Move>],
+        _legal_move_sets: &[Vec<Move>],
         depth: u32,
     ) -> Option<Vec<SolutionBranch>> {
         let meta_hash = meta_position_hash(meta);
@@ -1573,7 +1573,7 @@ impl TsuitateDfpnPlusSolver {
 
         // キャッシュミス: 既存ロジック（expand_defense_moves 使用）
         let (legal_meta, illegal_meta) =
-            meta.apply_attack_move_split_with_sets(mv, legal_move_sets);
+            meta.apply_attack_move_split(mv);
 
         let mut branches = Vec::new();
 
@@ -1803,7 +1803,11 @@ impl TsuitateDfpnPlusSolver {
             SolutionNode::AttackMove { mv, branches, .. } => (mv, branches),
         };
 
-        let mv = Self::move_data_to_move(mv_data);
+        // 盤上手は駒種を meta から解決する。駒種を落とした手は
+        // Position::is_legal_move で全局面が不合法になり、
+        // 観測分岐の走査が静かに止まる（tsuitate_dfpn.rs の md_to_move 参照）
+        let mv = crate::solver::tsuitate_dfpn::md_to_move(mv_data, meta)
+            .unwrap_or_else(|| Self::move_data_to_move(mv_data));
 
         let (legal_meta, illegal_meta) = meta.apply_attack_move_split_fast(mv);
         let obs_metas: Vec<(Observation, MetaPosition)> =

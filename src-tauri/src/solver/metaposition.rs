@@ -205,11 +205,15 @@ impl MetaPosition {
     /// 返り値: (合法な盤面(手を指した後), 不正な盤面(手を指す前の状態))
     /// 衝立詰将棋では、不正な手(反則)も情報を持つため分割して返す
     ///
-    /// 合法性は `Position::is_legal_move` で1手だけ検証する。情報集合の各局面で
-    /// 全合法手を生成して照合すると、攻め方の持ち駒の打ち先（1駒種あたり最大80マス）
-    /// の列挙が支配的なコストになる（プロファイルで探索全体の 2 割）。
+    /// 合法性は1手だけ検証する（`movegen::is_pseudo_legal_move` ＋自殺手の除去）。
+    /// 情報集合の各局面で全合法手を生成して照合すると、攻め方の持ち駒の打ち先
+    /// （1駒種あたり最大80マス）の列挙が支配的なコストになる。
+    /// クローンは1局面につき1回だけ（合法なら着手後、不正なら着手前をそのまま使う）。
     /// 同じ盤面は zobrist ハッシュで重複排除する（情報集合は集合なので、
     /// 重複を残すとハッシュとメタサイズが無意味に膨らむ）。
+    ///
+    /// **盤上の駒の移動を渡すときは `moved_piece_kind` を必ず埋めること**
+    /// （`Move` の Eq は駒種を含むため、落とすと全局面が不合法になる）。
     pub fn apply_attack_move_split(&self, mv: Move) -> (MetaPosition, MetaPosition) {
         let mut legal_positions = Vec::new();
         let mut illegal_positions = Vec::new();
@@ -217,7 +221,8 @@ impl MetaPosition {
         let mut illegal_seen = SeenHashes::new();
 
         for pos in &self.positions {
-            if !pos.is_legal_move(&mv) {
+            let color = pos.side_to_move;
+            if !crate::shogi::movegen::is_pseudo_legal_move(pos, &mv, color) {
                 if illegal_seen.insert(pos.zobrist_hash) {
                     illegal_positions.push(pos.clone());
                 }
@@ -225,6 +230,13 @@ impl MetaPosition {
             }
             let mut new_pos = pos.clone();
             new_pos.make_move(mv);
+            // 自玉が取られる手は不正（攻め方に玉がなければ is_in_check は常に false）
+            if new_pos.is_in_check(color) {
+                if illegal_seen.insert(pos.zobrist_hash) {
+                    illegal_positions.push(pos.clone());
+                }
+                continue;
+            }
             if legal_seen.insert(new_pos.zobrist_hash) {
                 legal_positions.push(new_pos);
             }
@@ -234,19 +246,6 @@ impl MetaPosition {
             MetaPosition { positions: legal_positions },
             MetaPosition { positions: illegal_positions },
         )
-    }
-
-    /// 攻め方の手を指す（事前計算された合法手セットつき）。
-    ///
-    /// `apply_attack_move_split` が1手だけの合法性判定で済むようになったため、
-    /// 合法手セットは不要になった。旧ソルバー（tsuitate_dfpn_plus）との
-    /// 互換のために残してあり、渡されたセットは使わない。
-    pub fn apply_attack_move_split_with_sets<S: std::borrow::Borrow<Vec<Move>>>(
-        &self,
-        mv: Move,
-        _legal_move_sets: &[S],
-    ) -> (MetaPosition, MetaPosition) {
-        self.apply_attack_move_split(mv)
     }
 
     /// 攻め方の手を指す（証明木リプレイ用の別名）

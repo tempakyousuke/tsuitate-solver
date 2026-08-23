@@ -22,12 +22,13 @@
 //! タイムアウトは使わない（--node-limit はクエリごとの上限。既定 2,000,000）。
 //! --scan-node-limit は Proven 時の最小証明深さスキャン（タイブレーク用の
 //! 精密化）専用の追加ノード予算。予算に達したら「そこまでに証明できた深さ」で
-//! 打ち切る。ノード数ベースなので決定的。
-//! 未指定なら**自動**（本解の証明に要したノード数と同程度まで）。スキャンの
-//! 最後の1回は必ず「これ以上短くはできない」ことの反証になり、本解の証明より
-//! 遥かに重くなりやすいため、放っておくと1手の応答時間の大半を占める。
-//! 打ち切ってもタイブレークが粗くなるだけで、返す深さは常に証明済みの上界。
-//! 明示的に 0 を渡すと従来どおり無制限（最短手数を厳密に求める）。
+//! 打ち切る。ノード数ベースなので決定的。値は N（ノード数）/ auto / unlimited。
+//! 既定は auto（= SCAN_NODES_AUTO ノード）。スキャンの最後の1回は必ず
+//! 「これ以上短くはできない」ことの反証になり、本解の証明より遥かに重く
+//! なりやすいため、放っておくと1手の応答時間の大半を占める。打ち切っても
+//! タイブレークが粗くなるだけで、返す深さは常に証明済みの上界。
+//! **`0` は auto の別名**（「既定値のつもりで 0 を渡す」事故を避けるため。
+//! 以前の版では 0 が無制限だった）。無制限にしたいときは `unlimited` を渡す。
 //! --parallel はクエリの並列実行数（既定 1）。クエリは独立なので結果は
 //! 直列実行と同一。
 //!
@@ -234,7 +235,7 @@ struct Args {
     /// ヒープ確保量の上限（MB）。0 なら無制限
     memory_limit_mb: u64,
     /// --solve-meta: 最小証明深さスキャン専用の追加ノード予算。
-    /// 未指定なら自動（0 を渡して solve_bounded に判断させる）、明示の 0 なら無制限
+    /// solve_bounded の表現に正規化済み（0 = auto、u64::MAX = 無制限）
     scan_node_limit: u64,
     /// --solve-meta: クエリの並列実行数。既定 1（直列）
     parallel: usize,
@@ -254,8 +255,8 @@ fn parse_args() -> Result<Args, String> {
     let mut node_limit_given = false;
     let mut timeout_secs: u64 = 120;
     let mut memory_limit_mb: u64 = 0;
+    // solve_bounded の表現: 0 = auto、u64::MAX = 無制限
     let mut scan_node_limit: u64 = 0;
-    let mut scan_node_limit_given = false;
     let mut parallel: usize = 1;
     let mut estimate_rating = false;
     let mut rating_node_limit: u64 = 200_000;
@@ -289,9 +290,14 @@ fn parse_args() -> Result<Args, String> {
             }
             "--scan-node-limit" => {
                 let v = iter.next().ok_or("--scan-node-limit requires a value")?;
-                scan_node_limit =
-                    v.parse().map_err(|_| format!("Invalid --scan-node-limit: {}", v))?;
-                scan_node_limit_given = true;
+                scan_node_limit = match v.as_str() {
+                    // 0 は auto の別名。「既定のつもりで 0」で無制限になる事故を防ぐ
+                    "auto" | "0" => 0,
+                    "unlimited" | "none" => u64::MAX,
+                    _ => v
+                        .parse()
+                        .map_err(|_| format!("Invalid --scan-node-limit: {} (N | auto | unlimited)", v))?,
+                };
             }
             "--parallel" => {
                 let v = iter.next().ok_or("--parallel requires a value")?;
@@ -311,7 +317,7 @@ fn parse_args() -> Result<Args, String> {
     }
 
     if input.is_none() && !solve_meta_server {
-        return Err("Usage: tsuitate-solver-cli <question.json> [--find-second] [--shortest] [--node-limit N] [--timeout-secs N] [--memory-limit-mb N] [--estimate-rating] [--rating-node-limit N] | --solve-meta <request.json> [--node-limit N] [--scan-node-limit N] [--parallel N] | --solve-meta-server [--node-limit N] [--scan-node-limit N]".to_string());
+        return Err("Usage: tsuitate-solver-cli <question.json> [--find-second] [--shortest] [--node-limit N] [--timeout-secs N] [--memory-limit-mb N] [--estimate-rating] [--rating-node-limit N] | --solve-meta <request.json> [--node-limit N] [--scan-node-limit N|auto|unlimited] [--parallel N] | --solve-meta-server [--node-limit N] [--scan-node-limit N|auto|unlimited]".to_string());
     }
     Ok(Args {
         input,
@@ -323,15 +329,7 @@ fn parse_args() -> Result<Args, String> {
         node_limit_given,
         timeout_secs,
         memory_limit_mb,
-        scan_node_limit: if !scan_node_limit_given {
-            // 未指定は自動（solve_bounded が本解のコストから決める）
-            0
-        } else if scan_node_limit == 0 {
-            // 明示の 0 は従来どおり「無制限」
-            u64::MAX
-        } else {
-            scan_node_limit
-        },
+        scan_node_limit,
         parallel,
         estimate_rating,
         rating_node_limit,
@@ -840,7 +838,9 @@ fn main() -> ExitCode {
                 &root_pos,
                 solved_depth,
                 args.rating_node_limit,
-                args.scan_node_limit,
+                // レート推定は proven/disproven しか見ないので、最小証明深さの
+                // スキャン（玉方のタイブレーク用）は完全に無駄。1 ノードで打ち切る
+                1,
                 cancel.clone(),
             )
             .map(|(root_tries, root_checks, root_solutions)| {

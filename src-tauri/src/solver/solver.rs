@@ -329,7 +329,7 @@ impl TsuitateSolver {
         }
 
         // 候補手を列挙（王手の手 + 情報収集用の手）
-        let (mut candidate_moves, legal_move_sets) = self.generate_attack_candidates(meta);
+        let (mut candidate_moves, _legal_move_sets) = self.generate_attack_candidates(meta);
 
         // ルートレベルで除外指定された初手をフィルタ
         if current_depth == 0 && !excluded_first_moves.is_empty() {
@@ -405,7 +405,7 @@ impl TsuitateSolver {
             let node_before = self.nodes_searched;
 
             // 全盤面にこの手を適用し、合法/不正に分割（事前計算済みの合法手セットを再利用）
-            let (legal_meta, illegal_meta) = meta.apply_attack_move_split_with_sets(mv, &legal_move_sets);
+            let (legal_meta, illegal_meta) = meta.apply_attack_move_split(mv);
 
             if legal_meta.is_empty() {
                 continue; // この手はどの盤面でも指せない
