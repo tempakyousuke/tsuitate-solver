@@ -594,3 +594,88 @@ fn is_legal_move_matches_generate_legal_moves() {
     }
     assert!(checked > 100_000, "検査数が少なすぎる: {}", checked);
 }
+
+/// 王手駒を取る手は無駄合いではない（回帰テスト）。
+///
+/// 詰めチャレの実戦局面（▲４三成桂 △４一玉 ▲５二金打 まで）。ここでの玉方の
+/// 応手は △５二同銀（６一の銀で王手の金を取る）ただ1つ。取り返しの
+/// ▲５二同成桂で詰むが、それは5手詰であって3手詰ではない。
+/// is_futile_interposition が「玉以外の応手」をすべて合駒扱いしていたため、
+/// この △同銀 が無駄合いと判定され、all_effectively_checkmate が
+/// 「▲５二金打まで実質詰み」と誤答していた。
+#[test]
+fn capturing_the_checking_piece_is_not_a_futile_interposition() {
+    use tsuitate_solver_lib::solver::metaposition::MetaPosition;
+
+    let mut pos = setup_position(&[
+        // 先手（攻め方）
+        (Square::new(5, 2), Piece::new(Color::Sente, PieceKind::Gold)),
+        (Square::new(5, 3), Piece::new(Color::Sente, PieceKind::Pawn)),
+        (Square::new(4, 3), Piece::new(Color::Sente, PieceKind::PromotedKnight)),
+        (Square::new(4, 4), Piece::new(Color::Sente, PieceKind::PromotedBishop)),
+        (Square::new(3, 5), Piece::new(Color::Sente, PieceKind::Lance)),
+        (Square::new(4, 6), Piece::new(Color::Sente, PieceKind::Pawn)),
+        (Square::new(2, 6), Piece::new(Color::Sente, PieceKind::Pawn)),
+        (Square::new(9, 7), Piece::new(Color::Sente, PieceKind::Pawn)),
+        (Square::new(8, 7), Piece::new(Color::Sente, PieceKind::Pawn)),
+        (Square::new(7, 7), Piece::new(Color::Sente, PieceKind::Pawn)),
+        (Square::new(6, 7), Piece::new(Color::Sente, PieceKind::Pawn)),
+        (Square::new(3, 7), Piece::new(Color::Sente, PieceKind::Pawn)),
+        (Square::new(2, 7), Piece::new(Color::Sente, PieceKind::Rook)),
+        (Square::new(7, 8), Piece::new(Color::Sente, PieceKind::Silver)),
+        (Square::new(4, 8), Piece::new(Color::Sente, PieceKind::King)),
+        (Square::new(3, 8), Piece::new(Color::Sente, PieceKind::Gold)),
+        (Square::new(9, 9), Piece::new(Color::Sente, PieceKind::Lance)),
+        (Square::new(8, 9), Piece::new(Color::Sente, PieceKind::Knight)),
+        (Square::new(7, 9), Piece::new(Color::Sente, PieceKind::Bishop)),
+        (Square::new(6, 9), Piece::new(Color::Sente, PieceKind::Gold)),
+        // 後手（玉方）
+        (Square::new(9, 1), Piece::new(Color::Gote, PieceKind::Lance)),
+        (Square::new(6, 1), Piece::new(Color::Gote, PieceKind::Silver)),
+        (Square::new(4, 1), Piece::new(Color::Gote, PieceKind::King)),
+        (Square::new(1, 2), Piece::new(Color::Gote, PieceKind::Lance)),
+        (Square::new(9, 3), Piece::new(Color::Gote, PieceKind::Knight)),
+        (Square::new(8, 3), Piece::new(Color::Gote, PieceKind::Pawn)),
+        (Square::new(7, 3), Piece::new(Color::Gote, PieceKind::Pawn)),
+        (Square::new(6, 3), Piece::new(Color::Gote, PieceKind::Pawn)),
+        (Square::new(2, 3), Piece::new(Color::Gote, PieceKind::Pawn)),
+        (Square::new(9, 4), Piece::new(Color::Gote, PieceKind::Pawn)),
+        (Square::new(5, 5), Piece::new(Color::Gote, PieceKind::Gold)),
+        (Square::new(4, 7), Piece::new(Color::Gote, PieceKind::Knight)),
+        (Square::new(2, 8), Piece::new(Color::Gote, PieceKind::Silver)),
+        (Square::new(3, 9), Piece::new(Color::Gote, PieceKind::Rook)),
+        (Square::new(2, 9), Piece::new(Color::Gote, PieceKind::PromotedPawn)),
+    ]);
+    for _ in 0..2 {
+        pos.sente_hand.add(PieceKind::Pawn);
+    }
+    pos.gote_hand.add(PieceKind::Silver);
+    for _ in 0..2 {
+        pos.gote_hand.add(PieceKind::Pawn);
+    }
+    pos.side_to_move = Color::Gote;
+    pos.init_zobrist_hash();
+
+    assert!(pos.is_in_check(Color::Gote), "後手が王手されている前提の局面");
+
+    let capture = Move::normal(
+        Square::new(6, 1),
+        Square::new(5, 2),
+        false,
+        PieceKind::Silver,
+    );
+    assert_eq!(
+        pos.generate_check_evasions(),
+        vec![capture],
+        "応手は △５二同銀 ただ1つのはず"
+    );
+
+    assert!(
+        !pos.is_futile_interposition(&capture),
+        "王手駒を取る手を無駄合いと判定してはいけない"
+    );
+    assert!(
+        !MetaPosition::new(pos).all_effectively_checkmate(),
+        "応手が残っているので実質詰みではない"
+    );
+}
