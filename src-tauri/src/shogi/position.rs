@@ -635,6 +635,11 @@ impl Position {
     /// 王手に対する合駒（玉以外の応手）が無駄かどうかを判定する。
     /// 合駒を取り返して再び王手＋詰みになる場合、無駄合いとみなす。
     /// 再帰的に判定し、連続合駒も正しく処理する。
+    ///
+    /// **合駒以外の応手（玉の移動・王手駒の取り）は対象外**。とくに「王手駒を
+    /// 取る」手は、取り返されて詰むとしても正真正銘の応手で手数を伸ばすので
+    /// 無駄合いではない（ここを合駒と同一視すると、まだ応手が残っている局面を
+    /// 実質詰みと誤判定して手数が短く出る）。
     pub fn is_futile_interposition(&self, def_mv: &Move) -> bool {
         self.is_futile_interposition_impl(def_mv, 3)
     }
@@ -651,6 +656,12 @@ impl Position {
                     return false;
                 }
             }
+        }
+
+        // 駒を取る手は合駒ではない（王手回避で玉以外が駒を取れるのは王手駒を
+        // 取る場合だけ）。合駒は必ず空きマスへの着手
+        if self.piece_at(def_mv.to).is_some() {
+            return false;
         }
 
         let mut pos_after = self.clone();
