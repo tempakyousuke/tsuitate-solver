@@ -293,8 +293,22 @@ fn hand_order(kind: PieceKind) -> u8 {
     }
 }
 
-/// 転置表の1件: (反則の残り, 読みの深さ, 判定)。判定は Escape / Caught / Undecided のどれか
-type TtEntry = (u8, u32, Verdict);
+/// 転置表に残す事実の種類
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fact {
+    /// 逃れを強制できる（反則の残り・読みの深さが多いほど成り立つ）
+    Escape,
+    /// 捕まえられる（反則の残りが少ないほど・読みが深いほど成り立つ）
+    Caught,
+    /// どちらも決着を強制できない（同じ反則の残りで、浅く読んでも成り立つ）
+    Undecided,
+    /// 逃れを強制できない（捕まりか決着しないかは区別しない。逃れの判定専用モードの結果。
+    /// 反則の残りが少ないほど・読みが浅いほど成り立つ）
+    NotEscape,
+}
+
+/// 転置表の1件: (反則の残り, 読みの深さ, 事実)
+type TtEntry = (u8, u32, Fact);
 
 /// 転置表がこれを超えたら捨てる（メモリの頭打ち）
 const MAX_TT_KEYS: usize = 2_000_000;
@@ -308,6 +322,11 @@ pub struct EscapeSolver {
     node_limit: u64,
     cancel: Arc<AtomicBool>,
     aborted: bool,
+    /// 逃れの判定専用モード。逃れられるかどうかだけを知りたいとき（採掘の検証）に使う。
+    /// 攻め方の分岐で「逃れられない」と分かった時点で打ち切り、捕まりと
+    /// 決着しないを区別しない（返す Undecided は「逃れを強制できない」の意味）。
+    /// 区別のために残りの分岐まで読むと、検証が何倍も遅くなる
+    escape_only: bool,
 }
 
 const ATTACK: u8 = 0;
@@ -315,7 +334,33 @@ const DEFENSE: u8 = 1;
 
 impl EscapeSolver {
     pub fn new(node_limit: u64, cancel: Arc<AtomicBool>) -> Self {
-        Self { tt: FxHashMap::default(), nodes: 0, node_limit, cancel, aborted: false }
+        Self {
+            tt: FxHashMap::default(),
+            nodes: 0,
+            node_limit,
+            cancel,
+            aborted: false,
+            escape_only: false,
+        }
+    }
+
+    /// 逃れの判定専用モードにする（`escape_only` を参照）
+    pub fn set_escape_only(&mut self, escape_only: bool) {
+        self.escape_only = escape_only;
+    }
+
+    /// 攻め方の分岐選択に結果 sub を足す。逃れの判定専用モードでは、決着しない分岐も
+    /// 「逃れられない」として確定扱いにする
+    fn attacker_combine(&self, result: Verdict, sub: Verdict) -> Verdict {
+        if self.escape_only && sub == Verdict::Undecided && result != Verdict::Caught {
+            return Verdict::Undecided;
+        }
+        attacker_pick(result, sub)
+    }
+
+    /// 攻め方の分岐選択をここで打ち切ってよいか
+    fn attacker_settled(&self, result: Verdict) -> bool {
+        result == Verdict::Caught || (self.escape_only && result == Verdict::Undecided)
     }
 
     /// ノード上限を設定する（累計 nodes に対する絶対値）
@@ -331,48 +376,51 @@ impl EscapeSolver {
         self.aborted
     }
 
-    /// 判定済みの事実 (f, b, v) から (fouls, budget) での判定が分かるか。
+    /// 判定済みの事実 (f, b, fact) が (fouls, budget) について成り立つか。
     /// - 逃れ・捕まりは深く読んでも覆らない（予算 b 以上で成り立つ）。反則の残りについては
     ///   逃れは多いほど、捕まりは少ないほど成り立つ
     /// - 決着しない（Undecided）は浅く読んでも決着しない（予算 b 以下で成り立つ）。
     ///   反則の残りが変わると逃れ・捕まりのどちらにも転び得るので同じ回数のときだけ
-    fn implies(fact: TtEntry, fouls: u8, budget: u32) -> bool {
-        let (f, b, v) = fact;
-        match v {
-            Verdict::Escape => f <= fouls && b <= budget,
-            Verdict::Caught => f >= fouls && b <= budget,
-            Verdict::Undecided => f == fouls && b >= budget,
-            Verdict::Unknown => false,
+    /// - 逃れを強制できない（NotEscape）は反則の残りが少なく読みが浅いほど成り立つ
+    fn holds((f, b, fact): TtEntry, fouls: u8, budget: u32) -> bool {
+        match fact {
+            Fact::Escape => f <= fouls && b <= budget,
+            Fact::Caught => f >= fouls && b <= budget,
+            Fact::Undecided => f == fouls && b >= budget,
+            Fact::NotEscape => f >= fouls && b >= budget,
         }
     }
 
     fn tt_lookup(&self, hash: u64, kind: u8, fouls: u8, budget: u32) -> Option<Verdict> {
         let entries = self.tt.get(&(hash, kind))?;
-        entries
-            .iter()
-            .find(|&&fact| Self::implies(fact, fouls, budget))
-            .map(|&(_, _, v)| v)
+        entries.iter().filter(|&&e| Self::holds(e, fouls, budget)).find_map(|&(_, _, fact)| match fact {
+            Fact::Escape => Some(Verdict::Escape),
+            Fact::Caught => Some(Verdict::Caught),
+            Fact::Undecided => Some(Verdict::Undecided),
+            // 捕まりか決着しないかは分からないので、区別の要らないモードでだけ使える
+            Fact::NotEscape => self.escape_only.then_some(Verdict::Undecided),
+        })
     }
 
     /// 判定を残す。Unknown（ノード上限）は読み直せば変わるので残さない。
-    /// Undecided はノード上限に左右されない（部分木に Unknown があれば結果も Unknown になる）
+    /// Undecided はノード上限に左右されない（部分木に Unknown があれば結果も Unknown になる）。
+    /// 逃れの判定専用モードの Undecided は「逃れを強制できない」としか言えないので NotEscape で残す
+    /// （このモードでも Caught は本物: 捕まる分岐を見つけたときにしか返さない）
     fn tt_store(&mut self, hash: u64, kind: u8, fouls: u8, budget: u32, verdict: Verdict) {
-        if verdict == Verdict::Unknown {
-            return;
-        }
+        let fact = match verdict {
+            Verdict::Escape => Fact::Escape,
+            Verdict::Caught => Fact::Caught,
+            Verdict::Undecided if self.escape_only => Fact::NotEscape,
+            Verdict::Undecided => Fact::Undecided,
+            Verdict::Unknown => return,
+        };
         if self.tt.len() >= MAX_TT_KEYS {
             self.tt.clear();
         }
         let entries = self.tt.entry((hash, kind)).or_default();
-        // 新しい事実に含意される古い事実は捨てる
-        entries.retain(|&(f, b, v)| {
-            !(v == verdict && match v {
-                Verdict::Escape => fouls <= f && budget <= b,
-                Verdict::Caught => fouls >= f && budget <= b,
-                _ => fouls == f && budget >= b,
-            })
-        });
-        entries.push((fouls, budget, verdict));
+        // 新しい事実に含意される古い同種の事実は捨てる
+        entries.retain(|&(f, b, old)| old != fact || !Self::holds((fouls, budget, fact), f, b));
+        entries.push((fouls, budget, fact));
     }
 
     /// 攻め方の手番。budget は攻め方がまだ指せる王手の回数
@@ -393,8 +441,9 @@ impl EscapeSolver {
                 groups.sort_by_key(|(_, g)| std::cmp::Reverse(g.len()));
                 let mut result = Verdict::Escape;
                 for (_, group) in &groups {
-                    result = attacker_pick(result, self.defense(group, fouls, budget - 1));
-                    if result == Verdict::Caught {
+                    let sub = self.defense(group, fouls, budget - 1);
+                    result = self.attacker_combine(result, sub);
+                    if self.attacker_settled(result) {
                         break;
                     }
                 }
@@ -456,16 +505,18 @@ impl EscapeSolver {
             if fouls == 0 {
                 return Verdict::Caught;
             }
-            result = attacker_pick(result, self.defense(foul, fouls - 1, budget));
-            if result == Verdict::Caught {
+            let sub = self.defense(foul, fouls - 1, budget);
+            result = self.attacker_combine(result, sub);
+            if self.attacker_settled(result) {
                 return result;
             }
         }
         let mut order: Vec<&InfoSet> = split.accepted.iter().map(|(_, _, g)| g).collect();
         order.sort_by_key(|g| std::cmp::Reverse(g.len()));
         for group in order {
-            result = attacker_pick(result, self.attack(group, fouls, budget));
-            if result == Verdict::Caught {
+            let sub = self.attack(group, fouls, budget);
+            result = self.attacker_combine(result, sub);
+            if self.attacker_settled(result) {
                 return result;
             }
         }
@@ -532,6 +583,8 @@ pub fn analyze_escape(
 ) -> EscapeAnalysis {
     let set = InfoSet::from_fresh(vec![root]);
     let mut solver = EscapeSolver::new(node_limit, cancel);
+    // 検証は逃れられるかどうかだけを見る（捕まりと決着しないの区別は要らない）
+    solver.set_escape_only(true);
 
     let (first_check_positions, first_check_groups) = match expand_attack(&set) {
         AttackExpansion::Groups(groups) => {
@@ -746,9 +799,29 @@ mod tests {
         pos.set_piece(sq(1, 1), Piece::new(Color::Gote, PieceKind::PromotedRook));
         pos.side_to_move = Color::Gote;
         // 反則を多めに許せば反則負けにも詰みにもならず、読みの深さで打ち切られるだけ
-        let analysis = analyze_escape(pos, 3, 2, 2_000_000, no_cancel());
+        let analysis = analyze_escape(pos.clone(), 3, 2, 2_000_000, no_cancel());
         assert_eq!(analysis.verdict, Verdict::Undecided);
         assert_eq!(analysis.min_fouls, None);
+        // 捕まりと決着しないを区別するモード（サイトの分岐選択）でも捕まりではない
+        let mut solver = EscapeSolver::new(2_000_000, no_cancel());
+        let set = InfoSet::from_fresh(vec![pos]);
+        assert_eq!(solver.solve_min_budget(&set, true, 3, 2), (Verdict::Undecided, None));
+    }
+
+    #[test]
+    fn 逃れの判定専用モードでも逃れ・捕まりの判定は同じ() {
+        let set = InfoSet::from_fresh(vec![lone_king_vs_gold()]);
+        for fouls in 0..=2 {
+            let mut full = EscapeSolver::new(1_000_000, no_cancel());
+            let mut fast = EscapeSolver::new(1_000_000, no_cancel());
+            fast.set_escape_only(true);
+            let a = full.solve_min_budget(&set, true, fouls, 4);
+            let b = fast.solve_min_budget(&set, true, fouls, 4);
+            // 逃れ・捕まりの決着は一致する（決着しないの中身だけが粗くなる）
+            if a.0 == Verdict::Escape || b.0 == Verdict::Escape {
+                assert_eq!(a, b, "fouls={fouls}");
+            }
+        }
     }
 
     #[test]

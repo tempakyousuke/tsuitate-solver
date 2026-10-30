@@ -60,7 +60,9 @@
 //! --max-checks / budget は攻め方の王手を何回先まで読むか（読みの深さ）で、そこまでに
 //! どちらも決着を強制できなければ undecided（受け方の負けではない）。
 //! --escape は反則 0..=--max-fouls（既定 9）回で、攻め方の王手を --max-checks（既定 6）回
-//! 先まで読んで逃れを強制できるかを調べ、逃れに必要な最少の反則回数と王手の回数を返す:
+//! 先まで読んで逃れを強制できるかを調べ、逃れに必要な最少の反則回数と王手の回数を返す
+//! （逃れの判定専用モードで読むので、escape 以外の undecided は「逃れを強制できない」の意味で、
+//! 捕まりも含む）:
 //!   {"verdict":"escape|caught|undecided|unknown","minFouls":N|null,"checks":N|null,
 //!    "depth":N|null,"nodes":N,"timedOut":bool,"firstCheckPositions":N,
 //!    "firstCheckGroups":N,"rootTries":N|null,"rootSolutions":N|null}
