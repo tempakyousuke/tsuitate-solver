@@ -67,7 +67,10 @@
 //!    "depth":N|null,"nodes":N,"timedOut":bool,"firstCheckPositions":N,
 //!    "firstCheckGroups":N,"rootTries":N|null,"rootSolutions":N|null}
 //! --escape-meta はサイトの挑戦モードが攻め方の分岐を選ぶための問い合わせ:
-//!   {"queries":[{"node":"attack|defense","fouls":N,"budget":N,"positions":[...]}]}
+//!   {"queries":[{"node":"attack|defense","fouls":N,"budget":N,"positions":[...],
+//!                "escape_only":bool?,"node_limit":N?}]}
+//! escape_only は逃れの判定専用モード（逃れられるかだけを速く判定する。undecided は
+//! 捕まりも含む）、node_limit はそのクエリだけのノード上限。
 //!   → {"ok":true,"results":[{"result":"escape|caught|undecided|unknown","minBudget":N|null,"nodes":N}]}
 //! minBudget は決着が付いた最小の読みの深さ（escape なら逃れに、caught なら捕まえるのに
 //! 要る王手の回数）。決定性のためノード上限（既定 200,000）
@@ -888,6 +891,13 @@ struct EscapeMetaQueryJson {
     fouls: u8,
     budget: u32,
     positions: Vec<EscapeQuestionJson>,
+    /// 逃れの判定専用モードで読む（逃れられるかだけを知りたいとき。速い）。
+    /// このモードの undecided は「逃れを強制できない」の意味で、捕まりも含む
+    #[serde(default)]
+    escape_only: bool,
+    /// このクエリだけのノード上限（省略時は --node-limit）
+    #[serde(default)]
+    node_limit: Option<u64>,
 }
 
 fn parse_escape_query(q: &EscapeMetaQueryJson) -> Result<(InfoSet, bool), String> {
@@ -912,10 +922,12 @@ fn parse_escape_query(q: &EscapeMetaQueryJson) -> Result<(InfoSet, bool), String
 }
 
 /// 1クエリを判定する。決着したときはそれに要る最小の予算も返す（反復深化）
-fn answer_escape_query(solver: &mut EscapeSolver, set: &InfoSet, attack: bool, fouls: u8, budget: u32, node_limit: u64) -> serde_json::Value {
+fn answer_escape_query(solver: &mut EscapeSolver, set: &InfoSet, attack: bool, q: &EscapeMetaQueryJson, node_limit: u64) -> serde_json::Value {
     let start = solver.nodes;
-    solver.set_node_limit(start.saturating_add(node_limit));
-    let (verdict, min_budget) = solver.solve_min_budget(set, attack, fouls, budget);
+    solver.set_node_limit(start.saturating_add(q.node_limit.unwrap_or(node_limit)));
+    // 転置表は両モードで共有してよい（判定専用モードの結果は区別するモードからは引かない）
+    solver.set_escape_only(q.escape_only);
+    let (verdict, min_budget) = solver.solve_min_budget(set, attack, q.fouls, q.budget);
     json!({
         "result": verdict_name(verdict),
         "minBudget": min_budget,
@@ -934,7 +946,7 @@ fn escape_meta_response(solver: &mut EscapeSolver, request: &EscapeMetaRequestJs
     let results: Vec<serde_json::Value> = parsed
         .iter()
         .zip(&request.queries)
-        .map(|((set, attack), q)| answer_escape_query(solver, set, *attack, q.fouls, q.budget, node_limit))
+        .map(|((set, attack), q)| answer_escape_query(solver, set, *attack, q, node_limit))
         .collect();
     json!({ "ok": true, "results": results })
 }
