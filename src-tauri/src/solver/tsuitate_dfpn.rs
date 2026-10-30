@@ -694,7 +694,7 @@ fn is_slider_for_direction(kind: PieceKind, df: i8, dr: i8, color: Color) -> boo
 /// 開き王手の候補マスを計算
 /// king_sq から8方向をスキャンし、攻め方の駒の後ろにスライダーがある場合、
 /// 手前の駒のマスを discovery_square として返す
-fn compute_discovery_squares(pos: &Position, king_sq: Square, attacker: Color) -> Vec<Square> {
+pub(crate) fn compute_discovery_squares(pos: &Position, king_sq: Square, attacker: Color) -> Vec<Square> {
     let directions: [(i8, i8); 8] = [
         (0, -1), (0, 1), (-1, 0), (1, 0),
         (-1, -1), (-1, 1), (1, -1), (1, 1),
@@ -739,7 +739,7 @@ fn compute_discovery_squares(pos: &Position, king_sq: Square, attacker: Color) -
 /// 打ちは駒を退かさないので開き王手にはならず、王手になる打ちは必ず
 /// このマスクの中にある（偽陰性なし）。初回アクセス時に一度だけ構築する。
 /// サイズは 2(色) × 7(持ち駒種) × 81(玉の位置) = 1134 個のビットボード。
-fn drop_check_mask(color: Color, kind: PieceKind, ksq: Square) -> Bitboard {
+pub(crate) fn drop_check_mask(color: Color, kind: PieceKind, ksq: Square) -> Bitboard {
     static MASKS: std::sync::OnceLock<Vec<Bitboard>> = std::sync::OnceLock::new();
     let masks = MASKS.get_or_init(|| {
         let mut v = vec![0 as Bitboard; 2 * 7 * 81];
@@ -771,7 +771,7 @@ fn drop_check_mask(color: Color, kind: PieceKind, ksq: Square) -> Bitboard {
 }
 
 /// 手 mv が king_sq に王手を与えうるかの粗判定（偽陰性なし）
-fn could_give_check(mv: &Move, king_sq: Square, discovery_sqs: &[Square], attacker: Color) -> bool {
+pub(crate) fn could_give_check(mv: &Move, king_sq: Square, discovery_sqs: &[Square], attacker: Color) -> bool {
     // A. 直接王手の可能性
     let piece_kind_after = if let Some(drop_kind) = mv.drop_piece {
         drop_kind

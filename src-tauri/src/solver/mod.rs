@@ -1,4 +1,5 @@
 pub mod defense;
+pub mod escape;
 pub mod fasthash;
 pub mod metaposition;
 pub mod rating;

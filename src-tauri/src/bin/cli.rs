@@ -10,6 +10,10 @@
 //!   tsuitate-solver-cli --solve-meta <request.json> [--node-limit N]
 //!                       [--scan-node-limit N] [--parallel N]
 //!   tsuitate-solver-cli --solve-meta-server [--node-limit N] [--scan-node-limit N]
+//!   tsuitate-solver-cli --escape <question.json> [--max-fouls N] [--max-checks N]
+//!                       [--node-limit N] [--timeout-secs N]
+//!   tsuitate-solver-cli --escape-meta <request.json> [--node-limit N]
+//!   tsuitate-solver-cli --escape-meta-server [--node-limit N]
 //!
 //! --memory-limit-mb は本プロセスのピーク RSS の上限（MB）。超過すると探索を
 //! 打ち切り、出力の memoryLimited が true になる。本解の発見後（余詰め探索中）に
@@ -47,6 +51,30 @@
 //! 本解を求めるより時間がかかる（オフラインの問題生成パイプライン向け）。
 //! 出力の rating に値と特徴量が入る。式は solver::rating を参照。
 //! --rating-node-limit は初手ごとの判定に使うノード予算（既定 200,000）。
+//!
+//! --escape / --escape-meta / --escape-meta-server は**ついたて詰み逃れ**
+//! （受け方が衝立の向こうの王手から逃れる問題。solver::escape）用。
+//! 問題 JSON は両者の持ち駒を明示し（sente_hand / gote_hand。書かれていない駒は
+//! 駒箱）、手番 side_to_move は攻め方（既定 "gote"）。
+//! 王手の回数に上限は無い（攻め方が王手し続けても受け方は逃げ続けてよい）。
+//! --max-checks / budget は攻め方の王手を何回先まで読むか（読みの深さ）で、そこまでに
+//! どちらも決着を強制できなければ undecided（受け方の負けではない）。
+//! --escape は反則 0..=--max-fouls（既定 9）回で、攻め方の王手を --max-checks（既定 6）回
+//! 先まで読んで逃れを強制できるかを調べ、逃れに必要な最少の反則回数と王手の回数を返す
+//! （逃れの判定専用モードで読むので、escape 以外の undecided は「逃れを強制できない」の意味で、
+//! 捕まりも含む）:
+//!   {"verdict":"escape|caught|undecided|unknown","minFouls":N|null,"checks":N|null,
+//!    "depth":N|null,"nodes":N,"timedOut":bool,"firstCheckPositions":N,
+//!    "firstCheckGroups":N,"rootTries":N|null,"rootSolutions":N|null}
+//! --escape-meta はサイトの挑戦モードが攻め方の分岐を選ぶための問い合わせ:
+//!   {"queries":[{"node":"attack|defense","fouls":N,"budget":N,"positions":[...],
+//!                "escape_only":bool?,"node_limit":N?}]}
+//! escape_only は逃れの判定専用モード（逃れられるかだけを速く判定する。undecided は
+//! 捕まりも含む）、node_limit はそのクエリだけのノード上限。
+//!   → {"ok":true,"results":[{"result":"escape|caught|undecided|unknown","minBudget":N|null,"nodes":N}]}
+//! minBudget は決着が付いた最小の読みの深さ（escape なら逃れに、caught なら捕まえるのに
+//! 要る王手の回数）。決定性のためノード上限（既定 200,000）
+//! だけで打ち切る。--escape-meta-server はその常駐版（stdin の行区切りJSON）。
 //!
 //! 終了コード: 0 = 探索実行（found の真偽は JSON を参照）, 2 = 入力不正
 
@@ -86,6 +114,7 @@ use tsuitate_solver_lib::shogi::types::*;
 use tsuitate_solver_lib::solver::defense::{
     solve_meta_query, solve_meta_query_with, MetaQueryResult,
 };
+use tsuitate_solver_lib::solver::escape::{analyze_escape, EscapeSolver, InfoSet, Verdict};
 use tsuitate_solver_lib::solver::metaposition::MetaPosition;
 use tsuitate_solver_lib::solver::rating::{
     estimate_rating, tree_branch_stats, RatingEstimate, RatingFeatures, FORMULA_VERSION,
@@ -243,6 +272,16 @@ struct Args {
     estimate_rating: bool,
     /// レート推定の初手ごとのノード予算
     rating_node_limit: u64,
+    /// --escape: 詰み逃れの問題を検証する
+    escape: bool,
+    /// --escape-meta: 詰み逃れの挑戦モード用の情報集合クエリ
+    escape_meta: bool,
+    /// --escape-meta-server: --escape-meta の常駐モード
+    escape_meta_server: bool,
+    /// --escape: 調べる反則回数の上限
+    max_fouls: u8,
+    /// --escape: 攻め方の王手を何回先まで読むか（読みの深さ。ルール上の上限ではない）
+    max_checks: u32,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -260,6 +299,11 @@ fn parse_args() -> Result<Args, String> {
     let mut parallel: usize = 1;
     let mut estimate_rating = false;
     let mut rating_node_limit: u64 = 200_000;
+    let mut escape = false;
+    let mut escape_meta = false;
+    let mut escape_meta_server = false;
+    let mut max_fouls: u8 = 9;
+    let mut max_checks: u32 = 6;
 
     let mut iter = std::env::args().skip(1);
     while let Some(arg) = iter.next() {
@@ -269,6 +313,17 @@ fn parse_args() -> Result<Args, String> {
             "--solve-meta" => solve_meta = true,
             "--solve-meta-server" => solve_meta_server = true,
             "--estimate-rating" => estimate_rating = true,
+            "--escape" => escape = true,
+            "--escape-meta" => escape_meta = true,
+            "--escape-meta-server" => escape_meta_server = true,
+            "--max-fouls" => {
+                let v = iter.next().ok_or("--max-fouls requires a value")?;
+                max_fouls = v.parse().map_err(|_| format!("Invalid --max-fouls: {}", v))?;
+            }
+            "--max-checks" => {
+                let v = iter.next().ok_or("--max-checks requires a value")?;
+                max_checks = v.parse().map_err(|_| format!("Invalid --max-checks: {}", v))?;
+            }
             "--rating-node-limit" => {
                 let v = iter.next().ok_or("--rating-node-limit requires a value")?;
                 rating_node_limit =
@@ -316,8 +371,8 @@ fn parse_args() -> Result<Args, String> {
         }
     }
 
-    if input.is_none() && !solve_meta_server {
-        return Err("Usage: tsuitate-solver-cli <question.json> [--find-second] [--shortest] [--node-limit N] [--timeout-secs N] [--memory-limit-mb N] [--estimate-rating] [--rating-node-limit N] | --solve-meta <request.json> [--node-limit N] [--scan-node-limit N|auto|unlimited] [--parallel N] | --solve-meta-server [--node-limit N] [--scan-node-limit N|auto|unlimited]".to_string());
+    if input.is_none() && !solve_meta_server && !escape_meta_server {
+        return Err("Usage: tsuitate-solver-cli <question.json> [--find-second] [--shortest] [--node-limit N] [--timeout-secs N] [--memory-limit-mb N] [--estimate-rating] [--rating-node-limit N] | --solve-meta <request.json> [--node-limit N] [--scan-node-limit N|auto|unlimited] [--parallel N] | --solve-meta-server [--node-limit N] [--scan-node-limit N|auto|unlimited] | --escape <question.json> [--max-fouls N] [--max-checks N] [--node-limit N] [--timeout-secs N] | --escape-meta <request.json> [--node-limit N] | --escape-meta-server [--node-limit N]".to_string());
     }
     Ok(Args {
         input,
@@ -333,6 +388,11 @@ fn parse_args() -> Result<Args, String> {
         parallel,
         estimate_rating,
         rating_node_limit,
+        escape,
+        escape_meta,
+        escape_meta_server,
+        max_fouls,
+        max_checks,
     })
 }
 
@@ -375,10 +435,27 @@ struct MetaPositionJson {
 
 /// 明示された持ち駒つきの局面 JSON → Position（自動算出はしない）
 fn position_from_meta_json(p: &MetaPositionJson) -> Result<Position, String> {
+    let mut pos = position_from_parts(&p.board, &p.sente_hand, &p.gote_hand)?;
+    if pos.find_king(Color::Gote).is_none() {
+        return Err("後手の玉が配置されていません".to_string());
+    }
+    pos.side_to_move = match &p.side_to_move {
+        Some(s) => parse_color(s)?,
+        None => Color::Sente,
+    };
+    Ok(pos)
+}
+
+/// 盤上の駒と両者の持ち駒（明示）から局面を作る。玉の有無・手番は呼び出し側で決める
+fn position_from_parts(
+    board: &[BoardPiece],
+    sente_hand: &[HandPieceJson],
+    gote_hand: &[HandPieceJson],
+) -> Result<Position, String> {
     let mut pos = Position::new();
     let mut used_counts = [0u8; 7];
 
-    for bp in &p.board {
+    for bp in board {
         if !(1..=9).contains(&bp.file) || !(1..=9).contains(&bp.rank) {
             return Err(format!("Square out of range: file={}, rank={}", bp.file, bp.rank));
         }
@@ -395,7 +472,7 @@ fn position_from_meta_json(p: &MetaPositionJson) -> Result<Position, String> {
             used_counts[idx] += 1;
         }
     }
-    for (hand_json, color) in [(&p.sente_hand, Color::Sente), (&p.gote_hand, Color::Gote)] {
+    for (hand_json, color) in [(sente_hand, Color::Sente), (gote_hand, Color::Gote)] {
         for hp in hand_json.iter() {
             let kind = parse_piece_kind(&hp.kind)?;
             if kind != kind.unpromoted() || kind == PieceKind::King {
@@ -417,13 +494,6 @@ fn position_from_meta_json(p: &MetaPositionJson) -> Result<Position, String> {
             return Err(format!("Too many pieces of kind {:?}: {} > {}", kind, used_counts[idx], max));
         }
     }
-    if pos.find_king(Color::Gote).is_none() {
-        return Err("後手の玉が配置されていません".to_string());
-    }
-    pos.side_to_move = match &p.side_to_move {
-        Some(s) => parse_color(s)?,
-        None => Color::Sente,
-    };
     Ok(pos)
 }
 
@@ -700,6 +770,231 @@ fn analyze_root_moves(
     Some((tries, checks, solutions))
 }
 
+// ===== ついたて詰み逃れ（--escape / --escape-meta / --escape-meta-server） =====
+
+/// 詰み逃れの問題 JSON。持ち駒は両者とも明示し（書かれていない駒は駒箱）、
+/// 手番は攻め方（既定は後手 = 受け方が先手で盤の手前側）
+#[derive(Debug, Deserialize)]
+struct EscapeQuestionJson {
+    board: Vec<BoardPiece>,
+    #[serde(default)]
+    sente_hand: Vec<HandPieceJson>,
+    #[serde(default)]
+    gote_hand: Vec<HandPieceJson>,
+    #[serde(default)]
+    side_to_move: Option<String>,
+}
+
+/// 詰み逃れの局面を作る。`attack_to_move` なら手番側が攻め方、そうでなければ受け方。
+/// 受け方の玉は必須、攻め方の玉は任意（双玉でもよい）
+fn escape_position(q: &EscapeQuestionJson, default_side: Color, attack_to_move: bool) -> Result<Position, String> {
+    let mut pos = position_from_parts(&q.board, &q.sente_hand, &q.gote_hand)?;
+    pos.side_to_move = match &q.side_to_move {
+        Some(s) => parse_color(s)?,
+        None => default_side,
+    };
+    let defender = if attack_to_move { pos.side_to_move.opponent() } else { pos.side_to_move };
+    if pos.find_king(defender).is_none() {
+        return Err("受け方の玉が配置されていません".to_string());
+    }
+    for color in [Color::Sente, Color::Gote] {
+        let kings = (1..=9u8)
+            .flat_map(|f| (1..=9u8).map(move |r| Square::new(f, r)))
+            .filter(|&sq| pos.piece_at(sq) == Some(Piece::new(color, PieceKind::King)))
+            .count();
+        if kings > 1 {
+            return Err("玉が2枚以上あります".to_string());
+        }
+    }
+    if attack_to_move && pos.is_in_check(defender) {
+        return Err("攻め方の手番なのに受け方が王手されています".to_string());
+    }
+    pos.init_zobrist_hash();
+    Ok(pos)
+}
+
+fn verdict_name(v: Verdict) -> &'static str {
+    match v {
+        Verdict::Escape => "escape",
+        Verdict::Caught => "caught",
+        Verdict::Undecided => "undecided",
+        Verdict::Unknown => "unknown",
+    }
+}
+
+/// --escape: 問題の検証。逃れに必要な最少の反則回数と、その反則回数で
+/// 逃れきるまでの攻め方の王手の回数（最悪の場合）を求める
+fn run_escape(json_str: &str, args: &Args) -> ExitCode {
+    let question: EscapeQuestionJson = match serde_json::from_str(json_str) {
+        Ok(q) => q,
+        Err(e) => {
+            eprintln!("Failed to parse escape question: {}", e);
+            return ExitCode::from(2);
+        }
+    };
+    let pos = match escape_position(&question, Color::Gote, true) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Invalid position: {}", e);
+            return ExitCode::from(2);
+        }
+    };
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let timeout_fired = Arc::new(AtomicBool::new(false));
+    if args.timeout_secs > 0 {
+        let cancel = cancel.clone();
+        let fired = timeout_fired.clone();
+        let secs = args.timeout_secs;
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(secs));
+            fired.store(true, Ordering::Relaxed);
+            cancel.store(true, Ordering::Relaxed);
+        });
+    }
+
+    let analysis = analyze_escape(pos, args.max_fouls, args.max_checks, args.node_limit, cancel);
+    let timed_out = analysis.verdict == Verdict::Unknown && timeout_fired.load(Ordering::Relaxed);
+    println!(
+        "{}",
+        json!({
+            "verdict": verdict_name(analysis.verdict),
+            "minFouls": analysis.min_fouls,
+            "checks": analysis.checks,
+            // 手数（攻め方の王手と受け方の受理された手の合計）。反則は数えない
+            "depth": analysis.checks.map(|c| c * 2),
+            "maxFouls": args.max_fouls,
+            "maxChecks": args.max_checks,
+            "nodes": analysis.nodes,
+            "timedOut": timed_out,
+            "firstCheckPositions": analysis.first_check_positions,
+            "firstCheckGroups": analysis.first_check_groups,
+            "rootTries": analysis.root_tries,
+            "rootSolutions": analysis.root_solutions,
+        })
+    );
+    ExitCode::SUCCESS
+}
+
+/// --escape-meta のリクエスト
+#[derive(Debug, Deserialize)]
+struct EscapeMetaRequestJson {
+    #[serde(default)]
+    queries: Vec<EscapeMetaQueryJson>,
+}
+
+/// 1クエリ = 情報集合 + 反則の残り + 読みの深さ（攻め方の王手の回数）
+#[derive(Debug, Deserialize)]
+struct EscapeMetaQueryJson {
+    /// "attack"（攻め方の手番）か "defense"（受け方の手番・王手されている）
+    node: String,
+    fouls: u8,
+    budget: u32,
+    positions: Vec<EscapeQuestionJson>,
+    /// 逃れの判定専用モードで読む（逃れられるかだけを知りたいとき。速い）。
+    /// このモードの undecided は「逃れを強制できない」の意味で、捕まりも含む
+    #[serde(default)]
+    escape_only: bool,
+    /// このクエリだけのノード上限（省略時は --node-limit）
+    #[serde(default)]
+    node_limit: Option<u64>,
+}
+
+fn parse_escape_query(q: &EscapeMetaQueryJson) -> Result<(InfoSet, bool), String> {
+    let attack = match q.node.as_str() {
+        "attack" => true,
+        "defense" => false,
+        other => return Err(format!("unknown node: {}", other)),
+    };
+    if q.positions.is_empty() {
+        return Err("empty positions in query".to_string());
+    }
+    let mut positions = Vec::with_capacity(q.positions.len());
+    for p in &q.positions {
+        let default_side = if attack { Color::Gote } else { Color::Sente };
+        positions.push(escape_position(p, default_side, attack)?);
+    }
+    let side = positions[0].side_to_move;
+    if positions.iter().any(|p| p.side_to_move != side) {
+        return Err("positions have different sides to move".to_string());
+    }
+    Ok((InfoSet::new(positions), attack))
+}
+
+/// 1クエリを判定する。決着したときはそれに要る最小の予算も返す（反復深化）
+fn answer_escape_query(solver: &mut EscapeSolver, set: &InfoSet, attack: bool, q: &EscapeMetaQueryJson, node_limit: u64) -> serde_json::Value {
+    let start = solver.nodes;
+    solver.set_node_limit(start.saturating_add(q.node_limit.unwrap_or(node_limit)));
+    // 転置表は両モードで共有してよい（判定専用モードの結果は区別するモードからは引かない）
+    solver.set_escape_only(q.escape_only);
+    let (verdict, min_budget) = solver.solve_min_budget(set, attack, q.fouls, q.budget);
+    json!({
+        "result": verdict_name(verdict),
+        "minBudget": min_budget,
+        "nodes": solver.nodes - start,
+    })
+}
+
+fn escape_meta_response(solver: &mut EscapeSolver, request: &EscapeMetaRequestJson, node_limit: u64) -> serde_json::Value {
+    let mut parsed = Vec::with_capacity(request.queries.len());
+    for q in &request.queries {
+        match parse_escape_query(q) {
+            Ok(p) => parsed.push(p),
+            Err(e) => return json!({ "ok": false, "error": format!("invalid query: {}", e) }),
+        }
+    }
+    let results: Vec<serde_json::Value> = parsed
+        .iter()
+        .zip(&request.queries)
+        .map(|((set, attack), q)| answer_escape_query(solver, set, *attack, q, node_limit))
+        .collect();
+    json!({ "ok": true, "results": results })
+}
+
+/// --escape-meta: サイトの詰み逃れの挑戦モードが攻め方の分岐を選ぶための問い合わせ。
+/// 決定性のためタイムアウトは使わずノード上限だけで打ち切る
+fn run_escape_meta(json_str: &str, node_limit: u64) -> ExitCode {
+    let request: EscapeMetaRequestJson = match serde_json::from_str(json_str) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Failed to parse escape-meta request: {}", e);
+            return ExitCode::from(2);
+        }
+    };
+    let mut solver = EscapeSolver::new(u64::MAX, Arc::new(AtomicBool::new(false)));
+    let response = escape_meta_response(&mut solver, &request, node_limit);
+    if response["ok"] == json!(false) {
+        eprintln!("{}", response["error"]);
+        return ExitCode::from(2);
+    }
+    println!("{}", response);
+    ExitCode::SUCCESS
+}
+
+/// --escape-meta-server: --escape-meta の常駐モード。stdin から行区切りJSONを受け、
+/// 1行ずつ結果を返す。転置表（逃れ・捕まりの恒久的事実）を問い合わせをまたいで温存する
+fn run_escape_meta_server(node_limit: u64) -> ExitCode {
+    use std::io::{BufRead, Write};
+
+    let mut solver = EscapeSolver::new(u64::MAX, Arc::new(AtomicBool::new(false)));
+    let stdin = std::io::stdin();
+    for line in stdin.lock().lines() {
+        let Ok(line) = line else { break };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let response = match serde_json::from_str::<EscapeMetaRequestJson>(&line) {
+            Err(e) => json!({ "ok": false, "error": format!("parse: {}", e) }),
+            Ok(request) => escape_meta_response(&mut solver, &request, node_limit),
+        };
+        let mut out = std::io::stdout().lock();
+        if writeln!(out, "{}", response).and_then(|_| out.flush()).is_err() {
+            break;
+        }
+    }
+    ExitCode::SUCCESS
+}
+
 fn main() -> ExitCode {
     let args = match parse_args() {
         Ok(a) => a,
@@ -715,6 +1010,11 @@ fn main() -> ExitCode {
     if args.solve_meta_server {
         return run_solve_meta_server(meta_node_limit, args.scan_node_limit);
     }
+    // 詰み逃れの情報集合は1ノードで集合を丸ごと展開するので、詰将棋より1ノードが重い
+    let escape_meta_node_limit = if args.node_limit_given { args.node_limit } else { 200_000 };
+    if args.escape_meta_server {
+        return run_escape_meta_server(escape_meta_node_limit);
+    }
 
     let input = args.input.as_deref().expect("parse_args で検証済み");
     let json_str = match std::fs::read_to_string(input) {
@@ -726,6 +1026,12 @@ fn main() -> ExitCode {
     };
     if args.solve_meta {
         return run_solve_meta(&json_str, meta_node_limit, args.scan_node_limit, args.parallel);
+    }
+    if args.escape_meta {
+        return run_escape_meta(&json_str, escape_meta_node_limit);
+    }
+    if args.escape {
+        return run_escape(&json_str, &args);
     }
     let question: QuestionJson = match serde_json::from_str(&json_str) {
         Ok(q) => q,
