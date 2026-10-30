@@ -51,6 +51,8 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use serde::Serialize;
+
 use super::fasthash::{FxHashMap, FxHashSet};
 use super::tsuitate_dfpn::{compute_discovery_squares, could_give_check, drop_check_mask};
 use crate::shogi::movegen::{generate_board_moves, generate_drop_moves_masked};
@@ -280,6 +282,29 @@ pub fn split_defense(set: &InfoSet, mv: &Move) -> DefenseSplit {
     }
 }
 
+/// 受け方の手番で試す価値のある手と、その分割。
+/// 確定反則（どの局面でも受理されない）と、反則の残りが無いのに反則になり得る手（即負け）は除く。
+/// 反則の心配が無く、受理後の集合が小さい手から並べる（逃れが見つかれば打ち切れるように）
+fn defense_options(set: &InfoSet, fouls: u8) -> Vec<(Move, DefenseSplit)> {
+    let mut options: Vec<(Move, DefenseSplit)> = Vec::new();
+    for mv in defense_candidates(set) {
+        let split = split_defense(set, &mv);
+        if split.accepted.is_empty() {
+            continue;
+        }
+        if split.foul.is_some() && fouls == 0 {
+            continue;
+        }
+        options.push((mv, split));
+    }
+    options.sort_by_key(|(_, s)| {
+        let foul = s.foul.as_ref().map_or(0, |f| f.len());
+        let largest = s.accepted.iter().map(|(_, _, g)| g.len()).max().unwrap_or(0);
+        (foul > 0, largest, foul)
+    });
+    options
+}
+
 fn hand_order(kind: PieceKind) -> u8 {
     match kind {
         PieceKind::Pawn => 1,
@@ -463,26 +488,7 @@ impl EscapeSolver {
             return Verdict::Unknown;
         }
 
-        let mut options: Vec<(Move, DefenseSplit)> = Vec::new();
-        for mv in defense_candidates(set) {
-            let split = split_defense(set, &mv);
-            // どの局面でも受理されない手（確定反則）は指す意味がない
-            if split.accepted.is_empty() {
-                continue;
-            }
-            // 反則の残りが無いのに反則になり得る手は即負け
-            if split.foul.is_some() && fouls == 0 {
-                continue;
-            }
-            options.push((mv, split));
-        }
-        // 反則の心配が無く、受理後の集合が小さい手から試す（逃れが見つかれば打ち切る）
-        options.sort_by_key(|(_, s)| {
-            let foul = s.foul.as_ref().map_or(0, |f| f.len());
-            let largest = s.accepted.iter().map(|(_, _, g)| g.len()).max().unwrap_or(0);
-            (foul > 0, largest, foul)
-        });
-
+        let options = defense_options(set, fouls);
         let mut verdict = Verdict::Caught;
         for (_, split) in &options {
             verdict = defender_pick(verdict, self.evaluate_split(split, fouls, budget));
@@ -550,6 +556,200 @@ impl EscapeSolver {
     }
 }
 
+// ===== 正解（受け方の逃れ方）の木 =====
+//
+// 詰み逃れの正解は1本の手順ではなく、受け方の**作戦**になる。攻め方の手は見えず、
+// 後から差し替えられもするので、受け方が分かるのは審判の声（攻め方の王手で取られた
+// 自駒のマス・自分の手の反則/受理・取った駒・攻め方の玉への王手）だけ。正解は
+// 「この声が聞こえたらこの手」を声ごとに枝分かれさせた木で表す:
+//
+//   攻め方の手番（EscapeAttackNode）
+//     ├ 王手が無い → 逃れ（escaped）
+//     └ 王手の声（取られたマス）ごとに → 受け方の手番（EscapeDefenseNode）
+//          指す手（move）
+//          ├ 反則と言われたら → 受け方の手番（同じ集合で反則の残りが1つ減る）
+//          └ 受理の声（取った駒・攻め方の玉に王手）ごとに → 攻め方の手番
+//
+// 局面そのもの（攻め方の駒の置き方）は木に入れない。受け方には見えないし、
+// 攻め方は声と食い違わない範囲で差し替えられるので、1つに決まらない。
+
+/// 攻め方の手番（受け方の手が受理された後、または初形）
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EscapeAttackNode {
+    /// 攻め方はもう王手をかけられない（逃れ）
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub escaped: bool,
+    /// 攻め方の王手の声（取られた自駒のマス）ごとの受け方の手。並びは決定的
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<EscapeCheckBranch>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EscapeCheckBranch {
+    /// 攻め方の王手で取られた自駒のマス（USI。取られなければ null）
+    pub captured_at: Option<String>,
+    pub defense: EscapeDefenseNode,
+}
+
+/// 受け方の手番（王手されている）
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EscapeDefenseNode {
+    /// 指す手（USI）
+    #[serde(rename = "move")]
+    pub mv: String,
+    /// この手が反則と言われたときの続き（反則になり得ない手なら null）
+    pub foul: Option<Box<EscapeDefenseNode>>,
+    /// 受理されたときの声ごとの続き
+    pub accepted: Vec<EscapeAcceptBranch>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EscapeAcceptBranch {
+    /// 取った駒の種類（成駒は元の駒。取らなければ null）
+    pub captured: Option<&'static str>,
+    /// この手で攻め方の玉に王手をかけた（双玉の問題でのみ true になり得る）
+    pub gave_check: bool,
+    pub next: EscapeAttackNode,
+}
+
+/// 木がこれより大きくなったら正解を出さない（表示できる大きさでなくなる）
+const MAX_SOLUTION_NODES: usize = 5_000;
+
+fn usi_square(sq: Square) -> String {
+    format!("{}{}", sq.file, (b'a' + sq.rank - 1) as char)
+}
+
+fn usi_move(mv: &Move) -> String {
+    match (mv.drop_piece, mv.from) {
+        (Some(kind), _) => format!("{}*{}", usi_drop_letter(kind), usi_square(mv.to)),
+        (None, Some(from)) => format!(
+            "{}{}{}",
+            usi_square(from),
+            usi_square(mv.to),
+            if mv.promotion { "+" } else { "" }
+        ),
+        (None, None) => usi_square(mv.to),
+    }
+}
+
+fn usi_drop_letter(kind: PieceKind) -> char {
+    match kind {
+        PieceKind::Rook => 'R',
+        PieceKind::Bishop => 'B',
+        PieceKind::Gold => 'G',
+        PieceKind::Silver => 'S',
+        PieceKind::Knight => 'N',
+        PieceKind::Lance => 'L',
+        _ => 'P',
+    }
+}
+
+/// 持ち駒の駒種の名前（サイトの HandRole と同じ）
+fn hand_role_name(kind: PieceKind) -> &'static str {
+    match kind.unpromoted() {
+        PieceKind::Rook => "rook",
+        PieceKind::Bishop => "bishop",
+        PieceKind::Gold => "gold",
+        PieceKind::Silver => "silver",
+        PieceKind::Knight => "knight",
+        PieceKind::Lance => "lance",
+        PieceKind::Pawn => "pawn",
+        _ => "king",
+    }
+}
+
+impl EscapeSolver {
+    /// 攻め方の手番の情報集合から、反則の残り fouls・読みの深さ budget で逃れる
+    /// 正解の木を作る。逃れを強制できない・ノード上限・木が大きすぎるときは None。
+    ///
+    /// 受け方の手番では、逃れを強制できる手のうち**逃れまでの王手が最も少ない**手を選ぶ
+    /// （同じ回数なら、反則の心配が無く受理後の集合が小さい手。並びは `defense_options`）
+    pub fn solution_tree(&mut self, set: &InfoSet, fouls: u8, budget: u32) -> Option<EscapeAttackNode> {
+        let mut count = 0usize;
+        self.extract_attack(set, fouls, budget, &mut count)
+    }
+
+    fn extract_attack(
+        &mut self,
+        set: &InfoSet,
+        fouls: u8,
+        budget: u32,
+        count: &mut usize,
+    ) -> Option<EscapeAttackNode> {
+        *count += 1;
+        if *count > MAX_SOLUTION_NODES {
+            return None;
+        }
+        match expand_attack(set) {
+            AttackExpansion::NoCheck => Some(EscapeAttackNode { escaped: true, checks: Vec::new() }),
+            AttackExpansion::Mate => None,
+            AttackExpansion::Groups(_) if budget == 0 => None,
+            AttackExpansion::Groups(groups) => {
+                let mut checks = Vec::with_capacity(groups.len());
+                for (sq, group) in &groups {
+                    let defense = self.extract_defense(group, fouls, budget - 1, count)?;
+                    checks.push(EscapeCheckBranch { captured_at: sq.map(usi_square), defense });
+                }
+                Some(EscapeAttackNode { escaped: false, checks })
+            }
+        }
+    }
+
+    fn extract_defense(
+        &mut self,
+        set: &InfoSet,
+        fouls: u8,
+        budget: u32,
+        count: &mut usize,
+    ) -> Option<EscapeDefenseNode> {
+        *count += 1;
+        if *count > MAX_SOLUTION_NODES {
+            return None;
+        }
+        let options = defense_options(set, fouls);
+        // 浅い読みから順に、逃れを強制できる最初の手を選ぶ（逃れまでの王手が最少の手）
+        for b in 0..=budget {
+            for (mv, split) in &options {
+                self.aborted = false;
+                match self.evaluate_split(split, fouls, b) {
+                    Verdict::Escape => return self.build_defense(mv, split, fouls, b, count),
+                    Verdict::Unknown => return None,
+                    Verdict::Caught | Verdict::Undecided => {}
+                }
+            }
+        }
+        None
+    }
+
+    fn build_defense(
+        &mut self,
+        mv: &Move,
+        split: &DefenseSplit,
+        fouls: u8,
+        budget: u32,
+        count: &mut usize,
+    ) -> Option<EscapeDefenseNode> {
+        let foul = match &split.foul {
+            Some(foul_set) => Some(Box::new(self.extract_defense(foul_set, fouls.checked_sub(1)?, budget, count)?)),
+            None => None,
+        };
+        let mut accepted = Vec::with_capacity(split.accepted.len());
+        for (captured, gave_check, group) in &split.accepted {
+            let next = self.extract_attack(group, fouls, budget, count)?;
+            accepted.push(EscapeAcceptBranch {
+                captured: captured.map(hand_role_name),
+                gave_check: *gave_check,
+                next,
+            });
+        }
+        Some(EscapeDefenseNode { mv: usi_move(mv), foul, accepted })
+    }
+}
+
 /// 問題の検証結果
 #[derive(Debug, Clone)]
 pub struct EscapeAnalysis {
@@ -567,6 +767,8 @@ pub struct EscapeAnalysis {
     /// (候補手の数, そのうち逃れられる手の数)。逃れられない・不明のときは None
     pub root_tries: Option<u32>,
     pub root_solutions: Option<u32>,
+    /// 正解（受け方の逃れ方）の木。逃れられて、木が表示できる大きさのときだけ
+    pub solution: Option<EscapeAttackNode>,
 }
 
 /// 初期局面（攻め方の手番）から、反則 0..=max_fouls 回で、攻め方の王手を max_checks 回
@@ -602,6 +804,7 @@ pub fn analyze_escape(
         first_check_groups,
         root_tries: None,
         root_solutions: None,
+        solution: None,
     };
 
     for fouls in 0..=max_fouls {
@@ -625,6 +828,10 @@ pub fn analyze_escape(
                 analysis.root_solutions = Some(solutions);
             }
         }
+        // 正解の木は検証済みの事実（転置表）をたどって作るのでほぼ追加の読みは要らないが、
+        // 足りない分は検証と同じだけのノードを許す
+        solver.set_node_limit(solver.nodes + node_limit);
+        analysis.solution = solver.solution_tree(&set, fouls, checks);
     }
     analysis.nodes = solver.nodes;
     analysis
@@ -841,6 +1048,91 @@ mod tests {
         let root = lone_king_vs_gold();
         let analysis = analyze_escape(root, 3, 6, 3, no_cancel());
         assert_eq!(analysis.verdict, Verdict::Unknown);
+    }
+
+    /// 正解の木を情報集合と突き合わせてたどり、攻め方のどの声にも続きがあり、
+    /// 受け方の手が反則負けにならず、葉がすべて逃れであることを確かめる。
+    /// 戻り値は木の上の受け方の手の数
+    fn check_attack(node: &EscapeAttackNode, set: &InfoSet, fouls: u8) -> usize {
+        match expand_attack(set) {
+            AttackExpansion::NoCheck => {
+                assert!(node.escaped, "王手が無いのに逃れになっていない");
+                0
+            }
+            AttackExpansion::Mate => panic!("正解の木の先で詰まされる"),
+            AttackExpansion::Groups(groups) => {
+                assert!(!node.escaped);
+                assert_eq!(node.checks.len(), groups.len(), "王手の声の枝が足りない");
+                groups
+                    .iter()
+                    .zip(&node.checks)
+                    .map(|((sq, group), branch)| {
+                        assert_eq!(branch.captured_at, sq.map(usi_square));
+                        check_defense(&branch.defense, group, fouls)
+                    })
+                    .sum()
+            }
+        }
+    }
+
+    fn check_defense(node: &EscapeDefenseNode, set: &InfoSet, fouls: u8) -> usize {
+        let mv = defense_candidates(set)
+            .into_iter()
+            .find(|m| usi_move(m) == node.mv)
+            .unwrap_or_else(|| panic!("指せない手: {}", node.mv));
+        let split = split_defense(set, &mv);
+        let mut count = 1;
+        match (&split.foul, &node.foul) {
+            (Some(foul_set), Some(next)) => {
+                assert!(fouls > 0, "反則の残りが無いのに反則になり得る手");
+                count += check_defense(next, foul_set, fouls - 1);
+            }
+            (None, None) => {}
+            _ => panic!("反則の枝が局面と合わない: {}", node.mv),
+        }
+        assert_eq!(node.accepted.len(), split.accepted.len(), "受理の声の枝が足りない");
+        for ((captured, gave_check, group), branch) in split.accepted.iter().zip(&node.accepted) {
+            assert_eq!(branch.captured, captured.map(hand_role_name));
+            assert_eq!(branch.gave_check, *gave_check);
+            count += check_attack(&branch.next, group, fouls);
+        }
+        count
+    }
+
+    #[test]
+    fn 正解の木は声をすべて網羅し葉はすべて逃れ() {
+        let analysis = analyze_escape(lone_king_vs_gold(), 3, 6, 1_000_000, no_cancel());
+        let solution = analysis.solution.expect("逃れられる問題には正解がある");
+        let set = InfoSet::from_fresh(vec![lone_king_vs_gold()]);
+        let moves = check_attack(&solution, &set, analysis.min_fouls.unwrap());
+        assert!(moves >= 2);
+
+        // 最初の王手は何も取らない1通りの声だけ
+        assert_eq!(solution.checks.len(), 1);
+        assert_eq!(solution.checks[0].captured_at, None);
+        // 反則1回が要る問題なので、どこかで反則になり得る手を指す
+        fn uses_foul(node: &EscapeDefenseNode) -> bool {
+            node.foul.is_some()
+                || node.accepted.iter().any(|a| a.next.checks.iter().any(|c| uses_foul(&c.defense)))
+        }
+        assert!(uses_foul(&solution.checks[0].defense));
+    }
+
+    #[test]
+    fn 逃れられない問題に正解は無い() {
+        // 反則0回まで調べさせると逃れられない（例の局面は反則1回が要る）
+        let analysis = analyze_escape(lone_king_vs_gold(), 0, 6, 1_000_000, no_cancel());
+        assert!(analysis.solution.is_none());
+    }
+
+    #[test]
+    fn 王手が無い問題の正解は即逃れ() {
+        let mut pos = Position::new();
+        pos.set_piece(sq(5, 9), Piece::new(Color::Sente, PieceKind::King));
+        pos.set_piece(sq(1, 1), Piece::new(Color::Gote, PieceKind::Pawn));
+        pos.side_to_move = Color::Gote;
+        let analysis = analyze_escape(pos, 0, 3, 100_000, no_cancel());
+        assert!(analysis.solution.unwrap().escaped);
     }
 
     #[test]
