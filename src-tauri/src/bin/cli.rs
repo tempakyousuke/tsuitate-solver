@@ -65,7 +65,12 @@
 //! 捕まりも含む）:
 //!   {"verdict":"escape|caught|undecided|unknown","minFouls":N|null,"checks":N|null,
 //!    "depth":N|null,"nodes":N,"timedOut":bool,"firstCheckPositions":N,
-//!    "firstCheckGroups":N,"rootTries":N|null,"rootSolutions":N|null}
+//!    "firstCheckGroups":N,"rootTries":N|null,"rootSolutions":N|null,"solution":<attack>|null}
+//! solution は正解（受け方の逃れ方）の木。審判の声ごとに枝分かれする（逃れられて、
+//! 木が大きすぎないときだけ。形は solver::escape の EscapeAttackNode）:
+//!   <attack>  = {"escaped":true} | {"checks":[{"capturedAt":"5h"|null,"defense":<defense>}]}
+//!   <defense> = {"move":"5i4h","foul":<defense>|null,
+//!                "accepted":[{"captured":"gold"|null,"gaveCheck":bool,"next":<attack>}]}
 //! --escape-meta はサイトの挑戦モードが攻め方の分岐を選ぶための問い合わせ:
 //!   {"queries":[{"node":"attack|defense","fouls":N,"budget":N,"positions":[...],
 //!                "escape_only":bool?,"node_limit":N?}]}
@@ -871,6 +876,9 @@ fn run_escape(json_str: &str, args: &Args) -> ExitCode {
             "firstCheckGroups": analysis.first_check_groups,
             "rootTries": analysis.root_tries,
             "rootSolutions": analysis.root_solutions,
+            // 正解（受け方の逃れ方）の木。審判の声ごとに枝分かれする（solver::escape の
+            // EscapeAttackNode）。逃れられないとき・木が大きすぎるときは null
+            "solution": analysis.solution,
         })
     );
     ExitCode::SUCCESS
