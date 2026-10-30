@@ -56,15 +56,19 @@
 //! （受け方が衝立の向こうの王手から逃れる問題。solver::escape）用。
 //! 問題 JSON は両者の持ち駒を明示し（sente_hand / gote_hand。書かれていない駒は
 //! 駒箱）、手番 side_to_move は攻め方（既定 "gote"）。
-//! --escape は反則 0..=--max-fouls（既定 9）回・攻め方の王手 --max-checks（既定 6）回
-//! 以内で逃れられるかを調べ、逃れに必要な最少の反則回数と王手の回数を返す:
-//!   {"verdict":"escape|caught|unknown","minFouls":N|null,"checks":N|null,
+//! 王手の回数に上限は無い（攻め方が王手し続けても受け方は逃げ続けてよい）。
+//! --max-checks / budget は攻め方の王手を何回先まで読むか（読みの深さ）で、そこまでに
+//! どちらも決着を強制できなければ undecided（受け方の負けではない）。
+//! --escape は反則 0..=--max-fouls（既定 9）回で、攻め方の王手を --max-checks（既定 6）回
+//! 先まで読んで逃れを強制できるかを調べ、逃れに必要な最少の反則回数と王手の回数を返す:
+//!   {"verdict":"escape|caught|undecided|unknown","minFouls":N|null,"checks":N|null,
 //!    "depth":N|null,"nodes":N,"timedOut":bool,"firstCheckPositions":N,
 //!    "firstCheckGroups":N,"rootTries":N|null,"rootSolutions":N|null}
 //! --escape-meta はサイトの挑戦モードが攻め方の分岐を選ぶための問い合わせ:
 //!   {"queries":[{"node":"attack|defense","fouls":N,"budget":N,"positions":[...]}]}
-//!   → {"ok":true,"results":[{"result":"escape|caught|unknown","minBudget":N|null,"nodes":N}]}
-//! budget は攻め方がまだ指せる王手の回数。決定性のためノード上限（既定 200,000）
+//!   → {"ok":true,"results":[{"result":"escape|caught|undecided|unknown","minBudget":N|null,"nodes":N}]}
+//! minBudget は決着が付いた最小の読みの深さ（escape なら逃れに、caught なら捕まえるのに
+//! 要る王手の回数）。決定性のためノード上限（既定 200,000）
 //! だけで打ち切る。--escape-meta-server はその常駐版（stdin の行区切りJSON）。
 //!
 //! 終了コード: 0 = 探索実行（found の真偽は JSON を参照）, 2 = 入力不正
@@ -271,7 +275,7 @@ struct Args {
     escape_meta_server: bool,
     /// --escape: 調べる反則回数の上限
     max_fouls: u8,
-    /// --escape: 攻め方の王手の回数の上限（手数切れ）
+    /// --escape: 攻め方の王手を何回先まで読むか（読みの深さ。ルール上の上限ではない）
     max_checks: u32,
 }
 
@@ -808,6 +812,7 @@ fn verdict_name(v: Verdict) -> &'static str {
     match v {
         Verdict::Escape => "escape",
         Verdict::Caught => "caught",
+        Verdict::Undecided => "undecided",
         Verdict::Unknown => "unknown",
     }
 }
@@ -873,7 +878,7 @@ struct EscapeMetaRequestJson {
     queries: Vec<EscapeMetaQueryJson>,
 }
 
-/// 1クエリ = 情報集合 + 反則の残り + 攻め方の王手の残り予算
+/// 1クエリ = 情報集合 + 反則の残り + 読みの深さ（攻め方の王手の回数）
 #[derive(Debug, Deserialize)]
 struct EscapeMetaQueryJson {
     /// "attack"（攻め方の手番）か "defense"（受け方の手番・王手されている）
@@ -904,7 +909,7 @@ fn parse_escape_query(q: &EscapeMetaQueryJson) -> Result<(InfoSet, bool), String
     Ok((InfoSet::new(positions), attack))
 }
 
-/// 1クエリを判定する。逃れのときは逃れに要る最小の予算も返す（反復深化）
+/// 1クエリを判定する。決着したときはそれに要る最小の予算も返す（反復深化）
 fn answer_escape_query(solver: &mut EscapeSolver, set: &InfoSet, attack: bool, fouls: u8, budget: u32, node_limit: u64) -> serde_json::Value {
     let start = solver.nodes;
     solver.set_node_limit(start.saturating_add(node_limit));

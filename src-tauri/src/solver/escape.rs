@@ -18,9 +18,12 @@
 //! - **攻め方の勝ち（詰み）**: 情報集合のどこかの局面に、受け方を詰ます王手がある
 //! - **攻め方の勝ち（反則負け）**: 受け方の手がどこかの局面で反則になり得て、
 //!   許された反則の残りが 0
-//! - **攻め方の勝ち（手数切れ）**: 攻め方の王手の回数が上限に達した後も、まだ
-//!   王手できる。連続王手で逃げ回るだけでは勝ちにならない（勝利条件は
-//!   「攻め方が王手できなくなること」）。上限は探索を有限にするための予算でもある
+//!
+//! **王手の回数に上限は無い**。攻め方が王手し続けても、受け方は逃げ続けてよい
+//! （詰まず反則負けもしない限り終わらない）。ただし探索は有限でなければならないので、
+//! 攻め方の王手を `budget` 回先まで読んだところで打ち切り、そこまでにどちらも
+//! 決着を強制できなければ `Verdict::Undecided`（予算内では決着しない）とする。
+//! 予算は**読みの深さであってルールではない**（予算切れを受け方の負けにはしない）。
 //!
 //! ## 局面集合の分割（観測）
 //!
@@ -37,8 +40,9 @@
 //!
 //! 受け方の手番が OR（どれか1手で逃れればよい）、攻め方の分岐選択が AND
 //! （どの分岐を選ばれても逃れる必要がある）の深さ制限つき AND/OR 探索。
-//! 深さは攻め方の残り王手回数で数える。決定性のため時間ではなくノード数で打ち切り、
-//! 打ち切りは `Verdict::Unknown` になる。
+//! 深さは攻め方の王手の回数で数える。決定性のため時間ではなくノード数で打ち切り、
+//! 打ち切りは `Verdict::Unknown` になる（深さの打ち切りの `Undecided` とは別物。
+//! Unknown はさらに読めば Escape にも Caught にもなり得る）。
 //!
 //! 受け方の「どの局面でも反則になる手」は探索しない。反則の残りを1つ減らして
 //! 同じ集合に戻るだけなので、反則の残りが多いほど受け方が有利（単調）である以上、
@@ -58,10 +62,46 @@ use crate::shogi::types::*;
 pub enum Verdict {
     /// 受け方は予算内に逃れを強制できる
     Escape,
-    /// 攻め方は予算内に受け方を負かせる（詰み・反則負け・手数切れ）
+    /// 攻め方は予算内に受け方を負かせる（詰み・反則負け）
     Caught,
+    /// 予算（王手の回数）の内にはどちらも決着を強制できない
+    Undecided,
     /// ノード上限・キャンセルで判定できなかった
     Unknown,
+}
+
+impl Verdict {
+    /// 攻め方が分岐を選ぶときの並び（小さいほど攻め方に都合がよい）。
+    /// Unknown は Caught かもしれないので Undecided より前
+    fn attacker_rank(self) -> u8 {
+        match self {
+            Verdict::Caught => 0,
+            Verdict::Unknown => 1,
+            Verdict::Undecided => 2,
+            Verdict::Escape => 3,
+        }
+    }
+
+    /// 受け方が手を選ぶときの並び（大きいほど受け方に都合がよい）。
+    /// Unknown は Escape かもしれないので Undecided より上
+    fn defender_rank(self) -> u8 {
+        match self {
+            Verdict::Caught => 0,
+            Verdict::Undecided => 1,
+            Verdict::Unknown => 2,
+            Verdict::Escape => 3,
+        }
+    }
+}
+
+/// 攻め方が選べる分岐の判定を1つにまとめる（受け方にとって最悪のもの）
+fn attacker_pick(a: Verdict, b: Verdict) -> Verdict {
+    if b.attacker_rank() < a.attacker_rank() { b } else { a }
+}
+
+/// 受け方が選べる手の判定を1つにまとめる（受け方にとって最善のもの）
+fn defender_pick(a: Verdict, b: Verdict) -> Verdict {
+    if b.defender_rank() > a.defender_rank() { b } else { a }
 }
 
 /// 情報集合（観測と矛盾しない局面の集合）。局面は Zobrist ハッシュで重複排除し、
@@ -253,8 +293,8 @@ fn hand_order(kind: PieceKind) -> u8 {
     }
 }
 
-/// 転置表の1件: (反則の残り, 王手の残り予算, 逃れたか)
-type TtEntry = (u8, u32, bool);
+/// 転置表の1件: (反則の残り, 読みの深さ, 判定)。判定は Escape / Caught / Undecided のどれか
+type TtEntry = (u8, u32, Verdict);
 
 /// 転置表がこれを超えたら捨てる（メモリの頭打ち）
 const MAX_TT_KEYS: usize = 2_000_000;
@@ -262,7 +302,7 @@ const MAX_TT_KEYS: usize = 2_000_000;
 /// 詰み逃れの探索器。転置表（証明・反証の恒久的事実）を問い合わせをまたいで
 /// 温存できるので、常駐モードでは使い回す
 pub struct EscapeSolver {
-    /// (集合ハッシュ, 手番の種類) → 判定済みの (反則の残り, 予算, 逃れ)
+    /// (集合ハッシュ, 手番の種類) → 判定済みの (反則の残り, 読みの深さ, 判定)
     tt: FxHashMap<(u64, u8), Vec<TtEntry>>,
     pub nodes: u64,
     node_limit: u64,
@@ -291,44 +331,54 @@ impl EscapeSolver {
         self.aborted
     }
 
-    /// 単調性つきの転置表参照。逃れは (反則の残り, 予算) が多いほど成り立ち、
-    /// 捕まりは少ないほど成り立つ
-    fn tt_lookup(&self, hash: u64, kind: u8, fouls: u8, budget: u32) -> Option<bool> {
-        let entries = self.tt.get(&(hash, kind))?;
-        for &(f, b, escape) in entries {
-            if escape && f <= fouls && b <= budget {
-                return Some(true);
-            }
-            if !escape && f >= fouls && b >= budget {
-                return Some(false);
-            }
+    /// 判定済みの事実 (f, b, v) から (fouls, budget) での判定が分かるか。
+    /// - 逃れ・捕まりは深く読んでも覆らない（予算 b 以上で成り立つ）。反則の残りについては
+    ///   逃れは多いほど、捕まりは少ないほど成り立つ
+    /// - 決着しない（Undecided）は浅く読んでも決着しない（予算 b 以下で成り立つ）。
+    ///   反則の残りが変わると逃れ・捕まりのどちらにも転び得るので同じ回数のときだけ
+    fn implies(fact: TtEntry, fouls: u8, budget: u32) -> bool {
+        let (f, b, v) = fact;
+        match v {
+            Verdict::Escape => f <= fouls && b <= budget,
+            Verdict::Caught => f >= fouls && b <= budget,
+            Verdict::Undecided => f == fouls && b >= budget,
+            Verdict::Unknown => false,
         }
-        None
     }
 
-    fn tt_store(&mut self, hash: u64, kind: u8, fouls: u8, budget: u32, escape: bool) {
+    fn tt_lookup(&self, hash: u64, kind: u8, fouls: u8, budget: u32) -> Option<Verdict> {
+        let entries = self.tt.get(&(hash, kind))?;
+        entries
+            .iter()
+            .find(|&&fact| Self::implies(fact, fouls, budget))
+            .map(|&(_, _, v)| v)
+    }
+
+    /// 判定を残す。Unknown（ノード上限）は読み直せば変わるので残さない。
+    /// Undecided はノード上限に左右されない（部分木に Unknown があれば結果も Unknown になる）
+    fn tt_store(&mut self, hash: u64, kind: u8, fouls: u8, budget: u32, verdict: Verdict) {
+        if verdict == Verdict::Unknown {
+            return;
+        }
         if self.tt.len() >= MAX_TT_KEYS {
             self.tt.clear();
         }
         let entries = self.tt.entry((hash, kind)).or_default();
         // 新しい事実に含意される古い事実は捨てる
-        entries.retain(|&(f, b, e)| {
-            if e != escape {
-                return true;
-            }
-            if escape {
-                !(fouls <= f && budget <= b)
-            } else {
-                !(fouls >= f && budget >= b)
-            }
+        entries.retain(|&(f, b, v)| {
+            !(v == verdict && match v {
+                Verdict::Escape => fouls <= f && budget <= b,
+                Verdict::Caught => fouls >= f && budget <= b,
+                _ => fouls == f && budget >= b,
+            })
         });
-        entries.push((fouls, budget, escape));
+        entries.push((fouls, budget, verdict));
     }
 
     /// 攻め方の手番。budget は攻め方がまだ指せる王手の回数
     pub fn attack(&mut self, set: &InfoSet, fouls: u8, budget: u32) -> Verdict {
-        if let Some(escape) = self.tt_lookup(set.hash(), ATTACK, fouls, budget) {
-            return if escape { Verdict::Escape } else { Verdict::Caught };
+        if let Some(verdict) = self.tt_lookup(set.hash(), ATTACK, fouls, budget) {
+            return verdict;
         }
         if self.tick() {
             return Verdict::Unknown;
@@ -336,34 +386,29 @@ impl EscapeSolver {
         let verdict = match expand_attack(set) {
             AttackExpansion::NoCheck => Verdict::Escape,
             AttackExpansion::Mate => Verdict::Caught,
-            AttackExpansion::Groups(_) if budget == 0 => Verdict::Caught,
+            // 読みの深さの打ち切り（王手の回数の上限というルールではない）
+            AttackExpansion::Groups(_) if budget == 0 => Verdict::Undecided,
             AttackExpansion::Groups(mut groups) => {
                 // 局面の多い分岐ほど攻め方に有利なので先に調べる（早く捕まえて打ち切る）
                 groups.sort_by_key(|(_, g)| std::cmp::Reverse(g.len()));
                 let mut result = Verdict::Escape;
                 for (_, group) in &groups {
-                    match self.defense(group, fouls, budget - 1) {
-                        Verdict::Caught => {
-                            result = Verdict::Caught;
-                            break;
-                        }
-                        Verdict::Unknown => result = Verdict::Unknown,
-                        Verdict::Escape => {}
+                    result = attacker_pick(result, self.defense(group, fouls, budget - 1));
+                    if result == Verdict::Caught {
+                        break;
                     }
                 }
                 result
             }
         };
-        if verdict != Verdict::Unknown {
-            self.tt_store(set.hash(), ATTACK, fouls, budget, verdict == Verdict::Escape);
-        }
+        self.tt_store(set.hash(), ATTACK, fouls, budget, verdict);
         verdict
     }
 
     /// 受け方の手番（王手されている）。budget は攻め方がまだ指せる王手の回数
     pub fn defense(&mut self, set: &InfoSet, fouls: u8, budget: u32) -> Verdict {
-        if let Some(escape) = self.tt_lookup(set.hash(), DEFENSE, fouls, budget) {
-            return if escape { Verdict::Escape } else { Verdict::Caught };
+        if let Some(verdict) = self.tt_lookup(set.hash(), DEFENSE, fouls, budget) {
+            return verdict;
         }
         if self.tick() {
             return Verdict::Unknown;
@@ -389,28 +434,18 @@ impl EscapeSolver {
             (foul > 0, largest, foul)
         });
 
-        let mut any_unknown = false;
         let mut verdict = Verdict::Caught;
         for (_, split) in &options {
-            match self.evaluate_split(split, fouls, budget) {
-                Verdict::Escape => {
-                    verdict = Verdict::Escape;
-                    break;
-                }
-                Verdict::Unknown => any_unknown = true,
-                Verdict::Caught => {}
+            verdict = defender_pick(verdict, self.evaluate_split(split, fouls, budget));
+            if verdict == Verdict::Escape {
+                break;
             }
             if self.aborted {
-                any_unknown = true;
+                verdict = defender_pick(verdict, Verdict::Unknown);
                 break;
             }
         }
-        if verdict != Verdict::Escape && any_unknown {
-            verdict = Verdict::Unknown;
-        }
-        if verdict != Verdict::Unknown {
-            self.tt_store(set.hash(), DEFENSE, fouls, budget, verdict == Verdict::Escape);
-        }
+        self.tt_store(set.hash(), DEFENSE, fouls, budget, verdict);
         verdict
     }
 
@@ -421,26 +456,25 @@ impl EscapeSolver {
             if fouls == 0 {
                 return Verdict::Caught;
             }
-            match self.defense(foul, fouls - 1, budget) {
-                Verdict::Caught => return Verdict::Caught,
-                Verdict::Unknown => result = Verdict::Unknown,
-                Verdict::Escape => {}
+            result = attacker_pick(result, self.defense(foul, fouls - 1, budget));
+            if result == Verdict::Caught {
+                return result;
             }
         }
         let mut order: Vec<&InfoSet> = split.accepted.iter().map(|(_, _, g)| g).collect();
         order.sort_by_key(|g| std::cmp::Reverse(g.len()));
         for group in order {
-            match self.attack(group, fouls, budget) {
-                Verdict::Caught => return Verdict::Caught,
-                Verdict::Unknown => result = Verdict::Unknown,
-                Verdict::Escape => {}
+            result = attacker_pick(result, self.attack(group, fouls, budget));
+            if result == Verdict::Caught {
+                return result;
             }
         }
         result
     }
 
-    /// 反復深化: 予算 0..=max_budget の順に調べ、逃れられる最小の予算を返す。
-    /// 戻り値の Option は Escape のときだけ Some
+    /// 反復深化: 予算 0..=max_budget の順に調べ、決着が付いた最小の予算を返す
+    /// （Escape なら逃れに要る王手の回数、Caught なら捕まえるのに要る回数）。
+    /// どの予算でも決着しなければ Undecided
     pub fn solve_min_budget(
         &mut self,
         set: &InfoSet,
@@ -456,12 +490,12 @@ impl EscapeSolver {
                 self.defense(set, fouls, budget)
             };
             match v {
-                Verdict::Escape => return (Verdict::Escape, Some(budget)),
+                Verdict::Escape | Verdict::Caught => return (v, Some(budget)),
                 Verdict::Unknown => return (Verdict::Unknown, None),
-                Verdict::Caught => {}
+                Verdict::Undecided => {}
             }
         }
-        (Verdict::Caught, None)
+        (Verdict::Undecided, None)
     }
 }
 
@@ -484,8 +518,11 @@ pub struct EscapeAnalysis {
     pub root_solutions: Option<u32>,
 }
 
-/// 初期局面（攻め方の手番）から、反則 0..=max_fouls 回・王手 max_checks 回以内で
-/// 逃れられるかを調べ、逃れに必要な最少の反則回数と王手の回数を求める
+/// 初期局面（攻め方の手番）から、反則 0..=max_fouls 回で、攻め方の王手を max_checks 回
+/// 先まで読んで逃れを強制できるかを調べ、逃れに必要な最少の反則回数と王手の回数を求める。
+/// 逃れられなければ、反則 max_fouls 回での判定（Caught / Undecided）を返す。
+/// min_fouls は「その深さまで読んで逃れられる最少」なので、真の最少の上界
+/// （もっと長い手順なら少ない反則で逃れられる可能性は残る）
 pub fn analyze_escape(
     root: Position,
     max_fouls: u8,
@@ -516,18 +553,15 @@ pub fn analyze_escape(
 
     for fouls in 0..=max_fouls {
         let (verdict, budget) = solver.solve_min_budget(&set, true, fouls, max_checks);
+        analysis.verdict = verdict;
         match verdict {
             Verdict::Escape => {
-                analysis.verdict = Verdict::Escape;
                 analysis.min_fouls = Some(fouls);
                 analysis.checks = budget;
                 break;
             }
-            Verdict::Unknown => {
-                analysis.verdict = Verdict::Unknown;
-                break;
-            }
-            Verdict::Caught => {}
+            Verdict::Unknown => break,
+            Verdict::Caught | Verdict::Undecided => {}
         }
     }
 
@@ -569,7 +603,7 @@ fn root_move_stats(
             match solver.evaluate_split(&split, fouls, checks - 1) {
                 Verdict::Escape => solutions += 1,
                 Verdict::Unknown => return None,
-                Verdict::Caught => {}
+                Verdict::Caught | Verdict::Undecided => {}
             }
         }
         let worse = match worst {
@@ -705,14 +739,28 @@ mod tests {
     }
 
     #[test]
-    fn 王手し続けられると手数切れで捕まる() {
+    fn 王手し続けられても予算切れは負けにしない() {
         // 盤に後手の竜だけ。受け方の玉は広いが、竜は王手を続けられる
         let mut pos = Position::new();
         pos.set_piece(sq(5, 5), Piece::new(Color::Sente, PieceKind::King));
         pos.set_piece(sq(1, 1), Piece::new(Color::Gote, PieceKind::PromotedRook));
         pos.side_to_move = Color::Gote;
-        let analysis = analyze_escape(pos, 0, 2, 2_000_000, no_cancel());
-        assert_ne!(analysis.verdict, Verdict::Escape);
+        // 反則を多めに許せば反則負けにも詰みにもならず、読みの深さで打ち切られるだけ
+        let analysis = analyze_escape(pos, 3, 2, 2_000_000, no_cancel());
+        assert_eq!(analysis.verdict, Verdict::Undecided);
+        assert_eq!(analysis.min_fouls, None);
+    }
+
+    #[test]
+    fn 捕まりは決着した予算を返し深く読んでも覆らない() {
+        // 反則0回では最初の王手の直後に反則負けを避けられない（例の局面）
+        let set = InfoSet::from_fresh(vec![lone_king_vs_gold()]);
+        let mut solver = EscapeSolver::new(1_000_000, no_cancel());
+        assert_eq!(solver.solve_min_budget(&set, true, 0, 6), (Verdict::Caught, Some(1)));
+        assert_eq!(solver.attack(&set, 0, 5), Verdict::Caught);
+        // 予算 0 では王手の後を読まないので決着しない
+        let mut fresh = EscapeSolver::new(1_000_000, no_cancel());
+        assert_eq!(fresh.attack(&set, 0, 0), Verdict::Undecided);
     }
 
     #[test]
